@@ -2,13 +2,14 @@ import {
   AuditLogEvent,
   Channel,
   Client,
-  Collection,
   Events,
   GuildChannel,
   GuildMember,
+  GuildTextBasedChannel,
   Message,
   PartialGuildMember,
   PartialMessage,
+  ReadonlyCollection,
   Role,
 } from "discord.js";
 import { loggingService } from "../lib/registry.js";
@@ -36,9 +37,9 @@ export function registerLoggingHandlers(client: Client): void {
 
   client.on(
     Events.MessageBulkDelete,
-    async (messages: Collection<string, Message | PartialMessage>, channel: GuildChannel) => {
-      if (!channel.guildId) return;
-      await loggingService.logBulkDelete(messages, channel).catch((err) =>
+    async (messages: ReadonlyCollection<string, Message | PartialMessage>, channel: GuildTextBasedChannel) => {
+      if (!("guildId" in channel)) return;
+      await loggingService.logBulkDelete(messages as never, channel as unknown as GuildChannel).catch((err) =>
         logger.warn("Log error [messageBulkDelete]:", err)
       );
     }

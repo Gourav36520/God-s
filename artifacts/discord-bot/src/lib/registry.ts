@@ -1,10 +1,10 @@
 import { Collection } from "discord.js";
-import type { ChatInputCommandInteraction, SlashCommandBuilder } from "discord.js";
+import type { ChatInputCommandInteraction, SharedSlashCommand } from "discord.js";
 import { SecurityManager } from "../security/SecurityManager.js";
 import { LoggingService } from "../logging/LoggingService.js";
 
 export interface Command {
-  data: SlashCommandBuilder;
+  data: SharedSlashCommand;
   execute(interaction: ChatInputCommandInteraction): Promise<void>;
 }
 

@@ -1,13 +1,11 @@
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import type { GuildSecurityConfig } from "../types.js";
 import { buildDefaultConfig } from "../defaults.js";
 import { logger } from "../../lib/logger.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "../../../data");
+const DATA_DIR = join(process.cwd(), "data");
 const CONFIG_FILE = join(DATA_DIR, "guild-configs.json");
 
 type ConfigMap = Record<string, GuildSecurityConfig>;

@@ -75,12 +75,12 @@ async function loadCommands(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging  = await import("./commands/logging.js");
 
-  commands.set(ping.data.name,     ping as Command);
-  commands.set(help.data.name,     help as Command);
-  commands.set(info.data.name,     info as Command);
-  commands.set(security.data.name, security as Command);
-  commands.set(judgment.data.name, judgment as Command);
-  commands.set(logging.data.name,  logging as Command);
+  commands.set(ping.data.name,     { data: ping.data,     execute: ping.execute });
+  commands.set(help.data.name,     { data: help.data,     execute: help.execute });
+  commands.set(info.data.name,     { data: info.data,     execute: info.execute });
+  commands.set(security.data.name, { data: security.data, execute: security.execute });
+  commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
+  commands.set(logging.data.name,  { data: logging.data,  execute: logging.execute });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
