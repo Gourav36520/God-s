@@ -1,0 +1,129 @@
+import {
+  AuditLogEvent,
+  Channel,
+  Client,
+  Collection,
+  Events,
+  GuildChannel,
+  GuildMember,
+  Message,
+  PartialGuildMember,
+  PartialMessage,
+  Role,
+} from "discord.js";
+import { loggingService } from "../lib/registry.js";
+import { logger } from "../lib/logger.js";
+
+export function registerLoggingHandlers(client: Client): void {
+  client.on(Events.MessageDelete, async (message: Message | PartialMessage) => {
+    if (!message.guildId) return;
+    if (message.author?.bot) return;
+    await loggingService.logMessageDelete(message).catch((err) =>
+      logger.warn("Log error [messageDelete]:", err)
+    );
+  });
+
+  client.on(
+    Events.MessageUpdate,
+    async (oldMessage: Message | PartialMessage, newMessage: Message | PartialMessage) => {
+      if (!newMessage.guildId) return;
+      if (newMessage.author?.bot) return;
+      await loggingService.logMessageEdit(oldMessage, newMessage).catch((err) =>
+        logger.warn("Log error [messageUpdate]:", err)
+      );
+    }
+  );
+
+  client.on(
+    Events.MessageBulkDelete,
+    async (messages: Collection<string, Message | PartialMessage>, channel: GuildChannel) => {
+      if (!channel.guildId) return;
+      await loggingService.logBulkDelete(messages, channel).catch((err) =>
+        logger.warn("Log error [messageBulkDelete]:", err)
+      );
+    }
+  );
+
+  client.on(Events.GuildMemberAdd, async (member: GuildMember) => {
+    await loggingService.logMemberJoin(member).catch((err) =>
+      logger.warn("Log error [guildMemberAdd]:", err)
+    );
+  });
+
+  client.on(
+    Events.GuildMemberRemove,
+    async (member: GuildMember | PartialGuildMember) => {
+      await loggingService.logMemberLeave(member).catch((err) =>
+        logger.warn("Log error [guildMemberRemove]:", err)
+      );
+    }
+  );
+
+  client.on(
+    Events.GuildMemberUpdate,
+    async (
+      oldMember: GuildMember | PartialGuildMember,
+      newMember: GuildMember
+    ) => {
+      await loggingService.logMemberUpdate(oldMember, newMember).catch((err) =>
+        logger.warn("Log error [guildMemberUpdate]:", err)
+      );
+    }
+  );
+
+  client.on(Events.ChannelCreate, async (channel: GuildChannel) => {
+    await loggingService.logChannelCreate(channel as unknown as Channel).catch((err) =>
+      logger.warn("Log error [channelCreate]:", err)
+    );
+  });
+
+  client.on(Events.ChannelDelete, async (channel: Channel | GuildChannel) => {
+    await loggingService.logChannelDelete(channel as Channel).catch((err) =>
+      logger.warn("Log error [channelDelete]:", err)
+    );
+  });
+
+  client.on(
+    Events.ChannelUpdate,
+    async (oldChannel: Channel | GuildChannel, newChannel: Channel | GuildChannel) => {
+      await loggingService.logChannelUpdate(oldChannel as Channel, newChannel as Channel).catch(
+        (err) => logger.warn("Log error [channelUpdate]:", err)
+      );
+    }
+  );
+
+  client.on(Events.GuildRoleCreate, async (role: Role) => {
+    await loggingService.logRoleCreate(role).catch((err) =>
+      logger.warn("Log error [roleCreate]:", err)
+    );
+  });
+
+  client.on(Events.GuildRoleDelete, async (role: Role) => {
+    await loggingService.logRoleDelete(role).catch((err) =>
+      logger.warn("Log error [roleDelete]:", err)
+    );
+  });
+
+  client.on(Events.GuildRoleUpdate, async (oldRole: Role, newRole: Role) => {
+    await loggingService.logRoleUpdate(oldRole, newRole).catch((err) =>
+      logger.warn("Log error [roleUpdate]:", err)
+    );
+  });
+
+  client.on(Events.GuildAuditLogEntryCreate, async (entry, guild) => {
+    const watched = [
+      AuditLogEvent.MemberBanAdd,
+      AuditLogEvent.MemberBanRemove,
+      AuditLogEvent.MemberKick,
+      AuditLogEvent.MemberUpdate,
+    ];
+
+    if (!watched.includes(entry.action as (typeof watched)[number])) return;
+
+    await loggingService.logAuditAction(guild.id, entry).catch((err) =>
+      logger.warn("Log error [auditLog]:", err)
+    );
+  });
+
+  logger.info("LoggingService: registered all event handlers");
+}
