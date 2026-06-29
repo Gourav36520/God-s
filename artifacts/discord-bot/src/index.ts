@@ -1,5 +1,6 @@
 import {
   Client,
+  Events,
   GatewayIntentBits,
   IntentsBitField,
 } from "discord.js";
@@ -23,7 +24,7 @@ async function loginWithFallback(
   wantGuildMembers: boolean
 ): Promise<{ client: Client; messageContentGranted: boolean; guildMembersGranted: boolean }> {
   let messageContentGranted = wantMessageContent;
-  let guildMembersGranted   = wantGuildMembers;
+  let guildMembersGranted = wantGuildMembers;
 
   function buildIntents(mc: boolean, gm: boolean): GatewayIntentBits[] {
     return [
@@ -31,14 +32,15 @@ async function loginWithFallback(
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildModeration,
       ...(mc ? [GatewayIntentBits.MessageContent] : []),
-      ...(gm ? [GatewayIntentBits.GuildMembers]   : []),
+      ...(gm ? [GatewayIntentBits.GuildMembers] : []),
     ];
   }
 
   {
     const intents = buildIntents(messageContentGranted, guildMembersGranted);
     logger.info(
-      `[LOGIN] Attempting login with intents: MessageContent=${messageContentGranted} GuildMembers=${guildMembersGranted} bitmask=${intents.reduce((a, b) => a | b, 0)}`
+      `[LOGIN] Attempting login: MessageContent=${messageContentGranted} GuildMembers=${guildMembersGranted} ` +
+        `bitmask=${intents.reduce((a, b) => a | b, 0)}`
     );
     const client = new Client({ intents });
     try {
@@ -48,15 +50,13 @@ async function loginWithFallback(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("disallowed intents")) throw err;
-      logger.error(
-        `[LOGIN] ✗ Discord rejected intent(s): "${msg}". Retrying without privileged intents.`
-      );
+      logger.error(`[LOGIN] ✗ Discord rejected intent(s): "${msg}". Retrying without privileged intents.`);
       await client.destroy();
     }
   }
 
   messageContentGranted = false;
-  guildMembersGranted   = false;
+  guildMembersGranted = false;
   {
     const intents = buildIntents(false, false);
     logger.warn("[LOGIN] Falling back to base intents only. Anti-Link and Anti-Spam content detection will NOT work.");
@@ -68,19 +68,19 @@ async function loginWithFallback(
 }
 
 async function loadCommands(): Promise<void> {
-  const ping     = await import("./commands/ping.js");
-  const help     = await import("./commands/help.js");
-  const info     = await import("./commands/info.js");
+  const ping = await import("./commands/ping.js");
+  const help = await import("./commands/help.js");
+  const info = await import("./commands/info.js");
   const security = await import("./commands/security.js");
   const judgment = await import("./commands/judgment.js");
-  const logging  = await import("./commands/logging.js");
+  const logging = await import("./commands/logging.js");
 
-  commands.set(ping.data.name,     { data: ping.data,     execute: ping.execute });
-  commands.set(help.data.name,     { data: help.data,     execute: help.execute });
-  commands.set(info.data.name,     { data: info.data,     execute: info.execute });
+  commands.set(ping.data.name, { data: ping.data, execute: ping.execute });
+  commands.set(help.data.name, { data: help.data, execute: help.execute });
+  commands.set(info.data.name, { data: info.data, execute: info.execute });
   commands.set(security.data.name, { data: security.data, execute: security.execute });
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
-  commands.set(logging.data.name,  { data: logging.data,  execute: logging.execute });
+  commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
@@ -96,12 +96,76 @@ async function loadEvents(client: Client): Promise<void> {
   ];
   for (const mod of mods) {
     if (mod.once) {
-      client.once(mod.name, (...args) => mod.execute(...args as [never]));
+      client.once(mod.name, (...args) => mod.execute(...(args as [never])));
     } else {
-      client.on(mod.name, (...args) => mod.execute(...args as [never]));
+      client.on(mod.name, (...args) => mod.execute(...(args as [never])));
     }
   }
   logger.info(`Registered ${mods.length} core event listener(s)`);
+}
+
+/**
+ * After the bot is fully ready (guilds cached), run startup validation for
+ * every guild that has God's Judgment configured. This repairs any channel
+ * overwrites that were removed or are missing since the last run.
+ */
+function scheduleStartupValidation(client: Client, godsJudgment: GodsJudgment): void {
+  client.once(Events.ClientReady, async (readyClient) => {
+    logger.info(
+      `[STARTUP VALIDATION] Beginning God's Judgment channel audit across ` +
+        `${readyClient.guilds.cache.size} guild(s)...`
+    );
+
+    let totalChecked = 0;
+    let totalRepaired = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+    let guildsAudited = 0;
+
+    for (const guild of readyClient.guilds.cache.values()) {
+      const cfg = securityManager.getConfig(guild.id).godsJudgment;
+      if (!cfg.enabled || !cfg.judgmentRoleId || !cfg.judgmentChannelId) continue;
+
+      guildsAudited++;
+      logger.info(`[STARTUP VALIDATION] Auditing guild: "${guild.name}" (${guild.id})`);
+
+      const stats = await godsJudgment.validateAndRepair(guild).catch((err) => {
+        logger.error(
+          `[STARTUP VALIDATION] Error validating guild "${guild.name}": ` +
+            (err instanceof Error ? err.message : String(err))
+        );
+        return null;
+      });
+
+      if (stats) {
+        totalChecked += stats.checked;
+        totalRepaired += stats.repaired;
+        totalSkipped += stats.skipped;
+        totalErrors += stats.errors;
+      }
+    }
+
+    if (guildsAudited === 0) {
+      logger.info(
+        "[STARTUP VALIDATION] No guilds have God's Judgment configured yet. " +
+          "Run `/judgment setup` to enable it."
+      );
+    } else {
+      logger.info(
+        `[STARTUP VALIDATION] ✓ Audit complete — ` +
+          `guilds=${guildsAudited} checked=${totalChecked} repaired=${totalRepaired} ` +
+          `skipped=${totalSkipped} errors=${totalErrors}`
+      );
+      if (totalRepaired > 0) {
+        logger.warn(
+          `[STARTUP VALIDATION] ⚠️  Repaired ${totalRepaired} channel overwrite(s). ` +
+            `They were missing or incorrect since the last run.`
+        );
+      } else {
+        logger.info("[STARTUP VALIDATION] ✓ All judgment channel overwrites are correct.");
+      }
+    }
+  });
 }
 
 async function main(): Promise<void> {
@@ -112,12 +176,12 @@ async function main(): Promise<void> {
   }
 
   const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
-  const wantGuildMembers   = envBool("INTENT_GUILD_MEMBERS");
+  const wantGuildMembers = envBool("INTENT_GUILD_MEMBERS");
 
   logger.info(
     `[INTENT DIAGNOSTIC] ` +
-    `INTENT_MESSAGE_CONTENT raw="${process.env.INTENT_MESSAGE_CONTENT ?? "<unset>"}" → envBool=${wantMessageContent} | ` +
-    `INTENT_GUILD_MEMBERS raw="${process.env.INTENT_GUILD_MEMBERS ?? "<unset>"}" → envBool=${wantGuildMembers}`
+      `INTENT_MESSAGE_CONTENT raw="${process.env.INTENT_MESSAGE_CONTENT ?? "<unset>"}" → envBool=${wantMessageContent} | ` +
+      `INTENT_GUILD_MEMBERS raw="${process.env.INTENT_GUILD_MEMBERS ?? "<unset>"}" → envBool=${wantGuildMembers}`
   );
 
   await loadCommands();
@@ -132,21 +196,21 @@ async function main(): Promise<void> {
   const mcActuallyActive = (grantedBitfield & GatewayIntentBits.MessageContent) !== 0;
 
   logger.info(
-    `[INTENT DIAGNOSTIC] Post-login: granted bitfield=${grantedBitfield} ` +
-    `MessageContent=${mcActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"}`
+    `[INTENT DIAGNOSTIC] Post-login: bitfield=${grantedBitfield} ` +
+      `MessageContent=${mcActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"}`
   );
 
   if (wantMessageContent && !mcActuallyActive) {
     logger.error(
       "═══════════════════════════════════════════════════════════════\n" +
-      "  PORTAL ACTION REQUIRED — MessageContent intent was REJECTED\n" +
-      "  1. Go to: https://discord.com/developers/applications\n" +
-      "  2. Select your application → Click 'Bot'\n" +
-      "  3. Scroll to 'Privileged Gateway Intents'\n" +
-      "  4. Toggle 'Message Content Intent' → ON\n" +
-      "  5. Click 'Save Changes' then restart this bot\n" +
-      "  Anti-Link will NOT detect URLs until this is done.\n" +
-      "═══════════════════════════════════════════════════════════════"
+        "  PORTAL ACTION REQUIRED — MessageContent intent was REJECTED\n" +
+        "  1. Go to: https://discord.com/developers/applications\n" +
+        "  2. Select your application → Click 'Bot'\n" +
+        "  3. Scroll to 'Privileged Gateway Intents'\n" +
+        "  4. Toggle 'Message Content Intent' → ON\n" +
+        "  5. Click 'Save Changes' then restart this bot\n" +
+        "  Anti-Link will NOT detect URLs until this is done.\n" +
+        "═══════════════════════════════════════════════════════════════"
     );
   }
 
@@ -155,8 +219,10 @@ async function main(): Promise<void> {
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
 
+  // ── Register modules ──────────────────────────────────────────────────────
   const godsJudgment = new GodsJudgment(securityManager);
   securityManager.registerModule(godsJudgment);
+  godsJudgment.register(client); // channelCreate + messageCreate (leak repair)
 
   const antiLink = new AntiLink(securityManager);
   securityManager.registerModule(antiLink);
@@ -166,7 +232,11 @@ async function main(): Promise<void> {
   securityManager.registerModule(antiSpam);
   antiSpam.register(client);
 
+  // ── Startup validation: audit + repair all guild channels once ready ───────
+  scheduleStartupValidation(client, godsJudgment);
+
   logger.info(`[STARTUP COMPLETE] Bot running. MessageContent active: ${mcActuallyActive}`);
+  void messageContentGranted;
 }
 
 main().catch((err) => {
