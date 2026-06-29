@@ -133,12 +133,22 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
 
     if (!result.success) { await interaction.editReply(`❌ ${result.reason}`); return; }
 
+    const isRepair = result.wasRepaired === true;
     const embed = new EmbedBuilder()
-      .setTitle("⚖️ User Placed Under Judgment")
-      .setColor(0xed4245)
+      .setTitle(isRepair ? "⚙️ Judgment Self-Healed" : "⚖️ User Placed Under Judgment")
+      .setColor(isRepair ? 0xe67e22 : 0xed4245)
       .addFields(
         { name: "User", value: `${target.user.tag} (<@${target.id}>)`, inline: true },
-        { name: "Reason", value: reason, inline: false }
+        { name: "Reason", value: reason, inline: false },
+        ...(isRepair
+          ? [{
+              name: "What Happened",
+              value:
+                "The judgment role was found missing (manually removed). " +
+                "It has been automatically re-applied and all channel overwrites have been verified.",
+              inline: false,
+            }]
+          : [])
       )
       .setTimestamp();
 

@@ -1,1 +1,65 @@
-{}
+{
+  "1519269173937836084": {
+    "guildId": "1519269173937836084",
+    "logChannelId": "1521121964012470333",
+    "muteRoleId": null,
+    "exemptRoles": [],
+    "exemptChannels": [],
+    "antiSpam": {
+      "enabled": true,
+      "maxMessages": 5,
+      "timeWindowMs": 5000,
+      "action": "warn",
+      "timeoutDurationMs": 300000,
+      "warnThreshold": 3,
+      "bypassRoles": [],
+      "bypassUsers": []
+    },
+    "antiLink": {
+      "enabled": true,
+      "allowedDomains": [],
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiInvite": {
+      "enabled": true,
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiRaid": {
+      "enabled": true,
+      "joinThreshold": 10,
+      "joinWindowMs": 10000,
+      "action": "kick",
+      "lockdownDurationMs": 300000
+    },
+    "godsJudgment": {
+      "enabled": true,
+      "logChannelId": null,
+      "dmOnAction": true,
+      "judgmentRoleId": "1521121056809549844",
+      "judgmentChannelId": "1521121058676150354",
+      "activeJudgments": {
+        "1503035025330012252": {
+          "userId": "1503035025330012252",
+          "savedRoles": [],
+          "judgedAt": "2026-06-29T12:02:44.370Z",
+          "reason": "No reason provided",
+          "judgedBy": "1456628281611784202"
+        }
+      }
+    },
+    "logging": {
+      "channelId": "1521121964012470333",
+      "categories": {
+        "moderation": true,
+        "messages": true,
+        "members": true,
+        "channels": true,
+        "roles": true,
+        "security": true
+      }
+    },
+    "updatedAt": "2026-06-29T12:02:44.370Z"
+  }
+}

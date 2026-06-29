@@ -88,4 +88,5 @@ export interface JudgmentResult {
   success: boolean;
   reason: string;
   record?: JudgmentRecord;
+  wasRepaired?: boolean;
 }

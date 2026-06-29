@@ -39,6 +39,9 @@ function mergeWithDefaults(
         ...defaults.logging.categories,
         ...(stored.logging?.categories ?? {}),
       },
+      channelIds: {
+        ...(stored.logging?.channelIds ?? {}),
+      },
     },
   };
 }

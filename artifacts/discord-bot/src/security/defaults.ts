@@ -10,7 +10,7 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
     exemptChannels: [],
     antiSpam: {
       enabled: false,
-      maxMessages: 5,
+      maxMessages: 3,
       timeWindowMs: 5_000,
       action: "warn",
       timeoutDurationMs: 5 * 60 * 1_000,
@@ -46,6 +46,7 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
     },
     logging: {
       channelId: null,
+      channelIds: {},
       categories: Object.fromEntries(ALL_CATEGORIES.map((c) => [c, false])) as Record<
         typeof ALL_CATEGORIES[number],
         boolean

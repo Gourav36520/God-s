@@ -582,9 +582,6 @@ export class GodsJudgment extends BaseSecurityModule {
     if (!cfg.judgmentRoleId) {
       return { success: false, reason: "God's Judgment role is not set up. Run `/judgment setup` first." };
     }
-    if (cfg.activeJudgments[member.id]) {
-      return { success: false, reason: `${member.user.tag} is already under God's Judgment.` };
-    }
 
     const judgmentRole = member.guild.roles.cache.get(cfg.judgmentRoleId);
     if (!judgmentRole) {
@@ -594,9 +591,37 @@ export class GodsJudgment extends BaseSecurityModule {
       };
     }
 
-    // 1. Save the member's current roles
+    // ── Self-healing state detection ───────────────────────────────────────
+    const existingRecord = cfg.activeJudgments[member.id];
+    const hasJudgmentRole = member.roles.cache.has(cfg.judgmentRoleId);
+
+    if (existingRecord && hasJudgmentRole) {
+      // Fully judged: DB record present AND role is assigned — nothing to do
+      return { success: false, reason: `${member.user.tag} is already under God's Judgment.` };
+    }
+
+    if (existingRecord && !hasJudgmentRole) {
+      // Half-judged: DB record exists but the judgment role was manually removed.
+      // Self-heal by re-applying the role and re-validating channels.
+      logger.warn(
+        `GodsJudgment.placeInJudgment: HALF-JUDGED state detected for ${member.user.tag} ` +
+          `(${member.id}) — record present but role is missing. Self-healing now...`
+      );
+      return await this.repairHalfJudgedState(member, existingRecord, judgedBy);
+    }
+
+    if (!existingRecord && hasJudgmentRole) {
+      // Orphan role: member has the judgment role but no DB record.
+      // Treat as unjudged and proceed with a fresh judgment.
+      logger.warn(
+        `GodsJudgment.placeInJudgment: ORPHAN ROLE state for ${member.user.tag} ` +
+          `(${member.id}) — has judgment role but no record. Treating as unjudged.`
+      );
+    }
+
+    // 1. Save the member's current roles (exclude @everyone and the judgment role itself)
     const savedRoles = member.roles.cache
-      .filter((r) => r.id !== member.guild.roles.everyone.id)
+      .filter((r) => r.id !== member.guild.roles.everyone.id && r.id !== judgmentRole.id)
       .map((r) => r.id);
 
     // 2. Strip all roles, assign judgment role
@@ -664,6 +689,89 @@ export class GodsJudgment extends BaseSecurityModule {
 
     logger.info(`GodsJudgment.placeInJudgment: ✓ complete for ${member.user.tag}`);
     return { success: true, reason: "User placed under God's Judgment.", record };
+  }
+
+  /**
+   * Self-heals a half-judged state: the DB record exists but the judgment role
+   * was removed externally (e.g. an admin stripped it manually).
+   *
+   * Behaviour:
+   * - Re-applies the judgment role (stripping any roles the member gained since)
+   * - Keeps the ORIGINAL savedRoles from the record so release restores correctly
+   * - Re-validates all channel overwrites so the member is fully locked down
+   * - DMs the member to let them know their judgment was restored
+   */
+  private async repairHalfJudgedState(
+    member: GuildMember,
+    existingRecord: JudgmentRecord,
+    repairedBy: string
+  ): Promise<JudgmentResult> {
+    const cfg = this.manager.getConfig(member.guild.id).godsJudgment;
+
+    const judgmentRole = member.guild.roles.cache.get(cfg.judgmentRoleId!);
+    if (!judgmentRole) {
+      return {
+        success: false,
+        reason: "Judgment role not found. Run `/judgment setup` to recreate it.",
+      };
+    }
+
+    // Re-apply the judgment role, stripping any roles the member may have
+    // acquired since the judgment was first placed
+    try {
+      await member.roles.set(
+        [judgmentRole],
+        `God's Judgment self-heal (triggered by <@${repairedBy}>): original reason — ${existingRecord.reason}`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`GodsJudgment.repairHalfJudgedState: failed to re-apply role — ${msg}`);
+      return { success: false, reason: `Failed to re-apply judgment role: ${msg}` };
+    }
+
+    // Keep the original record intact — savedRoles must reflect what the member
+    // had BEFORE the first judgment, not the roles they accumulated since
+    await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
+      activeJudgments: { ...cfg.activeJudgments, [member.id]: existingRecord },
+    });
+
+    // Re-validate all channel overwrites so the lockdown is complete
+    if (cfg.judgmentChannelId) {
+      const stats = await this.validateAndRepair(member.guild);
+      if (stats.repaired > 0) {
+        logger.warn(
+          `GodsJudgment.repairHalfJudgedState: repaired ${stats.repaired} channel overwrite(s) during self-heal`
+        );
+      } else {
+        logger.info(
+          `GodsJudgment.repairHalfJudgedState: all ${stats.checked} channel overwrites verified ✓`
+        );
+      }
+    }
+
+    // DM the member
+    if (cfg.dmOnAction) {
+      await member
+        .send(
+          `⚠️ Your **God's Judgment** in **${member.guild.name}** was detected as incomplete and has been automatically restored.\n` +
+            `> The judgment role was found missing and has been re-applied.\n` +
+            `> **Original Reason:** ${existingRecord.reason}`
+        )
+        .catch(() => null);
+    }
+
+    logger.info(
+      `GodsJudgment.repairHalfJudgedState: ✓ self-heal complete for ${member.user.tag} (${member.id})`
+    );
+
+    return {
+      success: true,
+      wasRepaired: true,
+      reason:
+        `Self-healed: ${member.user.tag}'s judgment role was re-applied after being ` +
+        `manually removed. Original reason: ${existingRecord.reason}`,
+      record: existingRecord,
+    };
   }
 
   async release(

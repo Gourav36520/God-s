@@ -26,5 +26,6 @@ export const ALL_CATEGORIES: LogCategory[] = [
 
 export interface LoggingConfig {
   channelId: string | null;
+  channelIds: Partial<Record<LogCategory, string>>;
   categories: Record<LogCategory, boolean>;
 }

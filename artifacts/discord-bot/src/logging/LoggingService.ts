@@ -18,6 +18,13 @@ import type { SecurityManager } from "../security/SecurityManager.js";
 import type { LogCategory } from "./types.js";
 import { logger } from "../lib/logger.js";
 
+function formatPermissions(perms: string[]): string {
+  if (perms.length === 0) return "None";
+  const human = perms.map((p) => p.replace(/([A-Z])/g, " $1").trim());
+  const text = human.join(", ");
+  return text.length > 950 ? text.slice(0, 947) + "…" : text;
+}
+
 export class LoggingService {
   private client: Client | null = null;
   private manager: SecurityManager | null = null;
@@ -34,18 +41,32 @@ export class LoggingService {
     return config.logging.categories[category] ?? false;
   }
 
-  private getChannelId(guildId: string): string | null {
+  /**
+   * Returns the channel ID to log a given category for a guild.
+   * Priority: per-category channel → global logging channel → legacy logChannelId
+   */
+  private getChannelId(guildId: string, category: LogCategory): string | null {
     if (!this.manager) return null;
     const config = this.manager.getConfig(guildId);
-    return config.logging.channelId ?? config.logChannelId;
+    return (
+      config.logging.channelIds?.[category] ??
+      config.logging.channelId ??
+      config.logChannelId ??
+      null
+    );
   }
 
   private async send(guildId: string, category: LogCategory, embed: EmbedBuilder): Promise<void> {
     if (!this.client) return;
     if (!this.isEnabled(guildId, category)) return;
 
-    const channelId = this.getChannelId(guildId);
-    if (!channelId) return;
+    const channelId = this.getChannelId(guildId, category);
+    if (!channelId) {
+      logger.warn(
+        `LoggingService: no channel configured for category "${category}" in guild ${guildId} — skipping log`
+      );
+      return;
+    }
 
     try {
       const channel = await this.client.channels.fetch(channelId);
@@ -56,6 +77,8 @@ export class LoggingService {
       logger.warn(`LoggingService: failed to send ${category} log to ${channelId}:`, err);
     }
   }
+
+  // ─── Moderation ────────────────────────────────────────────────────────────
 
   async logJudgment(options: {
     guildId: string;
@@ -214,6 +237,8 @@ export class LoggingService {
     }
   }
 
+  // ─── Messages ──────────────────────────────────────────────────────────────
+
   async logMessageDelete(message: Message | PartialMessage): Promise<void> {
     if (!message.guildId) return;
 
@@ -293,6 +318,8 @@ export class LoggingService {
     await this.send(channel.guildId, "messages", embed);
   }
 
+  // ─── Members ───────────────────────────────────────────────────────────────
+
   async logMemberJoin(member: GuildMember): Promise<void> {
     const accountAge = `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`;
 
@@ -330,14 +357,19 @@ export class LoggingService {
     await this.send(member.guild.id, "members", embed);
   }
 
-  async logMemberUpdate(oldMember: GuildMember | PartialGuildMember, newMember: GuildMember): Promise<void> {
+  async logMemberUpdate(
+    oldMember: GuildMember | PartialGuildMember,
+    newMember: GuildMember
+  ): Promise<void> {
     const guildId = newMember.guild.id;
+    const everyoneId = newMember.guild.roles.everyone.id;
 
+    // ── Server nickname change ─────────────────────────────────────────────
     const oldNick = oldMember.nickname;
     const newNick = newMember.nickname;
     if (oldNick !== newNick) {
       const embed = new EmbedBuilder()
-        .setTitle("✏️ Nickname Changed")
+        .setTitle("🏷️ Server Nickname Changed")
         .setColor(0x5865f2)
         .setThumbnail(newMember.user.displayAvatarURL())
         .addFields(
@@ -351,33 +383,121 @@ export class LoggingService {
       await this.send(guildId, "members", embed);
     }
 
+    // ── Role changes — separate embeds for Added and Removed ──────────────
     const oldRoles = oldMember.roles.cache;
     const newRoles = newMember.roles.cache;
 
-    const added = newRoles.filter((r) => !oldRoles.has(r.id) && r.id !== newMember.guild.roles.everyone.id);
-    const removed = oldRoles.filter((r) => !newRoles.has(r.id) && r.id !== newMember.guild.roles.everyone.id);
+    const added = newRoles.filter((r) => !oldRoles.has(r.id) && r.id !== everyoneId);
+    const removed = oldRoles.filter((r) => !newRoles.has(r.id) && r.id !== everyoneId);
 
-    if (added.size > 0 || removed.size > 0) {
+    if (added.size > 0) {
       const embed = new EmbedBuilder()
-        .setTitle("🔄 Member Roles Updated")
-        .setColor(0x5865f2)
+        .setTitle("✅ Member Role Added")
+        .setColor(0x57f287)
         .setThumbnail(newMember.user.displayAvatarURL())
         .addFields(
-          { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true }
+          { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true },
+          {
+            name: `Role${added.size > 1 ? "s" : ""} Added (${added.size})`,
+            value: added.map((r) => `<@&${r.id}> \`${r.name}\``).join("\n"),
+            inline: false,
+          }
         )
         .setFooter({ text: `User ID: ${newMember.id}` })
         .setTimestamp();
 
-      if (added.size > 0) {
-        embed.addFields({ name: "Roles Added", value: added.map((r) => `<@&${r.id}>`).join(", "), inline: false });
-      }
-      if (removed.size > 0) {
-        embed.addFields({ name: "Roles Removed", value: removed.map((r) => `<@&${r.id}>`).join(", "), inline: false });
-      }
+      await this.send(guildId, "members", embed);
+    }
+
+    if (removed.size > 0) {
+      const embed = new EmbedBuilder()
+        .setTitle("❌ Member Role Removed")
+        .setColor(0xed4245)
+        .setThumbnail(newMember.user.displayAvatarURL())
+        .addFields(
+          { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true },
+          {
+            name: `Role${removed.size > 1 ? "s" : ""} Removed (${removed.size})`,
+            value: removed.map((r) => `<@&${r.id}> \`${r.name}\``).join("\n"),
+            inline: false,
+          }
+        )
+        .setFooter({ text: `User ID: ${newMember.id}` })
+        .setTimestamp();
 
       await this.send(guildId, "members", embed);
     }
   }
+
+  /**
+   * Logs user-level profile changes (username, global display name, avatar).
+   * Called from the UserUpdate event handler for every guild the user is in.
+   */
+  async logUserUpdate(guildId: string, oldUser: User, newUser: User): Promise<void> {
+    // Username change (Discord pomelo / unique username system)
+    if (oldUser.username !== newUser.username) {
+      const embed = new EmbedBuilder()
+        .setTitle("📝 Username Changed")
+        .setColor(0x5865f2)
+        .setThumbnail(newUser.displayAvatarURL())
+        .addFields(
+          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
+          { name: "Before", value: `\`${oldUser.username}\``, inline: true },
+          { name: "After", value: `\`${newUser.username}\``, inline: true }
+        )
+        .setFooter({ text: `User ID: ${newUser.id}` })
+        .setTimestamp();
+
+      await this.send(guildId, "members", embed);
+    }
+
+    // Global display name change
+    if (oldUser.globalName !== newUser.globalName) {
+      const embed = new EmbedBuilder()
+        .setTitle("📝 Global Display Name Changed")
+        .setColor(0x5865f2)
+        .setThumbnail(newUser.displayAvatarURL())
+        .addFields(
+          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
+          {
+            name: "Before",
+            value: oldUser.globalName ? `\`${oldUser.globalName}\`` : "*None*",
+            inline: true,
+          },
+          {
+            name: "After",
+            value: newUser.globalName ? `\`${newUser.globalName}\`` : "*Removed*",
+            inline: true,
+          }
+        )
+        .setFooter({ text: `User ID: ${newUser.id}` })
+        .setTimestamp();
+
+      await this.send(guildId, "members", embed);
+    }
+
+    // Avatar change (compare hash — null means default avatar)
+    if (oldUser.avatar !== newUser.avatar) {
+      const embed = new EmbedBuilder()
+        .setTitle("🖼️ Avatar Changed")
+        .setColor(0x5865f2)
+        .setThumbnail(newUser.displayAvatarURL({ size: 256 }))
+        .addFields(
+          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
+          {
+            name: "New Avatar",
+            value: `[View full size](${newUser.displayAvatarURL({ size: 1024 })})`,
+            inline: true,
+          }
+        )
+        .setFooter({ text: `User ID: ${newUser.id}` })
+        .setTimestamp();
+
+      await this.send(guildId, "members", embed);
+    }
+  }
+
+  // ─── Channels ──────────────────────────────────────────────────────────────
 
   async logChannelCreate(channel: Channel): Promise<void> {
     if (!channel.isTextBased() && !("name" in channel)) return;
@@ -447,15 +567,48 @@ export class LoggingService {
     await this.send(newGC.guildId, "channels", embed);
   }
 
+  // ─── Roles ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Upgraded role create log: fetches the audit log to get the creator,
+   * shows role ID, color, position, hoist, mentionable, and full permission list.
+   *
+   * NOTE: `logRoleCreate` is called after a 1.5 s delay in handlers.ts so the
+   * audit log entry has time to propagate before we query it.
+   */
   async logRoleCreate(role: Role): Promise<void> {
+    let creatorField = "*Unknown — audit log unavailable*";
+    try {
+      const auditLogs = await role.guild.fetchAuditLogs({
+        type: AuditLogEvent.RoleCreate,
+        limit: 5,
+      });
+      const entry = auditLogs.entries.find(
+        (e) => (e.target as { id?: string } | null)?.id === role.id
+      );
+      if (entry?.executor) {
+        creatorField = `${entry.executor.tag}\n<@${entry.executor.id}>`;
+      }
+    } catch {
+      // Bot lacks ViewAuditLog permission — omit creator info silently
+    }
+
+    const allPerms = role.permissions.toArray();
+    const permCount = allPerms.length;
+    const permList = formatPermissions(allPerms);
+
     const embed = new EmbedBuilder()
       .setTitle("➕ Role Created")
       .setColor(role.color || 0x57f287)
       .addFields(
         { name: "Name", value: `<@&${role.id}> \`${role.name}\``, inline: true },
+        { name: "Created By", value: creatorField, inline: true },
+        { name: "Role ID", value: `\`${role.id}\``, inline: true },
         { name: "Color", value: role.hexColor, inline: true },
+        { name: "Position", value: role.position.toString(), inline: true },
         { name: "Hoisted", value: role.hoist ? "Yes" : "No", inline: true },
-        { name: "Mentionable", value: role.mentionable ? "Yes" : "No", inline: true }
+        { name: "Mentionable", value: role.mentionable ? "Yes" : "No", inline: true },
+        { name: `Permissions (${permCount})`, value: permList, inline: false }
       )
       .setFooter({ text: `Role ID: ${role.id}` })
       .setTimestamp();
@@ -469,7 +622,8 @@ export class LoggingService {
       .setColor(0xed4245)
       .addFields(
         { name: "Name", value: `\`${role.name}\``, inline: true },
-        { name: "Color", value: role.hexColor, inline: true }
+        { name: "Color", value: role.hexColor, inline: true },
+        { name: "Role ID", value: `\`${role.id}\``, inline: true }
       )
       .setFooter({ text: `Role ID: ${role.id}` })
       .setTimestamp();
@@ -486,11 +640,49 @@ export class LoggingService {
     if (oldRole.color !== newRole.color) {
       changes.push({ name: "Color", value: `${oldRole.hexColor} → ${newRole.hexColor}`, inline: true });
     }
+    if (oldRole.position !== newRole.position) {
+      changes.push({
+        name: "Position",
+        value: `${oldRole.position} → ${newRole.position}`,
+        inline: true,
+      });
+    }
     if (oldRole.hoist !== newRole.hoist) {
-      changes.push({ name: "Hoisted", value: `${oldRole.hoist} → ${newRole.hoist}`, inline: true });
+      changes.push({
+        name: "Hoisted",
+        value: `${oldRole.hoist ? "Yes" : "No"} → ${newRole.hoist ? "Yes" : "No"}`,
+        inline: true,
+      });
     }
     if (oldRole.mentionable !== newRole.mentionable) {
-      changes.push({ name: "Mentionable", value: `${oldRole.mentionable} → ${newRole.mentionable}`, inline: true });
+      changes.push({
+        name: "Mentionable",
+        value: `${oldRole.mentionable ? "Yes" : "No"} → ${newRole.mentionable ? "Yes" : "No"}`,
+        inline: true,
+      });
+    }
+
+    // Permission diff
+    if (oldRole.permissions.bitfield !== newRole.permissions.bitfield) {
+      const oldPerms = oldRole.permissions.toArray();
+      const newPerms = newRole.permissions.toArray();
+      const gained = newPerms.filter((p) => !oldPerms.includes(p));
+      const lost = oldPerms.filter((p) => !newPerms.includes(p));
+
+      if (gained.length > 0) {
+        changes.push({
+          name: `Permissions Added (${gained.length})`,
+          value: formatPermissions(gained),
+          inline: false,
+        });
+      }
+      if (lost.length > 0) {
+        changes.push({
+          name: `Permissions Removed (${lost.length})`,
+          value: formatPermissions(lost),
+          inline: false,
+        });
+      }
     }
 
     if (changes.length === 0) return;
@@ -507,6 +699,8 @@ export class LoggingService {
 
     await this.send(newRole.guild.id, "roles", embed);
   }
+
+  // ─── Security ──────────────────────────────────────────────────────────────
 
   async logSecurityTrigger(options: {
     guildId: string;

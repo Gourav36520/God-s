@@ -20,19 +20,45 @@ export const data = new SlashCommandBuilder()
   .setName("logging")
   .setDescription("Configure the logging system")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+
   .addSubcommand((sub) =>
     sub
       .setName("status")
-      .setDescription("Show which log categories are enabled and the current log channel")
+      .setDescription("Show logging configuration — channels, categories, and effective routing")
   )
+
   .addSubcommand((sub) =>
     sub
       .setName("setchannel")
-      .setDescription("Set the channel where all log events are sent")
+      .setDescription("Set a log channel — optionally scoped to a single category")
       .addChannelOption((opt) =>
-        opt.setName("channel").setDescription("The log channel").setRequired(true)
+        opt
+          .setName("channel")
+          .setDescription("The channel to send logs to")
+          .setRequired(true)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("category")
+          .setDescription("Category to set (leave blank to set the global default channel)")
+          .setRequired(false)
+          .addChoices(...CATEGORY_CHOICES)
       )
   )
+
+  .addSubcommand((sub) =>
+    sub
+      .setName("clearchannel")
+      .setDescription("Remove a log channel override")
+      .addStringOption((opt) =>
+        opt
+          .setName("category")
+          .setDescription("Category to clear (leave blank to clear the global default channel)")
+          .setRequired(false)
+          .addChoices(...CATEGORY_CHOICES)
+      )
+  )
+
   .addSubcommand((sub) =>
     sub
       .setName("enable")
@@ -45,6 +71,7 @@ export const data = new SlashCommandBuilder()
           .addChoices(...CATEGORY_CHOICES)
       )
   )
+
   .addSubcommand((sub) =>
     sub
       .setName("disable")
@@ -57,22 +84,23 @@ export const data = new SlashCommandBuilder()
           .addChoices(...CATEGORY_CHOICES)
       )
   )
+
   .addSubcommand((sub) =>
-    sub
-      .setName("enableall")
-      .setDescription("Enable all log categories at once")
+    sub.setName("enableall").setDescription("Enable all log categories at once")
   )
+
   .addSubcommand((sub) =>
-    sub
-      .setName("disableall")
-      .setDescription("Disable all log categories at once")
+    sub.setName("disableall").setDescription("Disable all log categories at once")
   );
 
 export async function execute(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   if (!interaction.guildId) {
-    await interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
+    await interaction.reply({
+      content: "This command can only be used in a server.",
+      ephemeral: true,
+    });
     return;
   }
 
@@ -80,24 +108,17 @@ export async function execute(
   const guildId = interaction.guildId;
 
   switch (sub) {
-    case "status": {
+    case "status":
       await handleStatus(interaction, guildId);
       break;
-    }
 
-    case "setchannel": {
-      const channel = interaction.options.getChannel("channel", true);
-      const config = securityManager.getConfig(guildId);
-      await securityManager.updateConfig(guildId, {
-        logChannelId: channel.id,
-        logging: { ...config.logging, channelId: channel.id },
-      });
-      await interaction.reply({
-        embeds: [card(`📋 Log channel set to <#${channel.id}>.\nAll enabled categories will be sent there.`, 0x57f287)],
-        ephemeral: true,
-      });
+    case "setchannel":
+      await handleSetChannel(interaction, guildId);
       break;
-    }
+
+    case "clearchannel":
+      await handleClearChannel(interaction, guildId);
+      break;
 
     case "enable": {
       const category = interaction.options.getString("category", true) as LogCategory;
@@ -119,25 +140,25 @@ export async function execute(
       break;
     }
 
-    case "enableall": {
+    case "enableall":
       await setAllCategories(guildId, true);
       await interaction.reply({
         embeds: [card("✅ All log categories enabled.", 0x57f287)],
         ephemeral: true,
       });
       break;
-    }
 
-    case "disableall": {
+    case "disableall":
       await setAllCategories(guildId, false);
       await interaction.reply({
         embeds: [card("🔴 All log categories disabled.", 0xed4245)],
         ephemeral: true,
       });
       break;
-    }
   }
 }
+
+// ─── Subcommand handlers ────────────────────────────────────────────────────
 
 async function handleStatus(
   interaction: ChatInputCommandInteraction,
@@ -146,41 +167,147 @@ async function handleStatus(
   const config = securityManager.getConfig(guildId);
   const { logging } = config;
 
-  const channelId = logging.channelId ?? config.logChannelId;
-  const categoryFields = ALL_CATEGORIES.map((c) => ({
-    name: LOG_CATEGORY_LABELS[c],
-    value: logging.categories[c] ? "🟢 On" : "🔴 Off",
-    inline: true,
-  }));
+  const globalChannelId = logging.channelId ?? config.logChannelId;
+
+  const categoryFields = ALL_CATEGORIES.map((c) => {
+    const perCategoryId = logging.channelIds?.[c];
+    const effectiveId = perCategoryId ?? globalChannelId;
+    const statusEmoji = logging.categories[c] ? "🟢" : "🔴";
+    const channelText = effectiveId
+      ? perCategoryId
+        ? `<#${perCategoryId}> *(custom)*`
+        : `<#${effectiveId}> *(global)*`
+      : "— not set —";
+
+    return {
+      name: `${statusEmoji} ${LOG_CATEGORY_LABELS[c]}`,
+      value: channelText,
+      inline: true,
+    };
+  });
 
   const embed = new EmbedBuilder()
     .setTitle("📋 Logging Configuration")
     .setColor(0x5865f2)
     .addFields(
       {
-        name: "Log Channel",
-        value: channelId ? `<#${channelId}>` : "Not set — use `/logging setchannel`",
+        name: "Global Default Channel",
+        value: globalChannelId
+          ? `<#${globalChannelId}>`
+          : "Not set — use `/logging setchannel #channel`",
         inline: false,
       },
-      { name: "\u200b", value: "**Categories**", inline: false },
+      { name: "\u200b", value: "**Categories** — 🟢 On / 🔴 Off | channel (source)", inline: false },
       ...categoryFields
     )
+    .setFooter({ text: "Use /logging setchannel #channel [category] to set per-category channels" })
     .setTimestamp();
 
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
-async function toggleCategory(guildId: string, category: LogCategory, enabled: boolean): Promise<void> {
+async function handleSetChannel(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const channel = interaction.options.getChannel("channel", true);
+  const category = interaction.options.getString("category") as LogCategory | null;
+  const config = securityManager.getConfig(guildId);
+
+  if (category) {
+    // Per-category channel
+    const updatedChannelIds = {
+      ...config.logging.channelIds,
+      [category]: channel.id,
+    };
+    await securityManager.updateConfig(guildId, {
+      logging: { ...config.logging, channelIds: updatedChannelIds },
+    });
+    await interaction.reply({
+      embeds: [
+        card(
+          `📋 **${LOG_CATEGORY_LABELS[category]}** logs will now go to <#${channel.id}>.`,
+          0x57f287
+        ),
+      ],
+      ephemeral: true,
+    });
+  } else {
+    // Global default channel
+    await securityManager.updateConfig(guildId, {
+      logChannelId: channel.id,
+      logging: { ...config.logging, channelId: channel.id },
+    });
+    await interaction.reply({
+      embeds: [
+        card(
+          `📋 Global log channel set to <#${channel.id}>.\nAll enabled categories without a specific channel will use this.`,
+          0x57f287
+        ),
+      ],
+      ephemeral: true,
+    });
+  }
+}
+
+async function handleClearChannel(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const category = interaction.options.getString("category") as LogCategory | null;
+  const config = securityManager.getConfig(guildId);
+
+  if (category) {
+    const updatedChannelIds = { ...config.logging.channelIds };
+    delete updatedChannelIds[category];
+    await securityManager.updateConfig(guildId, {
+      logging: { ...config.logging, channelIds: updatedChannelIds },
+    });
+    await interaction.reply({
+      embeds: [
+        card(
+          `🗑️ **${LOG_CATEGORY_LABELS[category]}** channel override removed. It will now fall back to the global channel.`,
+          0xe67e22
+        ),
+      ],
+      ephemeral: true,
+    });
+  } else {
+    await securityManager.updateConfig(guildId, {
+      logChannelId: null,
+      logging: { ...config.logging, channelId: null },
+    });
+    await interaction.reply({
+      embeds: [card("🗑️ Global log channel cleared.", 0xe67e22)],
+      ephemeral: true,
+    });
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+async function toggleCategory(
+  guildId: string,
+  category: LogCategory,
+  enabled: boolean
+): Promise<void> {
   const config = securityManager.getConfig(guildId);
   await securityManager.updateConfig(guildId, {
-    logging: { ...config.logging, categories: { ...config.logging.categories, [category]: enabled } },
+    logging: {
+      ...config.logging,
+      categories: { ...config.logging.categories, [category]: enabled },
+    },
   });
 }
 
 async function setAllCategories(guildId: string, enabled: boolean): Promise<void> {
   const config = securityManager.getConfig(guildId);
-  const categories = Object.fromEntries(ALL_CATEGORIES.map((c) => [c, enabled])) as Record<LogCategory, boolean>;
-  await securityManager.updateConfig(guildId, { logging: { ...config.logging, categories } });
+  const categories = Object.fromEntries(
+    ALL_CATEGORIES.map((c) => [c, enabled])
+  ) as Record<LogCategory, boolean>;
+  await securityManager.updateConfig(guildId, {
+    logging: { ...config.logging, categories },
+  });
 }
 
 function card(description: string, color: number): EmbedBuilder {
