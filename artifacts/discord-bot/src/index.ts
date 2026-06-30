@@ -23,9 +23,6 @@ async function loginWithFallback(
   wantMessageContent: boolean,
   wantGuildMembers: boolean
 ): Promise<{ client: Client; messageContentGranted: boolean; guildMembersGranted: boolean }> {
-  let messageContentGranted = wantMessageContent;
-  let guildMembersGranted = wantGuildMembers;
-
   function buildIntents(mc: boolean, gm: boolean): GatewayIntentBits[] {
     return [
       GatewayIntentBits.Guilds,
@@ -36,35 +33,66 @@ async function loginWithFallback(
     ];
   }
 
-  {
-    const intents = buildIntents(messageContentGranted, guildMembersGranted);
+  async function tryLogin(
+    mc: boolean,
+    gm: boolean
+  ): Promise<Client | null> {
+    const intents = buildIntents(mc, gm);
     logger.info(
-      `[LOGIN] Attempting login: MessageContent=${messageContentGranted} GuildMembers=${guildMembersGranted} ` +
+      `[LOGIN] Attempting login: MessageContent=${mc} GuildMembers=${gm} ` +
         `bitmask=${intents.reduce((a, b) => a | b, 0)}`
     );
     const client = new Client({ intents });
     try {
       await client.login(token);
-      logger.info("[LOGIN] ✓ Login succeeded with all requested intents");
-      return { client, messageContentGranted, guildMembersGranted };
+      return client;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("disallowed intents")) throw err;
-      logger.error(`[LOGIN] ✗ Discord rejected intent(s): "${msg}". Retrying without privileged intents.`);
+      logger.warn(`[LOGIN] ✗ Discord rejected intent(s) for MC=${mc} GM=${gm}: "${msg}"`);
       await client.destroy();
+      return null;
     }
   }
 
-  messageContentGranted = false;
-  guildMembersGranted = false;
-  {
-    const intents = buildIntents(false, false);
-    logger.warn("[LOGIN] Falling back to base intents only. Anti-Link and Anti-Spam content detection will NOT work.");
-    const client = new Client({ intents });
-    await client.login(token);
-    logger.warn("[LOGIN] ✓ Degraded login succeeded.");
-    return { client, messageContentGranted, guildMembersGranted };
+  // Step 1: try both privileged intents together
+  if (wantMessageContent || wantGuildMembers) {
+    const client = await tryLogin(wantMessageContent, wantGuildMembers);
+    if (client) {
+      logger.info("[LOGIN] ✓ Login succeeded with all requested intents");
+      return { client, messageContentGranted: wantMessageContent, guildMembersGranted: wantGuildMembers };
+    }
   }
+
+  // Step 2: try GuildMembers alone (member join/leave/update events)
+  if (wantGuildMembers) {
+    const client = await tryLogin(false, true);
+    if (client) {
+      logger.warn("[LOGIN] ✓ Login succeeded with GuildMembers only (MessageContent was rejected — Anti-Link URL detection will NOT work).");
+      return { client, messageContentGranted: false, guildMembersGranted: true };
+    }
+  }
+
+  // Step 3: try MessageContent alone (anti-link / anti-spam content scanning)
+  if (wantMessageContent) {
+    const client = await tryLogin(true, false);
+    if (client) {
+      logger.warn("[LOGIN] ✓ Login succeeded with MessageContent only (GuildMembers was rejected — member join/leave/role events will NOT fire).");
+      return { client, messageContentGranted: true, guildMembersGranted: false };
+    }
+  }
+
+  // Step 4: base intents only — fully degraded
+  logger.error(
+    "[LOGIN] All privileged intent combinations rejected. Falling back to base intents only.\n" +
+    "  Member join/leave/role events and Anti-Link/Anti-Spam content detection will NOT work.\n" +
+    "  Enable Server Members Intent and/or Message Content Intent in the Discord Developer Portal."
+  );
+  const intents = buildIntents(false, false);
+  const client = new Client({ intents });
+  await client.login(token);
+  logger.warn("[LOGIN] ✓ Degraded login succeeded (base intents only).");
+  return { client, messageContentGranted: false, guildMembersGranted: false };
 }
 
 async function loadCommands(): Promise<void> {
