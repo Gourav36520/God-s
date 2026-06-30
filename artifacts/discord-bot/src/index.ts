@@ -38,11 +38,20 @@ async function loginWithFallback(
     gm: boolean
   ): Promise<Client | null> {
     const intents = buildIntents(mc, gm);
-    logger.info(
-      `[LOGIN] Attempting login: MessageContent=${mc} GuildMembers=${gm} ` +
-        `bitmask=${intents.reduce((a, b) => a | b, 0)}`
-    );
     const client = new Client({ intents });
+
+    // Confirm the ACTUAL bitfield discord.js constructed from the intent array
+    const actualBitfield = (client.options.intents as IntentsBitField).bitfield;
+    const gmBit = GatewayIntentBits.GuildMembers; // 2
+    const mcBit = GatewayIntentBits.MessageContent; // 32768
+    logger.info(
+      `[LOGIN] Attempting login: MC=${mc} GM=${gm} | ` +
+        `computed=${intents.reduce((a, b) => a | b, 0)} ` +
+        `actual-djs-bitfield=${actualBitfield} ` +
+        `GM-bit-set=${(actualBitfield & gmBit) !== 0} ` +
+        `MC-bit-set=${(actualBitfield & mcBit) !== 0}`
+    );
+
     try {
       await client.login(token);
       return client;
@@ -51,6 +60,8 @@ async function loginWithFallback(
       if (!msg.includes("disallowed intents")) throw err;
       logger.warn(`[LOGIN] ✗ Discord rejected intent(s) for MC=${mc} GM=${gm}: "${msg}"`);
       await client.destroy();
+      // Brief pause so Discord's gateway has time to clean up the session
+      await new Promise<void>((r) => setTimeout(r, 1_000));
       return null;
     }
   }
@@ -203,6 +214,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Decode the Application ID from the token (first segment is base64-encoded app ID).
+  // This is NOT a secret — the app ID is the same as the Client ID shown in the portal.
+  try {
+    const appId = Buffer.from(token.split(".")[0], "base64").toString("utf8");
+    logger.info(`[STARTUP] Bot Application ID: ${appId} — verify this matches your Developer Portal application`);
+  } catch {
+    logger.warn("[STARTUP] Could not decode Application ID from token");
+  }
+
   const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
   const wantGuildMembers = envBool("INTENT_GUILD_MEMBERS");
 
@@ -214,7 +234,7 @@ async function main(): Promise<void> {
 
   await loadCommands();
 
-  const { client, messageContentGranted } = await loginWithFallback(
+  const { client, messageContentGranted, guildMembersGranted } = await loginWithFallback(
     token,
     wantMessageContent,
     wantGuildMembers
@@ -222,22 +242,38 @@ async function main(): Promise<void> {
 
   const grantedBitfield = (client.options.intents as IntentsBitField).bitfield;
   const mcActuallyActive = (grantedBitfield & GatewayIntentBits.MessageContent) !== 0;
+  const gmActuallyActive = (grantedBitfield & GatewayIntentBits.GuildMembers) !== 0;
 
   logger.info(
-    `[INTENT DIAGNOSTIC] Post-login: bitfield=${grantedBitfield} ` +
+    `[INTENT DIAGNOSTIC] Post-login: bitfield=${grantedBitfield} | ` +
+      `GuildMembers=${gmActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"} | ` +
       `MessageContent=${mcActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"}`
   );
+
+  if (wantGuildMembers && !gmActuallyActive) {
+    logger.error(
+      "═══════════════════════════════════════════════════════════════\n" +
+        "  PORTAL ACTION REQUIRED — GuildMembers intent was REJECTED\n" +
+        "  Member join/leave/role/nickname events will NOT be logged.\n" +
+        "  1. Go to: https://discord.com/developers/applications\n" +
+        "  2. Select your application → Click 'Bot'\n" +
+        "  3. Scroll to 'Privileged Gateway Intents'\n" +
+        "  4. Toggle 'Server Members Intent' → ON and click 'Save Changes'\n" +
+        "  5. Restart this bot\n" +
+        "═══════════════════════════════════════════════════════════════"
+    );
+  }
 
   if (wantMessageContent && !mcActuallyActive) {
     logger.error(
       "═══════════════════════════════════════════════════════════════\n" +
         "  PORTAL ACTION REQUIRED — MessageContent intent was REJECTED\n" +
+        "  Anti-Link URL detection will NOT work.\n" +
         "  1. Go to: https://discord.com/developers/applications\n" +
         "  2. Select your application → Click 'Bot'\n" +
         "  3. Scroll to 'Privileged Gateway Intents'\n" +
-        "  4. Toggle 'Message Content Intent' → ON\n" +
-        "  5. Click 'Save Changes' then restart this bot\n" +
-        "  Anti-Link will NOT detect URLs until this is done.\n" +
+        "  4. Toggle 'Message Content Intent' → ON and click 'Save Changes'\n" +
+        "  5. Restart this bot\n" +
         "═══════════════════════════════════════════════════════════════"
     );
   }
