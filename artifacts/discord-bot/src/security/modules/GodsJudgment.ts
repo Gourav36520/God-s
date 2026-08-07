@@ -341,7 +341,7 @@ export class GodsJudgment extends BaseSecurityModule {
       if (!cfg.enabled || !cfg.judgmentRoleId) return;
 
       const record = cfg.activeJudgments[message.author.id];
-      if (!record) return;
+      if (!record || !message.member?.roles.cache.has(cfg.judgmentRoleId)) return;
 
       // Judged user is sending a message — if it's in the judgment channel, that's fine
       if (message.channelId === cfg.judgmentChannelId) return;
