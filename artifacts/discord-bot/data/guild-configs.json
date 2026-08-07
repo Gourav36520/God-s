@@ -61,6 +61,9 @@
         "security": true
       }
     },
-    "updatedAt": "2026-07-10T07:26:21.535Z"
+    "updatedAt": "2026-08-07T08:56:20.699Z",
+    "heatEngine": {
+      "enabled": true
+    }
   }
 }
