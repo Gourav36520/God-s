@@ -10,11 +10,13 @@ import type {
 } from "./types.js";
 import { logger } from "../lib/logger.js";
 import type { BaseSecurityModule } from "./BaseSecurityModule.js";
+import { HeatEngine } from "./heat/HeatEngine.js";
 
 export class SecurityManager {
   private readonly store: GuildConfigStore;
   private client: Client | null = null;
   private readonly modules = new Map<ModuleKey, BaseSecurityModule>();
+  private readonly heatEngine = new HeatEngine();
 
   constructor() {
     this.store = new GuildConfigStore();
@@ -23,7 +25,12 @@ export class SecurityManager {
   async init(client: Client): Promise<void> {
     this.client = client;
     await this.store.init();
+    await this.heatEngine.init();
     logger.info("SecurityManager: initialized");
+  }
+
+  getHeatEngine(): HeatEngine {
+    return this.heatEngine;
   }
 
   registerModule(module: BaseSecurityModule): void {

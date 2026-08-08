@@ -114,6 +114,7 @@ async function loadCommands(): Promise<void> {
   const security = await import("./commands/security.js");
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
+  const heat = await import("./commands/heat.js");
 
   commands.set(ping.data.name, { data: ping.data, execute: ping.execute });
   commands.set(help.data.name, { data: help.data, execute: help.execute });
@@ -121,6 +122,7 @@ async function loadCommands(): Promise<void> {
   commands.set(security.data.name, { data: security.data, execute: security.execute });
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
   commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
+  commands.set(heat.data.name, { data: heat.data, execute: heat.execute });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
