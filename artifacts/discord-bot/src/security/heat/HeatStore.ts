@@ -2,6 +2,7 @@ import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { logger } from "../../lib/logger.js";
+import type { HeatViolationType } from "./SeverityPolicy.js";
 
 export interface HeatRecord {
   guildId: string;
@@ -9,6 +10,10 @@ export interface HeatRecord {
   heat: number;
   events: number;
   lastReason: string | null;
+  lastViolationType: HeatViolationType | null;
+  escalationCount: number;
+  escalationWarningIssued: boolean;
+  lastEscalationAt: string | null;
   updatedAt: string;
 }
 
@@ -16,6 +21,7 @@ type HeatData = Record<string, HeatRecord>;
 
 const DATA_DIR = join(process.cwd(), "data");
 const HEAT_FILE = join(DATA_DIR, "heat.json");
+const INITIAL_TIMESTAMP = new Date(0).toISOString();
 
 function key(guildId: string, userId: string): string {
   return `${guildId}:${userId}`;
@@ -37,7 +43,7 @@ export class HeatStore {
       const raw = await readFile(HEAT_FILE, "utf-8");
       const data = JSON.parse(raw) as HeatData;
       for (const [recordKey, record] of Object.entries(data)) {
-        this.records.set(recordKey, record);
+        this.records.set(recordKey, this.normalize(record));
       }
       logger.info(`HeatStore: loaded ${this.records.size} heat record(s)`);
     }
@@ -54,7 +60,11 @@ export class HeatStore {
         heat: 0,
         events: 0,
         lastReason: null,
-        updatedAt: new Date(0).toISOString(),
+        lastViolationType: null,
+        escalationCount: 0,
+        escalationWarningIssued: false,
+        lastEscalationAt: null,
+        updatedAt: INITIAL_TIMESTAMP,
       }
     );
   }
@@ -65,6 +75,7 @@ export class HeatStore {
       ...record,
       heat: Math.max(0, Math.round(record.heat)),
       events: Math.max(0, Math.round(record.events)),
+      escalationCount: Math.max(0, Math.round(record.escalationCount)),
       updatedAt: new Date().toISOString(),
     };
     this.records.set(key(record.guildId, record.userId), normalized);
@@ -76,7 +87,8 @@ export class HeatStore {
     guildId: string,
     userId: string,
     amount: number,
-    reason: string | null
+    reason: string | null,
+    violationType: HeatViolationType | null = null
   ): Promise<HeatRecord> {
     const current = this.get(guildId, userId);
     return this.save({
@@ -84,6 +96,7 @@ export class HeatStore {
       heat: current.heat + amount,
       events: current.events + 1,
       lastReason: reason,
+      lastViolationType: violationType ?? current.lastViolationType,
     });
   }
 
@@ -116,6 +129,19 @@ export class HeatStore {
       data[recordKey] = record;
     }
     await writeFile(HEAT_FILE, JSON.stringify(data, null, 2), "utf-8");
+  }
+
+  private normalize(record: HeatRecord): HeatRecord {
+    return {
+      ...record,
+      heat: Math.max(0, Math.round(record.heat ?? 0)),
+      events: Math.max(0, Math.round(record.events ?? 0)),
+      lastViolationType: record.lastViolationType ?? null,
+      escalationCount: Math.max(0, Math.round(record.escalationCount ?? 0)),
+      escalationWarningIssued: record.escalationWarningIssued ?? false,
+      lastEscalationAt: record.lastEscalationAt ?? null,
+      updatedAt: record.updatedAt ?? INITIAL_TIMESTAMP,
+    };
   }
 
   private assertReady(): void {

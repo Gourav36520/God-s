@@ -7,7 +7,13 @@ import {
   PunishmentPolicyResolver,
   type PunishmentPolicy,
 } from "./PunishmentPolicyResolver.js";
-import { SeverityPolicy, type HeatSeverity } from "./SeverityPolicy.js";
+import {
+  HEAT_VALUES,
+  SeverityPolicy,
+  type HeatSeverity,
+  type HeatViolationType,
+} from "./SeverityPolicy.js";
+import type { JudgmentExecutor } from "./PunishmentExecutor.js";
 
 export interface HeatResult {
   record: HeatRecord;
@@ -16,6 +22,8 @@ export interface HeatResult {
 }
 
 export class HeatEngine {
+  private exemptionChecker: (member: GuildMember) => boolean = () => false;
+
   constructor(
     private readonly store = new HeatStore(),
     private readonly decay = new HeatDecayService(),
@@ -29,41 +37,103 @@ export class HeatEngine {
     logger.info("HeatEngine: initialized");
   }
 
+  setExemptionChecker(checker: (member: GuildMember) => boolean): void {
+    this.exemptionChecker = checker;
+  }
+
+  setJudgmentExecutor(executor: JudgmentExecutor): void {
+    this.punishmentExecutor.setJudgmentExecutor(executor);
+  }
+
   async view(guildId: string, userId: string): Promise<HeatResult> {
     const current = this.store.get(guildId, userId);
-    const record = this.decay.apply(current);
-    if (record.heat !== current.heat) {
+    let record = this.decay.apply(current);
+    const escalationExpired =
+      record.lastEscalationAt !== null &&
+      Date.now() - new Date(record.lastEscalationAt).getTime() >=
+        24 * 60 * 60 * 1_000;
+    const warningCanBeReissued =
+      record.escalationWarningIssued && record.heat < 80;
+
+    if (escalationExpired) {
+      record = {
+        ...record,
+        escalationCount: 0,
+        escalationWarningIssued: false,
+        lastEscalationAt: null,
+      };
+    } else if (warningCanBeReissued) {
+      record = { ...record, escalationWarningIssued: false };
+    }
+
+    if (
+      record.heat !== current.heat ||
+      record.escalationCount !== current.escalationCount ||
+      record.escalationWarningIssued !== current.escalationWarningIssued ||
+      record.lastEscalationAt !== current.lastEscalationAt
+    ) {
       await this.store.save(record);
     }
-    return this.result(record);
+    return this.result(record, { punishment: "none" });
   }
 
   async add(
     member: GuildMember,
     amount: number,
     reason: string | null,
-    applyPunishment = true
+    applyPunishment = true,
+    violationType: HeatViolationType | null = null
   ): Promise<HeatResult> {
+    if (this.exemptionChecker(member)) {
+      logger.info(
+        `HeatEngine: skipped exempt member ${member.user.tag} (${member.id})`
+      );
+      return this.view(member.guild.id, member.id);
+    }
+
     const current = await this.view(member.guild.id, member.id);
     const record = await this.store.add(
       member.guild.id,
       member.id,
       amount,
-      reason
+      reason,
+      violationType
     );
-    const result = this.result(record);
-    if (applyPunishment && result.punishment.punishment !== "none") {
+    const punishment = this.policyResolver.resolve(
+      record.heat,
+      record.escalationCount,
+      record.escalationWarningIssued
+    );
+
+    if (applyPunishment && punishment.punishment !== "none") {
       await this.punishmentExecutor.execute(
         member,
-        result.punishment,
+        punishment,
         reason ?? `Heat reached ${record.heat}.`
       );
     }
+
+    const updatedRecord = await this.applyEscalationState(record, punishment);
     logger.info(
       `HeatEngine: added ${amount} heat to ${member.user.tag} — ` +
-        `${current.record.heat} → ${record.heat}`
+        `${current.record.heat} → ${updatedRecord.heat}`
     );
-    return result;
+    return this.result(updatedRecord, punishment);
+  }
+
+  async addViolation(
+    member: GuildMember,
+    violationType: HeatViolationType,
+    reason: string | null,
+    applyPunishment = true
+  ): Promise<HeatResult> {
+    return this.add(
+      member,
+      HEAT_VALUES[violationType],
+      reason,
+      applyPunishment,
+      violationType
+    );
   }
 
   async remove(
@@ -79,12 +149,42 @@ export class HeatEngine {
     return this.result(await this.store.reset(guildId, userId));
   }
 
-  private result(record: HeatRecord): HeatResult {
-    const severity = this.severity.resolve(record.heat);
+  private async applyEscalationState(
+    record: HeatRecord,
+    punishment: PunishmentPolicy
+  ): Promise<HeatRecord> {
+    if (punishment.punishment === "none") return record;
+
+    const now = new Date().toISOString();
+    const next: HeatRecord = {
+      ...record,
+      escalationWarningIssued:
+        punishment.punishment === "warn" &&
+        punishment.advancesEscalation !== true
+          ? true
+          : false,
+      lastEscalationAt: now,
+    };
+
+    if (punishment.advancesEscalation) {
+      next.escalationCount = Math.min(10, record.escalationCount + 1);
+      if (punishment.resetHeatTo !== undefined) {
+        next.heat = punishment.resetHeatTo;
+      }
+    }
+
+    return this.store.save(next);
+  }
+
+  private result(
+    record: HeatRecord,
+    punishment: PunishmentPolicy = { punishment: "none" }
+  ): HeatResult {
+    const severity = this.severity.resolve(record.lastViolationType);
     return {
       record,
       severity,
-      punishment: this.policyResolver.resolve(severity),
+      punishment,
     };
   }
 }

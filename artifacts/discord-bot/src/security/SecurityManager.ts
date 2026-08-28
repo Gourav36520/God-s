@@ -16,10 +16,19 @@ export class SecurityManager {
   private readonly store: GuildConfigStore;
   private client: Client | null = null;
   private readonly modules = new Map<ModuleKey, BaseSecurityModule>();
-  private readonly heatEngine = new HeatEngine();
+  private readonly heatEngine: HeatEngine;
 
   constructor() {
     this.store = new GuildConfigStore();
+    this.heatEngine = new HeatEngine();
+    this.heatEngine.setExemptionChecker((member) => this.isExempt(member));
+    this.heatEngine.setJudgmentExecutor(async (member, reason) => {
+      const judgedBy = this.client?.user?.id ?? "heat-engine";
+      const result = await this.placeInJudgment(member, reason, judgedBy);
+      if (!result.success) {
+        throw new Error(result.reason);
+      }
+    });
   }
 
   async init(client: Client): Promise<void> {

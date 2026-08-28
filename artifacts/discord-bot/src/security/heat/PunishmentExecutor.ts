@@ -1,7 +1,18 @@
 import type { GuildMember } from "discord.js";
 import type { PunishmentPolicy } from "./PunishmentPolicyResolver.js";
 
+export type JudgmentExecutor = (
+  member: GuildMember,
+  reason: string
+) => Promise<void>;
+
 export class PunishmentExecutor {
+  private judgmentExecutor: JudgmentExecutor | null = null;
+
+  setJudgmentExecutor(executor: JudgmentExecutor): void {
+    this.judgmentExecutor = executor;
+  }
+
   async execute(
     member: GuildMember,
     policy: PunishmentPolicy,
@@ -16,8 +27,11 @@ export class PunishmentExecutor {
       case "mute":
         await member.timeout(policy.durationMs ?? 10 * 60 * 1_000, reason);
         return;
-      case "kick":
-        await member.kick(reason);
+      case "judgment":
+        if (!this.judgmentExecutor) {
+          throw new Error("God's Judgment executor is not configured.");
+        }
+        await this.judgmentExecutor(member, reason);
         return;
     }
   }

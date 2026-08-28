@@ -1,6 +1,6 @@
 import type { HeatRecord } from "./HeatStore.js";
 
-const DECAY_INTERVAL_MS = 60 * 60 * 1_000;
+const DECAY_INTERVAL_MS = 60 * 1_000;
 const DECAY_AMOUNT = 1;
 
 export class HeatDecayService {
