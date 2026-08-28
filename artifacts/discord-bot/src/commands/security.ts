@@ -11,6 +11,7 @@ import { logger } from "../lib/logger.js";
 
 const MODULE_LABELS: Record<ModuleKey, string> = {
   antiSpam: "Anti-Spam",
+  antiMention: "Anti-Mention",
   antiLink: "Anti-Link",
   antiInvite: "Anti-Invite",
   antiRaid: "Anti-Raid",

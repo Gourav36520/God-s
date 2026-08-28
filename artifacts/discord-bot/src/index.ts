@@ -11,6 +11,7 @@ import type { Command } from "./lib/registry.js";
 import { GodsJudgment } from "./security/modules/GodsJudgment.js";
 import { AntiSpam } from "./security/modules/AntiSpam.js";
 import { AntiLink } from "./security/modules/AntiLink.js";
+import { AntiMention } from "./security/modules/AntiMention.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
 
 function envBool(key: string): boolean {
@@ -294,6 +295,10 @@ async function main(): Promise<void> {
   const antiLink = new AntiLink(securityManager);
   securityManager.registerModule(antiLink);
   antiLink.register(client);
+
+  const antiMention = new AntiMention(securityManager);
+  securityManager.registerModule(antiMention);
+  antiMention.register(client);
 
   const antiSpam = new AntiSpam(securityManager);
   securityManager.registerModule(antiSpam);

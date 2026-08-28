@@ -18,6 +18,9 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
       bypassRoles: [],
       bypassUsers: [],
     },
+    antiMention: {
+      enabled: true,
+    },
     antiLink: {
       enabled: false,
       allowedDomains: [],

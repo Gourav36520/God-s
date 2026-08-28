@@ -7,10 +7,15 @@ export type AntiSpamAction = "warn" | "timeout" | "judgment";
 export type RaidAction = "kick" | "ban" | "lockdown";
 export type ModuleKey =
   | "antiSpam"
+  | "antiMention"
   | "antiLink"
   | "antiInvite"
   | "antiRaid"
   | "godsJudgment";
+
+export interface AntiMentionConfig {
+  enabled: boolean;
+}
 
 export interface AntiSpamConfig {
   enabled: boolean;
@@ -68,6 +73,7 @@ export interface GuildSecurityConfig {
   exemptRoles: string[];
   exemptChannels: string[];
   antiSpam: AntiSpamConfig;
+  antiMention: AntiMentionConfig;
   antiLink: AntiLinkConfig;
   antiInvite: AntiInviteConfig;
   antiRaid: AntiRaidConfig;

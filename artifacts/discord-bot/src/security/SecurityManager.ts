@@ -236,6 +236,7 @@ export class SecurityManager {
     const config = this.store.get(guildId);
     return {
       antiSpam: config.antiSpam.enabled,
+      antiMention: config.antiMention.enabled,
       antiLink: config.antiLink.enabled,
       antiInvite: config.antiInvite.enabled,
       antiRaid: config.antiRaid.enabled,

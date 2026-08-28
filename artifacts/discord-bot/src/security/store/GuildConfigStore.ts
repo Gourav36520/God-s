@@ -28,6 +28,7 @@ function mergeWithDefaults(
       bypassRoles: stored.antiSpam?.bypassRoles ?? [],
       bypassUsers: stored.antiSpam?.bypassUsers ?? [],
     },
+    antiMention: { ...defaults.antiMention, ...stored.antiMention },
     antiLink: { ...defaults.antiLink, ...stored.antiLink },
     antiInvite: { ...defaults.antiInvite, ...stored.antiInvite },
     antiRaid: { ...defaults.antiRaid, ...stored.antiRaid },
