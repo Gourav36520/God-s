@@ -12,6 +12,9 @@ import { GodsJudgment } from "./security/modules/GodsJudgment.js";
 import { AntiSpam } from "./security/modules/AntiSpam.js";
 import { AntiLink } from "./security/modules/AntiLink.js";
 import { AntiMention } from "./security/modules/AntiMention.js";
+import { CapsDetector } from "./security/modules/CapsDetector.js";
+import { EmojiStickerDetector } from "./security/modules/EmojiStickerDetector.js";
+import { AttachmentDetector } from "./security/modules/AttachmentDetector.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
 
 function envBool(key: string): boolean {
@@ -299,6 +302,15 @@ async function main(): Promise<void> {
   const antiMention = new AntiMention(securityManager);
   securityManager.registerModule(antiMention);
   antiMention.register(client);
+
+  const capsDetector = new CapsDetector(securityManager);
+  capsDetector.register(client);
+
+  const emojiStickerDetector = new EmojiStickerDetector(securityManager);
+  emojiStickerDetector.register(client);
+
+  const attachmentDetector = new AttachmentDetector(securityManager);
+  attachmentDetector.register(client);
 
   const antiSpam = new AntiSpam(securityManager);
   securityManager.registerModule(antiSpam);
