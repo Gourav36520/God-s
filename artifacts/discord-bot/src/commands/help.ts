@@ -26,7 +26,9 @@ export async function execute(
           "`/security status` — View all module states\n" +
           "`/security enable <module>` — Enable a module\n" +
           "`/security disable <module>` — Disable a module\n" +
-          "`/security setlog <channel>` — Set the security log channel",
+          "`/security setlog <channel>` — Set the security log channel\n" +
+          "`/security exempt-add <role>` — Add a Heat Exception Role\n" +
+          "`/security exempt-remove <role>` — Remove a Heat Exception Role",
         inline: false,
       },
       {

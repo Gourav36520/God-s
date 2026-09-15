@@ -61,6 +61,22 @@ export const data = new SlashCommandBuilder()
         opt.setName("channel").setDescription("The log channel").setRequired(true)
       )
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("exempt-add")
+      .setDescription("Add a Heat Exception Role")
+      .addRoleOption((opt) =>
+        opt.setName("role").setDescription("Role exempt from Heat").setRequired(true)
+      )
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("exempt-remove")
+      .setDescription("Remove a Heat Exception Role")
+      .addRoleOption((opt) =>
+        opt.setName("role").setDescription("Role to remove from Heat exceptions").setRequired(true)
+      )
+  )
 
   .addSubcommandGroup((group) =>
     group
@@ -135,8 +151,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       case "config":        return handleAntiSpamConfig(interaction, guildId);
       case "bypass-add":    return handleBypassAdd(interaction, guildId);
       case "bypass-remove": return handleBypassRemove(interaction, guildId);
+      default:              return handleUnknownSecuritySubcommand(interaction);
     }
-    return;
   }
 
   switch (sub) {
@@ -144,6 +160,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     case "enable":  return handleModuleEnable(interaction, guildId);
     case "disable": return handleModuleDisable(interaction, guildId);
     case "setlog":  return handleSetLog(interaction, guildId);
+    case "exempt-add": return handleExemptRoleAdd(interaction, guildId);
+    case "exempt-remove": return handleExemptRoleRemove(interaction, guildId);
+    default: return handleUnknownSecuritySubcommand(interaction);
   }
 }
 
@@ -188,6 +207,53 @@ async function handleSetLog(interaction: ChatInputCommandInteraction, guildId: s
   const channel = interaction.options.getChannel("channel", true);
   await securityManager.updateConfig(guildId, { logChannelId: channel.id });
   await interaction.reply({ embeds: [card(`📋 Security log channel set to <#${channel.id}>.`, 0x57f287)], ephemeral: true });
+}
+
+async function handleUnknownSecuritySubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.reply({
+    content: "That security subcommand is no longer available. Use `/security exempt-add <role>` or `/security exempt-remove <role>` for Heat Exception Roles.",
+    ephemeral: true,
+  });
+}
+
+async function handleExemptRoleAdd(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).exemptRoles;
+
+  if (current.includes(role.id)) {
+    await interaction.editReply({
+      content: `<@&${role.id}> is already a Heat Exception Role.`,
+    });
+    return;
+  }
+
+  await securityManager.updateConfig(guildId, {
+    exemptRoles: [...current, role.id],
+  });
+  await interaction.editReply({
+    embeds: [card(`✅ <@&${role.id}> is now a Heat Exception Role.`, 0x57f287)],
+  });
+}
+
+async function handleExemptRoleRemove(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).exemptRoles;
+
+  if (!current.includes(role.id)) {
+    await interaction.editReply({
+      content: `<@&${role.id}> is not configured as a Heat Exception Role.`,
+    });
+    return;
+  }
+
+  await securityManager.updateConfig(guildId, {
+    exemptRoles: current.filter((roleId) => roleId !== role.id),
+  });
+  await interaction.editReply({
+    embeds: [card(`🔴 <@&${role.id}> is no longer a Heat Exception Role.`, 0xed4245)],
+  });
 }
 
 async function handleAntiSpamEnable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
