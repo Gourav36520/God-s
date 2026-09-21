@@ -89,6 +89,16 @@ export class SecurityManager {
     return member.roles.cache.some((r) => config.exemptRoles.includes(r.id));
   }
 
+  isAntiSpamExempt(member: GuildMember): boolean {
+    const config = this.store.get(member.guild.id);
+    return (
+      config.antiSpam.bypassUsers.includes(member.id) ||
+      member.roles.cache.some((role) =>
+        config.antiSpam.bypassRoles.includes(role.id)
+      )
+    );
+  }
+
   isExemptChannel(channelId: string, guildId: string): boolean {
     const config = this.store.get(guildId);
     return config.exemptChannels.includes(channelId);

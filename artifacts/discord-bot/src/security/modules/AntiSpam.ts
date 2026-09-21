@@ -55,8 +55,10 @@ export class AntiSpam extends BaseSecurityModule {
 
     if (member.id === guild.ownerId) return;
     if (member.permissions.has("Administrator")) return;
-    if (cfg.bypassUsers.includes(member.id)) return;
-    if (cfg.bypassRoles.some((rid) => member.roles.cache.has(rid))) return;
+    if (this.manager.isAntiSpamExempt(member)) {
+      this.clearUserState(guildId, member.id);
+      return;
+    }
     if (this.isExemptChannel(message.channelId, guildId)) return;
 
     const state = this.getOrCreate(guildId, member.id);
@@ -205,6 +207,16 @@ export class AntiSpam extends BaseSecurityModule {
       gMap.set(userId, { timestamps: [], warnings: 0 });
     }
     return gMap.get(userId)!;
+  }
+
+  private clearUserState(guildId: string, userId: string): void {
+    const guildTracker = this.tracker.get(guildId);
+    if (!guildTracker) return;
+
+    guildTracker.delete(userId);
+    if (guildTracker.size === 0) {
+      this.tracker.delete(guildId);
+    }
   }
 
   private prune(): void {

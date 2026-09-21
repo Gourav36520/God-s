@@ -119,16 +119,16 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName("bypass-add")
-          .setDescription("Add a role or user to the Anti-Spam whitelist")
-          .addRoleOption((opt) => opt.setName("role").setDescription("Role to whitelist").setRequired(false))
+          .setDescription("Add an Anti-Spam exception role or user")
+          .addRoleOption((opt) => opt.setName("role").setDescription("Role ignored by Anti-Spam").setRequired(false))
           .addUserOption((opt) => opt.setName("user").setDescription("User to whitelist").setRequired(false))
       )
 
       .addSubcommand((sub) =>
         sub
           .setName("bypass-remove")
-          .setDescription("Remove a role or user from the Anti-Spam whitelist")
-          .addRoleOption((opt) => opt.setName("role").setDescription("Role to remove").setRequired(false))
+          .setDescription("Remove an Anti-Spam exception role or user")
+          .addRoleOption((opt) => opt.setName("role").setDescription("Role to stop ignoring").setRequired(false))
           .addUserOption((opt) => opt.setName("user").setDescription("User to remove").setRequired(false))
       )
   );
@@ -283,7 +283,7 @@ async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, gu
       { name: "Rate Limit", value: `${cfg.maxMessages} messages / ${cfg.timeWindowMs / 1_000}s`, inline: true },
       { name: cfg.action === "warn" ? "Warn → Escalate After" : "Warn Threshold", value: `${cfg.warnThreshold} warnings`, inline: true },
       { name: "Timeout Duration", value: cfg.action === "timeout" ? `${Math.round(cfg.timeoutDurationMs / 60_000)} minutes` : "N/A", inline: true },
-      { name: `Bypass Roles (${cfg.bypassRoles.length})`, value: cfg.bypassRoles.length > 0 ? cfg.bypassRoles.map((r) => `<@&${r}>`).join(", ") : "None", inline: false },
+      { name: `Exception Roles (${cfg.bypassRoles.length})`, value: cfg.bypassRoles.length > 0 ? cfg.bypassRoles.map((r) => `<@&${r}>`).join(", ") : "None", inline: false },
       { name: `Bypass Users (${cfg.bypassUsers.length})`, value: cfg.bypassUsers.length > 0 ? cfg.bypassUsers.map((u) => `<@${u}>`).join(", ") : "None", inline: false }
     )
     .setFooter({ text: "Server owner and Administrators are always exempt." })
