@@ -1,13 +1,30 @@
 import { Client, Events, GuildMember, Message } from "discord.js";
 import { BaseSecurityModule } from "../BaseSecurityModule.js";
 import type { SecurityManager } from "../SecurityManager.js";
-import type { AntiSpamConfig } from "../types.js";
+import type { AntiSpamAction, AntiSpamConfig } from "../types.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
 
+const VIOLATION_RESET_MS = 24 * 60 * 60 * 1_000;
+const HEAT_PER_VIOLATION = 5;
+
+const PUNISHMENT_TABLE: Record<number, { action: AntiSpamAction; timeoutDurationMs?: number }> = {
+  1: { action: "warn" },
+  2: { action: "warn" },
+  3: { action: "timeout", timeoutDurationMs: 10 * 60 * 1_000 },
+  4: { action: "timeout", timeoutDurationMs: 10 * 60 * 1_000 },
+  5: { action: "timeout", timeoutDurationMs: 30 * 60 * 1_000 },
+  6: { action: "timeout", timeoutDurationMs: 30 * 60 * 1_000 },
+  7: { action: "timeout", timeoutDurationMs: 60 * 60 * 1_000 },
+  8: { action: "timeout", timeoutDurationMs: 60 * 60 * 1_000 },
+  9: { action: "timeout", timeoutDurationMs: 6 * 60 * 60 * 1_000 },
+  10: { action: "judgment" },
+};
+
 interface UserState {
   timestamps: number[];
-  warnings: number;
+  violationCount: number;
+  violationWindowStartedAt: number | null;
 }
 
 export class AntiSpam extends BaseSecurityModule {
@@ -73,13 +90,14 @@ export class AntiSpam extends BaseSecurityModule {
 
     const windowSec = cfg.timeWindowMs / 1_000;
     const reason = `Spam detected: ${recentCount} messages in ${windowSec}s (limit: ${cfg.maxMessages})`;
+    const violationCount = this.recordViolation(guildId, member.id, now);
     logger.info(
-      `AntiSpam: TRIGGERED — ${member.user.tag} (${member.id}) sent ${recentCount} messages in ${windowSec}s — guild=${guildId} — action=${cfg.action}`
+      `AntiSpam: TRIGGERED — ${member.user.tag} (${member.id}) sent ${recentCount} messages in ${windowSec}s — guild=${guildId} — violation=${violationCount}`
     );
 
     state.timestamps = [];
 
-    await this.handleSpam(message, member, cfg, reason, client);
+    await this.handleSpam(message, member, cfg, reason, violationCount, client);
   }
 
   private async handleSpam(
@@ -87,51 +105,45 @@ export class AntiSpam extends BaseSecurityModule {
     member: GuildMember,
     cfg: AntiSpamConfig,
     reason: string,
+    violationCount: number,
     client: Client
   ): Promise<void> {
     const guildId = member.guild.id;
     const botId = client.user?.id ?? "system";
+    const punishment = PUNISHMENT_TABLE[Math.min(violationCount, 10)];
 
     await this.deleteMessage(message);
     logger.info(`AntiSpam: deleted message from ${member.user.tag}`);
 
-    switch (cfg.action) {
+    try {
+      await this.manager
+        .getHeatEngine()
+        .add(member, HEAT_PER_VIOLATION, reason, false);
+      logger.info(
+        `AntiSpam: added +${HEAT_PER_VIOLATION} Heat for violation ${violationCount}`
+      );
+    } catch (err) {
+      logger.warn(
+        `AntiSpam: failed to add Heat — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    switch (punishment.action) {
       case "warn": {
-        const state = this.getOrCreate(guildId, member.id);
-        state.warnings += 1;
-
-        const gjCfg = this.manager.getConfig(guildId).godsJudgment;
-        const canEscalate = gjCfg.enabled && !!gjCfg.judgmentRoleId;
-
-        if (state.warnings >= cfg.warnThreshold && canEscalate) {
-          logger.info(
-            `AntiSpam: warning threshold reached (${state.warnings}/${cfg.warnThreshold}) — escalating to God's Judgment`
-          );
-          const result = await this.manager.placeInJudgment(member, reason, botId);
-          if (result.success) {
-            state.warnings = 0;
-            logger.info(`AntiSpam: escalated ${member.user.tag} to God's Judgment`);
-          } else {
-            logger.warn(`AntiSpam: escalation failed — ${result.reason}`);
-          }
-        } else {
-          const warningMsg =
-            state.warnings >= cfg.warnThreshold
-              ? `⚠️ **Final Warning** in **${member.guild.name}**\n> ${reason}\n> Further violations may result in stronger action.`
-              : `⚠️ **Warning ${state.warnings}/${cfg.warnThreshold}** in **${member.guild.name}**\n> ${reason}`;
-
-          await member.send(warningMsg).catch(() =>
-            logger.warn(`AntiSpam: could not DM ${member.user.tag}`)
-          );
-          logger.info(`AntiSpam: warned ${member.user.tag} (${state.warnings}/${cfg.warnThreshold})`);
-        }
+        await member
+          .send(
+            `⚠️ **Anti-Spam Warning ${violationCount}** in **${member.guild.name}**\n> ${reason}`
+          )
+          .catch(() => logger.warn(`AntiSpam: could not DM ${member.user.tag}`));
+        logger.info(`AntiSpam: warned ${member.user.tag} (violation ${violationCount})`);
         break;
       }
 
       case "timeout": {
         try {
-          await member.timeout(cfg.timeoutDurationMs, reason);
-          const durationMin = Math.round(cfg.timeoutDurationMs / 60_000);
+          const durationMs = punishment.timeoutDurationMs!;
+          await member.timeout(durationMs, reason);
+          const durationMin = Math.round(durationMs / 60_000);
           logger.info(`AntiSpam: timed out ${member.user.tag} for ${durationMin} min`);
           await member
             .send(
@@ -147,16 +159,6 @@ export class AntiSpam extends BaseSecurityModule {
       }
 
       case "judgment": {
-        const gjCfg = this.manager.getConfig(guildId).godsJudgment;
-        if (!gjCfg.enabled || !gjCfg.judgmentRoleId) {
-          logger.warn(
-            `AntiSpam: action is "judgment" but God's Judgment is not set up in guild ${guildId}. Falling back to warn.`
-          );
-          await member
-            .send(`⚠️ **Warning** in **${member.guild.name}**\n> ${reason}`)
-            .catch(() => null);
-          break;
-        }
         const result = await this.manager.placeInJudgment(member, reason, botId);
         if (!result.success) {
           logger.warn(`AntiSpam: judgment failed — ${result.reason}`);
@@ -166,18 +168,14 @@ export class AntiSpam extends BaseSecurityModule {
         break;
       }
 
-      default: {
-        logger.warn(`AntiSpam: unknown action "${cfg.action as string}" — message deleted only`);
-      }
     }
 
-    const state = this.getOrCreate(guildId, member.id);
     await loggingService
       .logSecurityTrigger({
         guildId,
         module: "Anti-Spam",
         member,
-        action: cfg.action,
+        action: punishment.action,
         reason,
         extra: [
           {
@@ -185,11 +183,10 @@ export class AntiSpam extends BaseSecurityModule {
             value: `${cfg.maxMessages} msg / ${cfg.timeWindowMs / 1_000}s`,
             inline: true,
           },
-          ...(cfg.action === "warn"
-            ? [{ name: "Warning Count", value: `${state.warnings}/${cfg.warnThreshold}`, inline: true }]
-            : []),
-          ...(cfg.action === "timeout"
-            ? [{ name: "Timeout", value: `${Math.round(cfg.timeoutDurationMs / 60_000)} min`, inline: true }]
+          { name: "Confirmed Violation", value: `${violationCount}`, inline: true },
+          { name: "Heat Added", value: `+${HEAT_PER_VIOLATION}`, inline: true },
+          ...(punishment.action === "timeout"
+            ? [{ name: "Timeout", value: `${Math.round(punishment.timeoutDurationMs! / 60_000)} min`, inline: true }]
             : []),
         ],
       })
@@ -204,9 +201,27 @@ export class AntiSpam extends BaseSecurityModule {
     }
     const gMap = this.tracker.get(guildId)!;
     if (!gMap.has(userId)) {
-      gMap.set(userId, { timestamps: [], warnings: 0 });
+      gMap.set(userId, {
+        timestamps: [],
+        violationCount: 0,
+        violationWindowStartedAt: null,
+      });
     }
     return gMap.get(userId)!;
+  }
+
+  private recordViolation(guildId: string, userId: string, now: number): number {
+    const state = this.getOrCreate(guildId, userId);
+    if (
+      state.violationWindowStartedAt === null ||
+      now - state.violationWindowStartedAt >= VIOLATION_RESET_MS
+    ) {
+      state.violationCount = 0;
+      state.violationWindowStartedAt = now;
+    }
+
+    state.violationCount += 1;
+    return state.violationCount;
   }
 
   private clearUserState(guildId: string, userId: string): void {
@@ -220,11 +235,17 @@ export class AntiSpam extends BaseSecurityModule {
   }
 
   private prune(): void {
-    const cutoff = Date.now() - 60_000;
+    const now = Date.now();
+    const cutoff = now - 60_000;
     for (const [guildId, gMap] of this.tracker) {
       for (const [userId, state] of gMap) {
         state.timestamps = state.timestamps.filter((t) => t > cutoff);
-        if (state.timestamps.length === 0 && state.warnings === 0) {
+        if (
+          state.timestamps.length === 0 &&
+          (state.violationCount === 0 ||
+            state.violationWindowStartedAt === null ||
+            now - state.violationWindowStartedAt >= VIOLATION_RESET_MS)
+        ) {
           gMap.delete(userId);
         }
       }
@@ -234,13 +255,20 @@ export class AntiSpam extends BaseSecurityModule {
     }
   }
 
+  getViolationCount(guildId: string, userId: string): number {
+    return this.tracker.get(guildId)?.get(userId)?.violationCount ?? 0;
+  }
+
   getWarnings(guildId: string, userId: string): number {
-    return this.tracker.get(guildId)?.get(userId)?.warnings ?? 0;
+    return this.getViolationCount(guildId, userId);
   }
 
   resetWarnings(guildId: string, userId: string): void {
     const state = this.tracker.get(guildId)?.get(userId);
-    if (state) state.warnings = 0;
+    if (state) {
+      state.violationCount = 0;
+      state.violationWindowStartedAt = null;
+    }
   }
 
   getTrackedUserCount(guildId: string): number {

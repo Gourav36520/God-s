@@ -23,12 +23,6 @@ const MODULE_CHOICES = (Object.keys(MODULE_LABELS) as ModuleKey[]).map((key) => 
   value: key,
 }));
 
-const ACTION_LABELS: Record<AntiSpamAction, string> = {
-  warn: "⚠️ Warn",
-  timeout: "⏱️ Timeout",
-  judgment: "⚖️ God's Judgment",
-};
-
 export const data = new SlashCommandBuilder()
   .setName("security")
   .setDescription("Manage God's Bot security settings")
@@ -90,29 +84,12 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName("config")
-          .setDescription("Update Anti-Spam thresholds and action")
+          .setDescription("Update the Anti-Spam trigger thresholds")
           .addIntegerOption((opt) =>
             opt.setName("threshold").setDescription("Max messages allowed in the window (default 5)").setMinValue(2).setMaxValue(100).setRequired(false)
           )
           .addIntegerOption((opt) =>
             opt.setName("window").setDescription("Time window in seconds (default 5)").setMinValue(1).setMaxValue(60).setRequired(false)
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName("action")
-              .setDescription("Punishment when spam is detected")
-              .setRequired(false)
-              .addChoices(
-                { name: "⚠️ Warn (DM + escalate on threshold)", value: "warn" },
-                { name: "⏱️ Timeout", value: "timeout" },
-                { name: "⚖️ God's Judgment", value: "judgment" }
-              )
-          )
-          .addIntegerOption((opt) =>
-            opt.setName("timeout-duration").setDescription("Timeout duration in minutes (default 5)").setMinValue(1).setMaxValue(1440).setRequired(false)
-          )
-          .addIntegerOption((opt) =>
-            opt.setName("warn-threshold").setDescription("Warnings before escalating to God's Judgment (default 3)").setMinValue(1).setMaxValue(20).setRequired(false)
           )
       )
 
@@ -130,6 +107,28 @@ export const data = new SlashCommandBuilder()
           .setDescription("Remove an Anti-Spam exception role or user")
           .addRoleOption((opt) => opt.setName("role").setDescription("Role to stop ignoring").setRequired(false))
           .addUserOption((opt) => opt.setName("user").setDescription("User to remove").setRequired(false))
+      )
+  )
+
+  .addSubcommandGroup((group) =>
+    group
+      .setName("antilink")
+      .setDescription("Configure the Anti-Link module")
+      .addSubcommand((sub) =>
+        sub
+          .setName("bypass-add")
+          .setDescription("Add an Anti-Link exception role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role ignored by Anti-Link").setRequired(true)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("bypass-remove")
+          .setDescription("Remove an Anti-Link exception role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role to stop ignoring").setRequired(true)
+          )
       )
   );
 
@@ -152,6 +151,14 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       case "bypass-add":    return handleBypassAdd(interaction, guildId);
       case "bypass-remove": return handleBypassRemove(interaction, guildId);
       default:              return handleUnknownSecuritySubcommand(interaction);
+    }
+  }
+
+  if (group === "antilink") {
+    switch (sub) {
+      case "bypass-add": return handleAntiLinkBypassAdd(interaction, guildId);
+      case "bypass-remove": return handleAntiLinkBypassRemove(interaction, guildId);
+      default: return handleUnknownSecuritySubcommand(interaction);
     }
   }
 
@@ -278,11 +285,10 @@ async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, gu
     .setColor(cfg.enabled ? 0x57f287 : 0xed4245)
     .addFields(
       { name: "Status", value: cfg.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
-      { name: "Action", value: ACTION_LABELS[cfg.action], inline: true },
+      { name: "Punishment", value: "Fixed progression by confirmed violation count", inline: true },
       { name: "Live Tracked Users", value: trackedUsers.toString(), inline: true },
       { name: "Rate Limit", value: `${cfg.maxMessages} messages / ${cfg.timeWindowMs / 1_000}s`, inline: true },
-      { name: cfg.action === "warn" ? "Warn → Escalate After" : "Warn Threshold", value: `${cfg.warnThreshold} warnings`, inline: true },
-      { name: "Timeout Duration", value: cfg.action === "timeout" ? `${Math.round(cfg.timeoutDurationMs / 60_000)} minutes` : "N/A", inline: true },
+      { name: "Punishment Table", value: "1–2 Warn • 3–4 10m • 5–6 30m • 7–8 1h • 9 6h • 10 God's Judgment", inline: false },
       { name: `Exception Roles (${cfg.bypassRoles.length})`, value: cfg.bypassRoles.length > 0 ? cfg.bypassRoles.map((r) => `<@&${r}>`).join(", ") : "None", inline: false },
       { name: `Bypass Users (${cfg.bypassUsers.length})`, value: cfg.bypassUsers.length > 0 ? cfg.bypassUsers.map((u) => `<@${u}>`).join(", ") : "None", inline: false }
     )
@@ -295,11 +301,8 @@ async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, gu
 async function handleAntiSpamConfig(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const threshold = interaction.options.getInteger("threshold");
   const window = interaction.options.getInteger("window");
-  const action = interaction.options.getString("action") as AntiSpamAction | null;
-  const timeoutMin = interaction.options.getInteger("timeout-duration");
-  const warnThreshold = interaction.options.getInteger("warn-threshold");
 
-  if (!threshold && !window && !action && !timeoutMin && !warnThreshold) {
+  if (threshold === null && window === null) {
     await interaction.reply({ content: "Provide at least one option to update.", ephemeral: true });
     return;
   }
@@ -310,9 +313,6 @@ async function handleAntiSpamConfig(interaction: ChatInputCommandInteraction, gu
 
   if (threshold !== null)    { patch.maxMessages = threshold;                 lines.push(`• Rate limit: **${threshold}** messages`); }
   if (window !== null)       { patch.timeWindowMs = window * 1_000;           lines.push(`• Time window: **${window}s**`); }
-  if (action !== null)       { patch.action = action;                         lines.push(`• Action: **${ACTION_LABELS[action]}**`); }
-  if (timeoutMin !== null)   { patch.timeoutDurationMs = timeoutMin * 60_000; lines.push(`• Timeout duration: **${timeoutMin} min**`); }
-  if (warnThreshold !== null){ patch.warnThreshold = warnThreshold;           lines.push(`• Warn threshold: **${warnThreshold}** warnings`); }
 
   await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
 
@@ -390,6 +390,54 @@ async function handleBypassRemove(interaction: ChatInputCommandInteraction, guil
 
   await interaction.reply({
     embeds: [new EmbedBuilder().setTitle("🔴 Bypass List Updated").setColor(0xed4245).setDescription(lines.join("\n")).setTimestamp()],
+    ephemeral: true,
+  });
+}
+
+async function handleAntiLinkBypassAdd(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).antiLink.bypassRoles;
+
+  if (current.includes(role.id)) {
+    await interaction.reply({
+      content: `<@&${role.id}> is already an Anti-Link exception role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "antiLink", {
+    bypassRoles: [...current, role.id],
+  });
+  await interaction.reply({
+    embeds: [card(`✅ <@&${role.id}> is now an Anti-Link exception role.`, 0x57f287)],
+    ephemeral: true,
+  });
+}
+
+async function handleAntiLinkBypassRemove(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).antiLink.bypassRoles;
+
+  if (!current.includes(role.id)) {
+    await interaction.reply({
+      content: `<@&${role.id}> is not configured as an Anti-Link exception role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "antiLink", {
+    bypassRoles: current.filter((roleId) => roleId !== role.id),
+  });
+  await interaction.reply({
+    embeds: [card(`🔴 <@&${role.id}> is no longer an Anti-Link exception role.`, 0xed4245)],
     ephemeral: true,
   });
 }

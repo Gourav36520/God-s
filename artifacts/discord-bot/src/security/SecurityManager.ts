@@ -99,6 +99,13 @@ export class SecurityManager {
     );
   }
 
+  isAntiLinkExempt(member: GuildMember): boolean {
+    const config = this.store.get(member.guild.id);
+    return member.roles.cache.some((role) =>
+      config.antiLink.bypassRoles.includes(role.id)
+    );
+  }
+
   isExemptChannel(channelId: string, guildId: string): boolean {
     const config = this.store.get(guildId);
     return config.exemptChannels.includes(channelId);

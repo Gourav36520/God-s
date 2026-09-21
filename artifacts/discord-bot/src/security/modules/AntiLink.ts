@@ -66,8 +66,8 @@ export class AntiLink extends BaseSecurityModule {
       logger.info(`AntiLink: skipped — ${member.user.tag} is Administrator`);
       return;
     }
-    if (cfg.bypassRoles.some((rid) => member.roles.cache.has(rid))) {
-      logger.info(`AntiLink: skipped — ${member.user.tag} has a whitelisted role`);
+    if (this.manager.isAntiLinkExempt(member)) {
+      logger.info(`AntiLink: skipped — ${member.user.tag} has an Anti-Link exception role`);
       return;
     }
     if (this.isExemptChannel(message.channelId, guildId)) {
