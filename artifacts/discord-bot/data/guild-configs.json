@@ -15,6 +15,9 @@
       "bypassRoles": [],
       "bypassUsers": []
     },
+    "antiMention": {
+      "enabled": true
+    },
     "antiLink": {
       "enabled": true,
       "allowedDomains": [],
@@ -61,7 +64,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-08-07T09:19:54.257Z",
+    "updatedAt": "2026-09-22T07:23:48.471Z",
     "heatEngine": {
       "enabled": true
     }
