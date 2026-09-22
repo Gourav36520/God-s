@@ -12,7 +12,9 @@
       "action": "warn",
       "timeoutDurationMs": 300000,
       "warnThreshold": 3,
-      "bypassRoles": [],
+      "bypassRoles": [
+        "1551140059577716846"
+      ],
       "bypassUsers": []
     },
     "antiMention": {
@@ -64,7 +66,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-09-22T07:23:48.471Z",
+    "updatedAt": "2026-09-22T08:18:36.399Z",
     "heatEngine": {
       "enabled": true
     }

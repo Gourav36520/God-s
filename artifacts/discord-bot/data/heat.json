@@ -2,13 +2,13 @@
   "1519269173937836084:1503035025330012252": {
     "guildId": "1519269173937836084",
     "userId": "1503035025330012252",
-    "heat": 14,
-    "events": 1,
-    "lastReason": "Mention spam detected: 3 mention occurrences in 5s",
+    "heat": 25,
+    "events": 6,
+    "lastReason": "Spam detected: 5 messages in 5s (limit: 5)",
     "lastViolationType": "mentionSpam",
     "escalationCount": 0,
     "escalationWarningIssued": false,
     "lastEscalationAt": null,
-    "updatedAt": "2026-08-28T12:00:48.466Z"
+    "updatedAt": "2026-09-22T08:13:58.443Z"
   }
 }
