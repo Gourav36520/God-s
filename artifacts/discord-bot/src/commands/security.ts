@@ -28,47 +28,52 @@ export const data = new SlashCommandBuilder()
   .setDescription("Manage God's Bot security settings")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 
-  .addSubcommand((sub) =>
-    sub.setName("status").setDescription("Show all module states and global settings")
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("enable")
-      .setDescription("Enable a security module")
-      .addStringOption((opt) =>
-        opt.setName("module").setDescription("Module to enable").setRequired(true).addChoices(...MODULE_CHOICES)
+  .addSubcommandGroup((group) =>
+    group
+      .setName("general")
+      .setDescription("Configure global security settings")
+      .addSubcommand((sub) =>
+        sub.setName("status").setDescription("Show all module states and global settings")
       )
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("disable")
-      .setDescription("Disable a security module")
-      .addStringOption((opt) =>
-        opt.setName("module").setDescription("Module to disable").setRequired(true).addChoices(...MODULE_CHOICES)
+      .addSubcommand((sub) =>
+        sub
+          .setName("enable")
+          .setDescription("Enable a security module")
+          .addStringOption((opt) =>
+            opt.setName("module").setDescription("Module to enable").setRequired(true).addChoices(...MODULE_CHOICES)
+          )
       )
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("setlog")
-      .setDescription("Set the channel where security events are logged")
-      .addChannelOption((opt) =>
-        opt.setName("channel").setDescription("The log channel").setRequired(true)
+      .addSubcommand((sub) =>
+        sub
+          .setName("disable")
+          .setDescription("Disable a security module")
+          .addStringOption((opt) =>
+            opt.setName("module").setDescription("Module to disable").setRequired(true).addChoices(...MODULE_CHOICES)
+          )
       )
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("exempt-add")
-      .setDescription("Add a Heat Exception Role")
-      .addRoleOption((opt) =>
-        opt.setName("role").setDescription("Role exempt from Heat").setRequired(true)
+      .addSubcommand((sub) =>
+        sub
+          .setName("setlog")
+          .setDescription("Set the channel where security events are logged")
+          .addChannelOption((opt) =>
+            opt.setName("channel").setDescription("The log channel").setRequired(true)
+          )
       )
-  )
-  .addSubcommand((sub) =>
-    sub
-      .setName("exempt-remove")
-      .setDescription("Remove a Heat Exception Role")
-      .addRoleOption((opt) =>
-        opt.setName("role").setDescription("Role to remove from Heat exceptions").setRequired(true)
+      .addSubcommand((sub) =>
+        sub
+          .setName("exempt-add")
+          .setDescription("Add a Heat Exception Role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role exempt from Heat").setRequired(true)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("exempt-remove")
+          .setDescription("Remove a Heat Exception Role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role to remove from Heat exceptions").setRequired(true)
+          )
       )
   )
 
@@ -162,15 +167,19 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     }
   }
 
-  switch (sub) {
-    case "status":  return handleGlobalStatus(interaction, guildId);
-    case "enable":  return handleModuleEnable(interaction, guildId);
-    case "disable": return handleModuleDisable(interaction, guildId);
-    case "setlog":  return handleSetLog(interaction, guildId);
-    case "exempt-add": return handleExemptRoleAdd(interaction, guildId);
-    case "exempt-remove": return handleExemptRoleRemove(interaction, guildId);
-    default: return handleUnknownSecuritySubcommand(interaction);
+  if (group === "general") {
+    switch (sub) {
+      case "status":  return handleGlobalStatus(interaction, guildId);
+      case "enable":  return handleModuleEnable(interaction, guildId);
+      case "disable": return handleModuleDisable(interaction, guildId);
+      case "setlog":  return handleSetLog(interaction, guildId);
+      case "exempt-add": return handleExemptRoleAdd(interaction, guildId);
+      case "exempt-remove": return handleExemptRoleRemove(interaction, guildId);
+      default: return handleUnknownSecuritySubcommand(interaction);
+    }
   }
+
+  return handleUnknownSecuritySubcommand(interaction);
 }
 
 async function handleGlobalStatus(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {

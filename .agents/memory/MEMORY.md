@@ -1,0 +1,1 @@
+- [Discord command structure](discord-command-structure.md) — root commands cannot mix direct subcommands with subcommand groups.
