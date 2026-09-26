@@ -7,7 +7,7 @@
     "exemptChannels": [],
     "antiSpam": {
       "enabled": true,
-      "maxMessages": 5,
+      "maxMessages": 3,
       "timeWindowMs": 5000,
       "action": "warn",
       "timeoutDurationMs": 300000,
@@ -74,7 +74,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-09-25T08:37:00.175Z",
+    "updatedAt": "2026-09-26T07:49:42.324Z",
     "heatEngine": {
       "enabled": true
     }

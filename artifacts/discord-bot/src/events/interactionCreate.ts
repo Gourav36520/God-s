@@ -3,6 +3,7 @@ import {
   Events,
   Interaction,
 } from "discord.js";
+import { handleHelpInteraction, isHelpComponent } from "../commands/help.js";
 import { commands } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 
@@ -10,6 +11,20 @@ export const name = Events.InteractionCreate;
 export const once = false;
 
 export async function execute(interaction: Interaction): Promise<void> {
+  if (interaction.isButton()) {
+    if (isHelpComponent(interaction.customId)) {
+      await handleHelpInteraction(interaction);
+    }
+    return;
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    if (isHelpComponent(interaction.customId)) {
+      await handleHelpInteraction(interaction);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const cmd = interaction as ChatInputCommandInteraction;
