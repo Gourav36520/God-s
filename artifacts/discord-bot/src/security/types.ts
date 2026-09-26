@@ -11,6 +11,7 @@ export type ModuleKey =
   | "antiLink"
   | "antiInvite"
   | "antiRaid"
+  | "badWord"
   | "godsJudgment";
 
 export interface AntiMentionConfig {
@@ -49,6 +50,11 @@ export interface AntiRaidConfig {
   lockdownDurationMs: number;
 }
 
+export interface BadWordConfig {
+  words: string[];
+  exceptionRoles: string[];
+}
+
 export interface JudgmentRecord {
   userId: string;
   savedRoles: string[];
@@ -77,6 +83,7 @@ export interface GuildSecurityConfig {
   antiLink: AntiLinkConfig;
   antiInvite: AntiInviteConfig;
   antiRaid: AntiRaidConfig;
+  badWord: BadWordConfig;
   godsJudgment: GodsJudgmentConfig;
   logging: LoggingConfig;
   updatedAt: string;

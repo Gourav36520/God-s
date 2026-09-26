@@ -39,6 +39,10 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
       action: "kick",
       lockdownDurationMs: 5 * 60 * 1_000,
     },
+    badWord: {
+      words: [],
+      exceptionRoles: [],
+    },
     godsJudgment: {
       enabled: false,
       logChannelId: null,

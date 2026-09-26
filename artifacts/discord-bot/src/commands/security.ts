@@ -7,6 +7,10 @@ import {
 import type { AntiSpamAction, ModuleKey } from "../security/types.js";
 import { securityManager } from "../lib/registry.js";
 import type { AntiSpam } from "../security/modules/AntiSpam.js";
+import {
+  isValidConfiguredWord,
+  normalizeConfiguredWord,
+} from "../security/modules/BadWordProtection.js";
 import { logger } from "../lib/logger.js";
 
 const MODULE_LABELS: Record<ModuleKey, string> = {
@@ -15,13 +19,13 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   antiLink: "Anti-Link",
   antiInvite: "Anti-Invite",
   antiRaid: "Anti-Raid",
+  badWord: "Bad Word Protection",
   godsJudgment: "God's Judgment",
 };
 
-const MODULE_CHOICES = (Object.keys(MODULE_LABELS) as ModuleKey[]).map((key) => ({
-  name: MODULE_LABELS[key],
-  value: key,
-}));
+const MODULE_CHOICES = (Object.keys(MODULE_LABELS) as ModuleKey[])
+  .filter((key) => key !== "badWord")
+  .map((key) => ({ name: MODULE_LABELS[key], value: key }));
 
 export const data = new SlashCommandBuilder()
   .setName("security")
@@ -135,6 +139,47 @@ export const data = new SlashCommandBuilder()
             opt.setName("role").setDescription("Role to stop ignoring").setRequired(true)
           )
       )
+  )
+
+  .addSubcommandGroup((group) =>
+    group
+      .setName("badword")
+      .setDescription("Configure Bad Word Protection")
+      .addSubcommand((sub) =>
+        sub
+          .setName("add")
+          .setDescription("Add a bad word to the guild list")
+          .addStringOption((opt) =>
+            opt.setName("word").setDescription("Word or phrase to detect").setRequired(true).setMaxLength(100)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("remove")
+          .setDescription("Remove a bad word from the guild list")
+          .addStringOption((opt) =>
+            opt.setName("word").setDescription("Word or phrase to remove").setRequired(true).setMaxLength(100)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub.setName("list").setDescription("Show the configured bad words")
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("exception-add")
+          .setDescription("Add a Bad Word Exception Role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role ignored by Bad Word Protection").setRequired(true)
+          )
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("exception-remove")
+          .setDescription("Remove a Bad Word Exception Role")
+          .addRoleOption((opt) =>
+            opt.setName("role").setDescription("Role to stop ignoring").setRequired(true)
+          )
+      )
   );
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -163,6 +208,17 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     switch (sub) {
       case "bypass-add": return handleAntiLinkBypassAdd(interaction, guildId);
       case "bypass-remove": return handleAntiLinkBypassRemove(interaction, guildId);
+      default: return handleUnknownSecuritySubcommand(interaction);
+    }
+  }
+
+  if (group === "badword") {
+    switch (sub) {
+      case "add": return handleBadWordAdd(interaction, guildId);
+      case "remove": return handleBadWordRemove(interaction, guildId);
+      case "list": return handleBadWordList(interaction, guildId);
+      case "exception-add": return handleBadWordExceptionAdd(interaction, guildId);
+      case "exception-remove": return handleBadWordExceptionRemove(interaction, guildId);
       default: return handleUnknownSecuritySubcommand(interaction);
     }
   }
@@ -447,6 +503,138 @@ async function handleAntiLinkBypassRemove(
   });
   await interaction.reply({
     embeds: [card(`🔴 <@&${role.id}> is no longer an Anti-Link exception role.`, 0xed4245)],
+    ephemeral: true,
+  });
+}
+
+async function handleBadWordAdd(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const word = normalizeConfiguredWord(interaction.options.getString("word", true));
+  if (!word || !isValidConfiguredWord(word)) {
+    await interaction.reply({
+      content: "Provide a bad word or phrase containing at least one letter or number.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const current = securityManager.getConfig(guildId).badWord.words;
+  if (current.includes(word)) {
+    await interaction.reply({
+      content: `\`${word}\` is already configured.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "badWord", {
+    words: [...current, word],
+  });
+  await interaction.reply({
+    embeds: [card(`✅ Added \`${word}\` to Bad Word Protection.`, 0x57f287)],
+    ephemeral: true,
+  });
+}
+
+async function handleBadWordRemove(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const word = normalizeConfiguredWord(interaction.options.getString("word", true));
+  const current = securityManager.getConfig(guildId).badWord.words;
+  if (!current.includes(word)) {
+    await interaction.reply({
+      content: `\`${word}\` is not configured.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "badWord", {
+    words: current.filter((configuredWord) => configuredWord !== word),
+  });
+  await interaction.reply({
+    embeds: [card(`🔴 Removed \`${word}\` from Bad Word Protection.`, 0xed4245)],
+    ephemeral: true,
+  });
+}
+
+async function handleBadWordList(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const config = securityManager.getConfig(guildId).badWord;
+  const words = config.words.length > 0
+    ? config.words.map((word, index) => `${index + 1}. \`${word}\``).join("\n")
+    : "No bad words configured.";
+  const roleList = config.exceptionRoles.length > 0
+    ? config.exceptionRoles.map((roleId) => `<@&${roleId}>`).join(", ")
+    : "None";
+
+  const embed = new EmbedBuilder()
+    .setTitle("Bad Word Protection")
+    .setColor(config.words.length > 0 ? 0x57f287 : 0x99aab5)
+    .addFields(
+      {
+        name: `Configured Words (${config.words.length})`,
+        value: words.slice(0, 1_024),
+        inline: false,
+      },
+      {
+        name: `Exception Roles (${config.exceptionRoles.length})`,
+        value: roleList.slice(0, 1_024),
+        inline: false,
+      }
+    )
+    .setTimestamp();
+
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleBadWordExceptionAdd(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).badWord.exceptionRoles;
+  if (current.includes(role.id)) {
+    await interaction.reply({
+      content: `<@&${role.id}> is already a Bad Word Exception Role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "badWord", {
+    exceptionRoles: [...current, role.id],
+  });
+  await interaction.reply({
+    embeds: [card(`✅ <@&${role.id}> is now a Bad Word Exception Role.`, 0x57f287)],
+    ephemeral: true,
+  });
+}
+
+async function handleBadWordExceptionRemove(
+  interaction: ChatInputCommandInteraction,
+  guildId: string
+): Promise<void> {
+  const role = interaction.options.getRole("role", true);
+  const current = securityManager.getConfig(guildId).badWord.exceptionRoles;
+  if (!current.includes(role.id)) {
+    await interaction.reply({
+      content: `<@&${role.id}> is not configured as a Bad Word Exception Role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await securityManager.updateModuleConfig(guildId, "badWord", {
+    exceptionRoles: current.filter((roleId) => roleId !== role.id),
+  });
+  await interaction.reply({
+    embeds: [card(`🔴 <@&${role.id}> is no longer a Bad Word Exception Role.`, 0xed4245)],
     ephemeral: true,
   });
 }

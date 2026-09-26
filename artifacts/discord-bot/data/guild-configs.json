@@ -38,6 +38,14 @@
       "action": "kick",
       "lockdownDurationMs": 300000
     },
+    "badWord": {
+      "words": [
+        "madarchod"
+      ],
+      "exceptionRoles": [
+        "1540020282088099840"
+      ]
+    },
     "godsJudgment": {
       "enabled": true,
       "logChannelId": null,
@@ -66,7 +74,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-09-22T08:18:36.399Z",
+    "updatedAt": "2026-09-25T08:37:00.175Z",
     "heatEngine": {
       "enabled": true
     }

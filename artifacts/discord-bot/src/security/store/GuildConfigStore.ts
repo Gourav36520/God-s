@@ -32,6 +32,12 @@ function mergeWithDefaults(
     antiLink: { ...defaults.antiLink, ...stored.antiLink },
     antiInvite: { ...defaults.antiInvite, ...stored.antiInvite },
     antiRaid: { ...defaults.antiRaid, ...stored.antiRaid },
+    badWord: {
+      ...defaults.badWord,
+      ...stored.badWord,
+      words: stored.badWord?.words ?? [],
+      exceptionRoles: stored.badWord?.exceptionRoles ?? [],
+    },
     godsJudgment: { ...defaults.godsJudgment, ...stored.godsJudgment },
     logging: {
       ...defaults.logging,

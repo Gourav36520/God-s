@@ -106,6 +106,13 @@ export class SecurityManager {
     );
   }
 
+  isBadWordExempt(member: GuildMember): boolean {
+    const config = this.store.get(member.guild.id);
+    return member.roles.cache.some((role) =>
+      config.badWord.exceptionRoles.includes(role.id)
+    );
+  }
+
   isExemptChannel(channelId: string, guildId: string): boolean {
     const config = this.store.get(guildId);
     return config.exemptChannels.includes(channelId);
@@ -257,6 +264,7 @@ export class SecurityManager {
       antiLink: config.antiLink.enabled,
       antiInvite: config.antiInvite.enabled,
       antiRaid: config.antiRaid.enabled,
+      badWord: config.badWord.words.length > 0,
       godsJudgment: config.godsJudgment.enabled,
     };
   }

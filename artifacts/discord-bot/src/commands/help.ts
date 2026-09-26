@@ -28,7 +28,12 @@ export async function execute(
           "`/security disable <module>` — Disable a module\n" +
           "`/security setlog <channel>` — Set the security log channel\n" +
           "`/security exempt-add <role>` — Add a Heat Exception Role\n" +
-          "`/security exempt-remove <role>` — Remove a Heat Exception Role",
+          "`/security exempt-remove <role>` — Remove a Heat Exception Role\n" +
+           "`/security badword add <word>` — Add a blocked word\n" +
+           "`/security badword remove <word>` — Remove a blocked word\n" +
+           "`/security badword list` — View blocked words and exception roles\n" +
+           "`/security badword exception-add <role>` — Add a Bad Word Exception Role\n" +
+           "`/security badword exception-remove <role>` — Remove a Bad Word Exception Role",
         inline: false,
       },
       {

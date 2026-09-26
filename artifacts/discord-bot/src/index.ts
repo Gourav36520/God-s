@@ -15,6 +15,7 @@ import { AntiMention } from "./security/modules/AntiMention.js";
 import { CapsDetector } from "./security/modules/CapsDetector.js";
 import { EmojiStickerDetector } from "./security/modules/EmojiStickerDetector.js";
 import { AttachmentDetector } from "./security/modules/AttachmentDetector.js";
+import { BadWordProtection } from "./security/modules/BadWordProtection.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
 
 function envBool(key: string): boolean {
@@ -311,6 +312,10 @@ async function main(): Promise<void> {
 
   const attachmentDetector = new AttachmentDetector(securityManager);
   attachmentDetector.register(client);
+
+  const badWordProtection = new BadWordProtection(securityManager);
+  securityManager.registerModule(badWordProtection);
+  badWordProtection.register(client);
 
   const antiSpam = new AntiSpam(securityManager);
   securityManager.registerModule(antiSpam);
