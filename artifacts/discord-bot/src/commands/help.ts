@@ -26,6 +26,7 @@ type HelpEmoji = string | { name: string; id: string };
 const CUSTOM_EMOJIS = {
   logo: { name: "Gods_logo", id: "1553644211612553296" },
   security: { name: "Gods_security", id: "1553646039339376660" },
+  logs: { name: "security_logs", id: "1553676459489628241" },
   ticket: { name: "Gods_ticket", id: "1553647434498973817" },
   hi: { name: "Gods_hi", id: "1553646590588358726" },
   judgment: { name: "Judgement", id: "1553680621673521153" },
@@ -36,6 +37,7 @@ const CUSTOM_EMOJIS = {
   antiMention: { name: "security_antimention", id: "1553678901887369278" },
   antiLink: { name: "security_antilink", id: "1553678253213098014" },
   antiEmoji: { name: "security_antiemoji", id: "1553677117785514035" },
+  antiAttachment: { name: "Security_antiattachement", id: "1553677885431226429" },
 } satisfies Record<string, { name: string; id: string }>;
 
 function emojiText(emoji: HelpEmoji): string {
@@ -76,7 +78,7 @@ const SECURITY_MODULES = {
   },
   logs: {
     label: "Logs",
-    emoji: "📝",
+    emoji: CUSTOM_EMOJIS.logs,
     description: "Configure logging channels and category toggles.",
     commands: [
       { usage: "/logging status", description: "Show logging configuration and effective routing." },
@@ -96,7 +98,7 @@ const SECURITY_MODULES = {
   },
   antiSpam: {
     label: "Anti Spam",
-    emoji: "🚫",
+    emoji: CUSTOM_EMOJIS.security,
     description: "Detects message bursts and applies the configured response.",
     commands: [
       { usage: "/security antispam enable", description: "Enable Anti Spam." },
@@ -151,7 +153,7 @@ const SECURITY_MODULES = {
   },
   antiAttachment: {
     label: "Anti Attachment",
-    emoji: "📎",
+    emoji: CUSTOM_EMOJIS.antiAttachment,
     description: "Detects attachment activity that should be reviewed.",
     commands: [],
   },
@@ -326,7 +328,7 @@ function categoriesView() {
     );
 
   return {
-    embeds: [baseEmbed("Categories", "Choose a category to explore the Help Center.")],
+    embeds: [baseEmbed("", "Choose a category to explore commands and features.")],
     components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(categoryMenu)],
   };
 }
@@ -337,12 +339,13 @@ function emptyCategoryView(categoryKey: Exclude<HelpCategoryKey, "security">) {
     embeds: [
       baseEmbed(
         category.label,
-        `${emojiText(category.emoji)} No modules are currently registered in this category.`
+        "No modules are currently registered in this category.",
+        category.emoji
       ),
     ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        backButton(HELP_BACK_CATEGORIES, "Back to Categories")
+        backButton(HELP_BACK_CATEGORIES, "← Back")
       ),
     ],
   };
@@ -366,14 +369,15 @@ function securityView() {
   return {
     embeds: [
       baseEmbed(
-        "Security",
-        `${emojiText(CUSTOM_EMOJIS.security)} Choose a module to see only the commands currently registered for it.`
+        "Security Centre",
+        "Select a security module to view its commands.",
+        CUSTOM_EMOJIS.security
       ),
     ],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(moduleMenu),
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        backButton(HELP_BACK_CATEGORIES, "Back to Categories")
+        backButton(HELP_BACK_CATEGORIES, "← Back")
       ),
     ],
   };
@@ -390,24 +394,26 @@ function moduleView(moduleKey: SecurityModuleKey) {
 
   return {
     embeds: [
-      baseEmbed(module.label, `${emojiText(module.emoji)} ${module.description}`)
-        .addFields({ name: "Commands", value: commandDescription, inline: false }),
+      baseEmbed(module.label, `${module.description}\n\n${commandDescription}`, module.emoji),
     ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        backButton(HELP_BACK_SECURITY, "Back to Security"),
-        backButton(HELP_BACK_CATEGORIES, "Back to Categories")
+        backButton(HELP_BACK_SECURITY, "← Back")
       ),
     ],
   };
 }
 
-function baseEmbed(title: string, description: string): EmbedBuilder {
+function baseEmbed(title: string, description: string, icon: HelpEmoji = CUSTOM_EMOJIS.logo): EmbedBuilder {
+  const header = title
+    ? `${emojiText(icon)} ${title}`
+    : `${emojiText(icon)} Gods Bot Centre`;
+
   return new EmbedBuilder()
-    .setTitle(`${emojiText(CUSTOM_EMOJIS.logo)} Gods Bot Centre - ${title}`)
-    .setColor(0x5865f2)
+    .setTitle(header)
+    .setColor(0xd4af37)
     .setDescription(description)
-    .setFooter({ text: "Use the menus and buttons to navigate." })
+    .setFooter({ text: "GOD's Bot • Select an option to continue" })
     .setTimestamp();
 }
 
