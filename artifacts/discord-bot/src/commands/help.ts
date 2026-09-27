@@ -21,10 +21,31 @@ type ModuleCommand = {
   description: string;
 };
 
+type HelpEmoji = string | { name: string; id: string };
+
+const CUSTOM_EMOJIS = {
+  logo: { name: "Gods_logo", id: "1553644211612553296" },
+  security: { name: "Gods_security", id: "1553646039339376660" },
+  ticket: { name: "Gods_ticket", id: "1553647434498973817" },
+  hi: { name: "Gods_hi", id: "1553646590588358726" },
+  judgment: { name: "Judgement", id: "1553680621673521153" },
+  antiCaps: { name: "security_anticaps", id: "1553680193812693154" },
+  antiInvite: { name: "security_anti_invite", id: "1553679724637716611" },
+  heat: { name: "Security_heat", id: "1553680339103129640" },
+  badWord: { name: "security_badword", id: "1553678437191786586" },
+  antiMention: { name: "security_antimention", id: "1553678901887369278" },
+  antiLink: { name: "security_antilink", id: "1553678253213098014" },
+  antiEmoji: { name: "security_antiemoji", id: "1553677117785514035" },
+} satisfies Record<string, { name: string; id: string }>;
+
+function emojiText(emoji: HelpEmoji): string {
+  return typeof emoji === "string" ? emoji : `<:${emoji.name}:${emoji.id}>`;
+}
+
 const SECURITY_MODULES = {
   security: {
     label: "Security",
-    emoji: "⚙️",
+    emoji: CUSTOM_EMOJIS.security,
     description: "Manage global security settings and module state.",
     commands: [
       {
@@ -97,7 +118,7 @@ const SECURITY_MODULES = {
   },
   antiLink: {
     label: "Anti Link",
-    emoji: "🔗",
+    emoji: CUSTOM_EMOJIS.antiLink,
     description: "Controls link exceptions for the Anti Link module.",
     commands: [
       {
@@ -112,19 +133,19 @@ const SECURITY_MODULES = {
   },
   antiMention: {
     label: "Anti Mention",
-    emoji: "📢",
+    emoji: CUSTOM_EMOJIS.antiMention,
     description: "Protects the server from unwanted mention activity.",
     commands: [],
   },
   antiCaps: {
     label: "Anti Caps",
-    emoji: "🔠",
+    emoji: CUSTOM_EMOJIS.antiCaps,
     description: "Detects excessive capitalization in messages.",
     commands: [],
   },
   antiEmoji: {
     label: "Anti Emoji",
-    emoji: "😀",
+    emoji: CUSTOM_EMOJIS.antiEmoji,
     description: "Detects excessive emoji activity in messages.",
     commands: [],
   },
@@ -136,7 +157,7 @@ const SECURITY_MODULES = {
   },
   badWord: {
     label: "Bad Word",
-    emoji: "🤬",
+    emoji: CUSTOM_EMOJIS.badWord,
     description: "Maintains the server's configured blocked-word list.",
     commands: [
       {
@@ -163,13 +184,13 @@ const SECURITY_MODULES = {
   },
   antiInvite: {
     label: "Invite Protection",
-    emoji: "📩",
+    emoji: CUSTOM_EMOJIS.antiInvite,
     description: "Protects the server from unwanted invite activity.",
     commands: [],
   },
   heatEngine: {
     label: "Heat Engine",
-    emoji: "🌡️",
+    emoji: CUSTOM_EMOJIS.heat,
     description: "Manages a user's heat level and progression.",
     commands: [
       { usage: "/heat view <user>", description: "View a user's heat." },
@@ -180,7 +201,7 @@ const SECURITY_MODULES = {
   },
   godsJudgment: {
     label: "God's Judgment",
-    emoji: "👑",
+    emoji: CUSTOM_EMOJIS.judgment,
     description: "Places users under judgment and restores them when released.",
     commands: [
       {
@@ -201,7 +222,7 @@ const SECURITY_MODULES = {
       },
     ],
   },
-} satisfies Record<string, { label: string; emoji: string; description: string; commands: ModuleCommand[] }>;
+} satisfies Record<string, { label: string; emoji: HelpEmoji; description: string; commands: ModuleCommand[] }>;
 
 type SecurityModuleKey = keyof typeof SECURITY_MODULES;
 
@@ -213,10 +234,10 @@ const HELP_MODULE_PREFIX = "help:module:";
 const HELP_BACK_CATEGORIES = "help:back:categories";
 const HELP_BACK_SECURITY = "help:back:security";
 
-const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: string }> = {
-  security: { label: "Security", emoji: "🛡️" },
-  welcomeGoodbye: { label: "Welcome / Goodbye", emoji: "👋" },
-  tickets: { label: "Tickets", emoji: "🎫" },
+const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: HelpEmoji }> = {
+  security: { label: "Security", emoji: CUSTOM_EMOJIS.security },
+  welcomeGoodbye: { label: "Welcome / Goodbye", emoji: CUSTOM_EMOJIS.hi },
+  tickets: { label: "Tickets", emoji: CUSTOM_EMOJIS.ticket },
 };
 
 const isSecurityModuleKey = (value: string): value is SecurityModuleKey =>
@@ -315,8 +336,8 @@ function emptyCategoryView(categoryKey: Exclude<HelpCategoryKey, "security">) {
   return {
     embeds: [
       baseEmbed(
-        `${category.emoji} ${category.label}`,
-        "No modules are currently registered in this category."
+        category.label,
+        `${emojiText(category.emoji)} No modules are currently registered in this category.`
       ),
     ],
     components: [
@@ -345,8 +366,8 @@ function securityView() {
   return {
     embeds: [
       baseEmbed(
-        "🛡️ Security Modules",
-        "Choose a module to see only the commands currently registered for it."
+        "Security",
+        `${emojiText(CUSTOM_EMOJIS.security)} Choose a module to see only the commands currently registered for it.`
       ),
     ],
     components: [
@@ -369,7 +390,7 @@ function moduleView(moduleKey: SecurityModuleKey) {
 
   return {
     embeds: [
-      baseEmbed(`${module.emoji} ${module.label}`, module.description)
+      baseEmbed(module.label, `${emojiText(module.emoji)} ${module.description}`)
         .addFields({ name: "Commands", value: commandDescription, inline: false }),
     ],
     components: [
@@ -383,7 +404,7 @@ function moduleView(moduleKey: SecurityModuleKey) {
 
 function baseEmbed(title: string, description: string): EmbedBuilder {
   return new EmbedBuilder()
-    .setTitle(`God's Bot Help Center — ${title}`)
+    .setTitle(`${emojiText(CUSTOM_EMOJIS.logo)} Gods Bot Centre - ${title}`)
     .setColor(0x5865f2)
     .setDescription(description)
     .setFooter({ text: "Use the menus and buttons to navigate." })
