@@ -22,9 +22,60 @@ type ModuleCommand = {
 };
 
 const SECURITY_MODULES = {
+  security: {
+    label: "Security",
+    emoji: "⚙️",
+    description: "Manage global security settings and module state.",
+    commands: [
+      {
+        usage: "/security general status",
+        description: "Show all module states and global settings.",
+      },
+      {
+        usage: "/security general enable <module>",
+        description: "Enable a security module.",
+      },
+      {
+        usage: "/security general disable <module>",
+        description: "Disable a security module.",
+      },
+      {
+        usage: "/security general setlog <channel>",
+        description: "Set the channel where security events are logged.",
+      },
+      {
+        usage: "/security general exempt-add <role>",
+        description: "Add a Heat Exception Role.",
+      },
+      {
+        usage: "/security general exempt-remove <role>",
+        description: "Remove a Heat Exception Role.",
+      },
+    ],
+  },
+  logs: {
+    label: "Logs",
+    emoji: "📝",
+    description: "Configure logging channels and category toggles.",
+    commands: [
+      { usage: "/logging status", description: "Show logging configuration and effective routing." },
+      {
+        usage: "/logging setchannel <channel> [category]",
+        description: "Set a log channel, optionally scoped to a category.",
+      },
+      {
+        usage: "/logging clearchannel [category]",
+        description: "Remove a log channel override.",
+      },
+      { usage: "/logging enable <category>", description: "Enable a log category." },
+      { usage: "/logging disable <category>", description: "Disable a log category." },
+      { usage: "/logging enableall", description: "Enable all log categories at once." },
+      { usage: "/logging disableall", description: "Disable all log categories at once." },
+    ],
+  },
   antiSpam: {
     label: "Anti Spam",
-    emoji: "🔫",
+    emoji: "🚫",
     description: "Detects message bursts and applies the configured response.",
     commands: [
       { usage: "/security antispam enable", description: "Enable Anti Spam." },
@@ -61,7 +112,7 @@ const SECURITY_MODULES = {
   },
   antiMention: {
     label: "Anti Mention",
-    emoji: "📣",
+    emoji: "📢",
     description: "Protects the server from unwanted mention activity.",
     commands: [],
   },
@@ -85,7 +136,7 @@ const SECURITY_MODULES = {
   },
   badWord: {
     label: "Bad Word",
-    emoji: "⚠️",
+    emoji: "🤬",
     description: "Maintains the server's configured blocked-word list.",
     commands: [
       {
@@ -112,13 +163,13 @@ const SECURITY_MODULES = {
   },
   antiInvite: {
     label: "Invite Protection",
-    emoji: "🛡️",
+    emoji: "📩",
     description: "Protects the server from unwanted invite activity.",
     commands: [],
   },
   heatEngine: {
     label: "Heat Engine",
-    emoji: "🔥",
+    emoji: "🌡️",
     description: "Manages a user's heat level and progression.",
     commands: [
       { usage: "/heat view <user>", description: "View a user's heat." },
@@ -129,7 +180,7 @@ const SECURITY_MODULES = {
   },
   godsJudgment: {
     label: "God's Judgment",
-    emoji: "⚖️",
+    emoji: "👑",
     description: "Places users under judgment and restores them when released.",
     commands: [
       {
@@ -154,11 +205,19 @@ const SECURITY_MODULES = {
 
 type SecurityModuleKey = keyof typeof SECURITY_MODULES;
 
-const HELP_CATEGORY_SECURITY = "help:category:security";
+type HelpCategoryKey = "security" | "welcomeGoodbye" | "tickets";
+
+const HELP_CATEGORY_SELECT = "help:category-select";
 const HELP_MODULE_SELECT = "help:module-select";
 const HELP_MODULE_PREFIX = "help:module:";
 const HELP_BACK_CATEGORIES = "help:back:categories";
 const HELP_BACK_SECURITY = "help:back:security";
+
+const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: string }> = {
+  security: { label: "Security", emoji: "🛡️" },
+  welcomeGoodbye: { label: "Welcome / Goodbye", emoji: "👋" },
+  tickets: { label: "Tickets", emoji: "🎫" },
+};
 
 const isSecurityModuleKey = (value: string): value is SecurityModuleKey =>
   value in SECURITY_MODULES;
@@ -171,7 +230,7 @@ export async function execute(
 
 export function isHelpComponent(customId: string): boolean {
   return (
-    customId === HELP_CATEGORY_SECURITY ||
+    customId === HELP_CATEGORY_SELECT ||
     customId === HELP_MODULE_SELECT ||
     customId === HELP_BACK_CATEGORIES ||
     customId === HELP_BACK_SECURITY ||
@@ -182,13 +241,19 @@ export function isHelpComponent(customId: string): boolean {
 export async function handleHelpInteraction(
   interaction: HelpComponentInteraction
 ): Promise<void> {
-  if (interaction.customId === HELP_CATEGORY_SECURITY || interaction.customId === HELP_BACK_SECURITY) {
+  if (interaction.customId === HELP_BACK_SECURITY) {
     await interaction.update(securityView());
     return;
   }
 
   if (interaction.customId === HELP_BACK_CATEGORIES) {
     await interaction.update(categoriesView());
+    return;
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === HELP_CATEGORY_SELECT) {
+    const selected = interaction.values[0] as HelpCategoryKey;
+    await interaction.update(selected === "security" ? securityView() : emptyCategoryView(selected));
     return;
   }
 
@@ -223,18 +288,42 @@ export async function handleHelpInteraction(
 
 function categoriesView() {
   const categoryMenu = new StringSelectMenuBuilder()
-    .setCustomId(HELP_CATEGORY_SECURITY)
+    .setCustomId(HELP_CATEGORY_SELECT)
     .setPlaceholder("Choose a category")
-    .addOptions({
-      label: "Security",
-      value: "security",
-      description: "Explore the available security modules",
-      emoji: "🛡️",
-    });
+    .addOptions(
+      (Object.entries(HELP_CATEGORIES) as [HelpCategoryKey, (typeof HELP_CATEGORIES)[HelpCategoryKey]][]).map(
+        ([key, category]) => ({
+          label: category.label,
+          value: key,
+          description:
+            key === "security"
+              ? "Explore the available security modules"
+              : "No modules are currently registered in this category",
+          emoji: category.emoji,
+        })
+      )
+    );
 
   return {
     embeds: [baseEmbed("Categories", "Choose a category to explore the Help Center.")],
     components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(categoryMenu)],
+  };
+}
+
+function emptyCategoryView(categoryKey: Exclude<HelpCategoryKey, "security">) {
+  const category = HELP_CATEGORIES[categoryKey];
+  return {
+    embeds: [
+      baseEmbed(
+        `${category.emoji} ${category.label}`,
+        "No modules are currently registered in this category."
+      ),
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        backButton(HELP_BACK_CATEGORIES, "Back to Categories")
+      ),
+    ],
   };
 }
 
