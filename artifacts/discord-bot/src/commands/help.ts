@@ -320,7 +320,7 @@ function categoriesView() {
     .addOptions(
       (Object.entries(HELP_CATEGORIES) as [HelpCategoryKey, (typeof HELP_CATEGORIES)[HelpCategoryKey]][]).map(
         ([key, category]) => ({
-          label: `${ARROW} ${category.label}`,
+          label: category.label,
           value: key,
           description:
             key === "security"
@@ -380,7 +380,7 @@ function securityView() {
     .addOptions(
       (Object.entries(SECURITY_MODULES) as [SecurityModuleKey, (typeof SECURITY_MODULES)[SecurityModuleKey]][]).map(
         ([key, module]) => ({
-          label: `${ARROW} ${module.label}`,
+          label: module.label,
           value: key,
           description: module.description,
           emoji: module.emoji,
@@ -441,7 +441,12 @@ function baseEmbed(
     .setColor(0xd4af37)
     .setDescription(description)
     .setFooter({
-      text: `Gods Bot • Your Server's Guardian\n⏱️ Time at ${new Date().toLocaleTimeString()}\nDeveloped by @gourav.s`,
+      text: `Gods Bot • Your Server's Guardian\n⏱️ Time at ${new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      }).format(new Date())}\nDeveloped by @gourav.s`,
     });
 }
 
