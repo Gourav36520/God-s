@@ -9,6 +9,7 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
+import { commands } from "../lib/registry.js";
 
 export const data = new SlashCommandBuilder()
   .setName("help")
@@ -23,12 +24,15 @@ type ModuleCommand = {
 
 type HelpEmoji = string | { name: string; id: string };
 
+const ARROW = "<a:arrow_arrow_1:1554486982439079966>";
+
 const CUSTOM_EMOJIS = {
   logo: { name: "Gods_logo", id: "1553644211612553296" },
   security: { name: "Gods_security", id: "1553646039339376660" },
   logs: { name: "security_logs", id: "1553676459489628241" },
   ticket: { name: "Gods_ticket", id: "1553647434498973817" },
   hi: { name: "Gods_hi", id: "1553646590588358726" },
+  setting: { name: "Gods_setting", id: "1553647566061830195" },
   judgment: { name: "Judgement", id: "1553680621673521153" },
   antiCaps: { name: "security_anticaps", id: "1553680193812693154" },
   antiInvite: { name: "security_anti_invite", id: "1553679724637716611" },
@@ -316,7 +320,7 @@ function categoriesView() {
     .addOptions(
       (Object.entries(HELP_CATEGORIES) as [HelpCategoryKey, (typeof HELP_CATEGORIES)[HelpCategoryKey]][]).map(
         ([key, category]) => ({
-          label: category.label,
+          label: `${ARROW} ${category.label}`,
           value: key,
           description:
             key === "security"
@@ -328,7 +332,25 @@ function categoriesView() {
     );
 
   return {
-    embeds: [baseEmbed("", "Choose a category to explore commands and features.")],
+    embeds: [
+      baseEmbed(
+        "",
+        [
+          "Welcome to **Gods Bot Centre** — your central hub for exploring everything the bot has to offer.",
+          "",
+          "Browse through the categories below to discover the bot's available features and tools.",
+          "",
+          `${emojiText(CUSTOM_EMOJIS.setting)} **Bot Prefix:** \`/\``,
+          `${emojiText(CUSTOM_EMOJIS.setting)} **Total Commands:** \`${commands.size}\``,
+          "",
+          "**Select a category below to get started.**",
+          "",
+          ...Object.entries(HELP_CATEGORIES).map(
+            ([, category]) => `${ARROW} ${emojiText(category.emoji)} **${category.label}**`
+          ),
+        ].join("\n")
+      ),
+    ],
     components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(categoryMenu)],
   };
 }
@@ -358,7 +380,7 @@ function securityView() {
     .addOptions(
       (Object.entries(SECURITY_MODULES) as [SecurityModuleKey, (typeof SECURITY_MODULES)[SecurityModuleKey]][]).map(
         ([key, module]) => ({
-          label: module.label,
+          label: `${ARROW} ${module.label}`,
           value: key,
           description: module.description,
           emoji: module.emoji,
@@ -370,7 +392,7 @@ function securityView() {
     embeds: [
       baseEmbed(
         "Security Centre",
-        "Select a security module to view its commands.",
+        "Select a security module to explore its commands and features.",
         CUSTOM_EMOJIS.security
       ),
     ],
@@ -388,13 +410,13 @@ function moduleView(moduleKey: SecurityModuleKey) {
   const commandDescription =
     module.commands.length > 0
       ? module.commands
-          .map((command) => `**\`${command.usage}\`**\n${command.description}`)
+          .map((command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`)
           .join("\n\n")
       : "No direct commands are currently registered for this module.";
 
   return {
     embeds: [
-      baseEmbed(module.label, `${module.description}\n\n${commandDescription}`, module.emoji),
+      baseEmbed(module.label, `${module.description}\n\n${commandDescription}`, module.emoji, true),
     ],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -404,17 +426,23 @@ function moduleView(moduleKey: SecurityModuleKey) {
   };
 }
 
-function baseEmbed(title: string, description: string, icon: HelpEmoji = CUSTOM_EMOJIS.logo): EmbedBuilder {
+function baseEmbed(
+  title: string,
+  description: string,
+  icon: HelpEmoji = CUSTOM_EMOJIS.logo,
+  arrowBefore: boolean = false
+): EmbedBuilder {
   const header = title
-    ? `${emojiText(icon)} ${title}`
+    ? `${arrowBefore ? `${ARROW} ` : ""}${emojiText(icon)} ${title}`
     : `${emojiText(icon)} Gods Bot Centre`;
 
   return new EmbedBuilder()
     .setTitle(header)
     .setColor(0xd4af37)
     .setDescription(description)
-    .setFooter({ text: "GOD's Bot • Select an option to continue" })
-    .setTimestamp();
+    .setFooter({
+      text: `Gods Bot • Your Server's Guardian\n⏱️ Time at ${new Date().toLocaleTimeString()}\nDeveloped by @gourav.s`,
+    });
 }
 
 function backButton(customId: string, label: string): ButtonBuilder {
