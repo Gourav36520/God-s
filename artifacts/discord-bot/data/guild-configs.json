@@ -1,6 +1,7 @@
 {
   "1519269173937836084": {
     "guildId": "1519269173937836084",
+    "prefix": "God",
     "logChannelId": "1521121964012470333",
     "muteRoleId": null,
     "exemptRoles": [],
@@ -74,7 +75,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-09-26T07:49:42.324Z",
+    "updatedAt": "2026-09-30T12:12:06.539Z",
     "heatEngine": {
       "enabled": true
     }

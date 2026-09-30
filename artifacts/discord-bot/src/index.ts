@@ -122,8 +122,16 @@ async function loadCommands(): Promise<void> {
   const heat = await import("./commands/heat.js");
   const setPrefix = await import("./commands/set.js");
 
-  commands.set(ping.data.name, { data: ping.data, execute: ping.execute });
-  commands.set(help.data.name, { data: help.data, execute: help.execute });
+  commands.set(ping.data.name, {
+    data: ping.data,
+    execute: ping.execute,
+    executePrefix: ping.executePrefix,
+  });
+  commands.set(help.data.name, {
+    data: help.data,
+    execute: help.execute,
+    executePrefix: help.executePrefix,
+  });
   commands.set(info.data.name, { data: info.data, execute: info.execute });
   commands.set(security.data.name, { data: security.data, execute: security.execute });
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });

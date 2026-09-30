@@ -9,6 +9,7 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuInteraction,
 } from "discord.js";
+import type { Message } from "discord.js";
 import { commands } from "../lib/registry.js";
 
 export const data = new SlashCommandBuilder()
@@ -253,6 +254,10 @@ export async function execute(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   await interaction.reply(categoriesView());
+}
+
+export async function executePrefix(message: Message): Promise<void> {
+  await message.reply(categoriesView());
 }
 
 export function isHelpComponent(customId: string): boolean {
