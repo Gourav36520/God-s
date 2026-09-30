@@ -2,6 +2,7 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
 } from "discord.js";
+import type { Message } from "discord.js";
 
 export const data = new SlashCommandBuilder()
   .setName("ping")
@@ -20,4 +21,8 @@ export async function execute(
   await interaction.editReply(
     `🏓 Pong!\n> Round-trip: **${latency}ms**\n> WebSocket: **${wsLatency}ms**`
   );
+}
+
+export async function executePrefix(message: Message): Promise<void> {
+  await message.reply("🏓 Pong!");
 }

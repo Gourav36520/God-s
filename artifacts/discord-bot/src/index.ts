@@ -120,6 +120,7 @@ async function loadCommands(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
+  const setPrefix = await import("./commands/set.js");
 
   commands.set(ping.data.name, { data: ping.data, execute: ping.execute });
   commands.set(help.data.name, { data: help.data, execute: help.execute });
@@ -128,6 +129,10 @@ async function loadCommands(): Promise<void> {
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
   commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
   commands.set(heat.data.name, { data: heat.data, execute: heat.execute });
+  commands.set(setPrefix.data.name, {
+    data: setPrefix.data,
+    execute: setPrefix.execute,
+  });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
@@ -140,6 +145,7 @@ async function loadEvents(client: Client): Promise<void> {
   const mods = [
     await import("./events/ready.js"),
     await import("./events/interactionCreate.js"),
+    await import("./events/messageCreate.js"),
   ];
   for (const mod of mods) {
     if (mod.once) {

@@ -17,6 +17,7 @@ async function main(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
+  const setPrefix = await import("./commands/set.js");
 
   const commandData = [
     ping.data,
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     judgment.releaseData,
     logging.data,
     heat.data,
+    setPrefix.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

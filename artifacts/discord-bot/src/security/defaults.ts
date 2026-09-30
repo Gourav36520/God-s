@@ -4,6 +4,7 @@ import { ALL_CATEGORIES } from "../logging/types.js";
 export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
   return {
     guildId,
+    prefix: "!",
     logChannelId: null,
     muteRoleId: null,
     exemptRoles: [],

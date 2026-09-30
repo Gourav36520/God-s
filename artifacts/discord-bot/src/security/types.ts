@@ -74,6 +74,7 @@ export interface GodsJudgmentConfig {
 
 export interface GuildSecurityConfig {
   guildId: string;
+  prefix: string;
   logChannelId: string | null;
   muteRoleId: string | null;
   exemptRoles: string[];
