@@ -8,6 +8,11 @@ import {
 import { securityManager } from "../lib/registry.js";
 import { Authorization } from "../security/heat/Authorization.js";
 import type { HeatResult } from "../security/heat/HeatEngine.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  GODS_EMOJI,
+} from "./ui.js";
 
 const authorization = new Authorization();
 
@@ -75,7 +80,14 @@ export async function execute(
 ): Promise<void> {
   if (!interaction.guildId || !interaction.guild) {
     await interaction.reply({
-      content: "This command can only be used in a server.",
+      embeds: [
+        createGodsEmbed({
+          title: "Server Required",
+          description: "Run Heat commands inside the server where the member is located.",
+          emoji: GODS_EMOJI.heat,
+          tone: "error",
+        }),
+      ],
       ephemeral: true,
     });
     return;
@@ -83,7 +95,14 @@ export async function execute(
 
   if (!authorization.canManageHeat(interaction)) {
     await interaction.reply({
-      content: "You need Manage Server permission to use this command.",
+      embeds: [
+        createGodsEmbed({
+          title: "Manage Server Permission Required",
+          description: "You need the **Manage Server** permission to use Heat commands.",
+          emoji: GODS_EMOJI.heat,
+          tone: "error",
+        }),
+      ],
       ephemeral: true,
     });
     return;
@@ -93,7 +112,14 @@ export async function execute(
   const targetUser = interaction.options.getUser("user", true);
   if (!target) {
     await interaction.reply({
-      content: "That user is not currently a member of this server.",
+      embeds: [
+        createGodsEmbed({
+          title: "Member Not Found",
+          description: "That user is not currently a member of this server. Select a current member and try again.",
+          emoji: GODS_EMOJI.heat,
+          tone: "error",
+        }),
+      ],
       ephemeral: true,
     });
     return;
@@ -129,8 +155,17 @@ export async function execute(
       return;
   }
 
+  const requestedAction =
+    subcommand === "add"
+      ? `Increase requested: +${interaction.options.getInteger("amount", true)} Heat`
+      : subcommand === "remove"
+        ? `Decrease requested: ${interaction.options.getInteger("amount", true)} Heat`
+        : subcommand === "reset"
+          ? "Reset requested"
+          : "Current Heat record";
+
   await interaction.reply({
-    embeds: [buildHeatEmbed(subcommand, targetUser.id, result)],
+    embeds: [buildHeatEmbed(subcommand, targetUser.id, result, requestedAction)],
     ephemeral: true,
   });
 }
@@ -138,20 +173,69 @@ export async function execute(
 function buildHeatEmbed(
   action: string,
   userId: string,
-  result: HeatResult
+  result: HeatResult,
+  requestedAction: string
 ): EmbedBuilder {
-  return new EmbedBuilder()
-    .setTitle(`Heat ${action}`)
-    .setColor(result.record.heat > 0 ? 0xed4245 : 0x57f287)
+  const lastViolation = result.record.lastViolationType
+    ? formatLabel(result.record.lastViolationType)
+    : "No violation type recorded";
+  const reason = result.record.lastReason?.trim()
+    ? result.record.lastReason.trim().slice(0, 800)
+    : "No reason recorded";
+  const escalation = [
+    arrowLine("Stage", `${result.record.escalationCount} / 10`),
+    ...(result.record.escalationWarningIssued
+      ? [arrowLine("Warning", "An escalation warning has been issued.")]
+      : []),
+    arrowLine(
+      "Last escalation",
+      result.record.lastEscalationAt
+        ? `<t:${Math.floor(new Date(result.record.lastEscalationAt).getTime() / 1_000)}:R>`
+        : "No escalation recorded",
+    ),
+  ].join("\n");
+  const punishment = formatLabel(result.punishment.punishment);
+  const title =
+    action === "view" ? "Heat Status" : "Heat Action Result";
+
+  return createGodsEmbed({
+    title,
+    emoji: GODS_EMOJI.heat,
+    tone: result.record.heat > 0 ? "warning" : "info",
+    description: [
+      arrowLine("Member", `<@${userId}>`),
+      arrowLine("Request", requestedAction),
+      "The details below show the current Heat record.",
+    ].join("\n"),
+  })
     .addFields(
-      { name: "User", value: `<@${userId}>`, inline: true },
-      { name: "Heat", value: String(result.record.heat), inline: true },
-      { name: "Severity", value: result.severity, inline: true },
       {
-        name: "Punishment",
-        value: result.punishment.punishment,
-        inline: true,
-      }
-    )
-    .setTimestamp();
+        name: "Current Status",
+        value: [
+          arrowLine("Heat", String(result.record.heat)),
+          arrowLine("Severity", formatLabel(result.severity)),
+          arrowLine("Resulting action", punishment),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Recent Activity",
+        value: [
+          arrowLine("Recorded events", String(result.record.events)),
+          arrowLine("Last violation", lastViolation),
+          arrowLine("Reason", reason),
+        ].join("\n"),
+        inline: false,
+      },
+      { name: "Escalation", value: escalation, inline: false },
+    );
+}
+
+function formatLabel(value: string): string {
+  if (value === "none") return "No punishment triggered";
+  if (value === "judgment") return "God's Judgment";
+  return value
+    .replace(/([a-z])([A-Z])/gu, "$1 $2")
+    .replace(/[_-]/gu, " ")
+    .replace(/\b\w/gu, (letter) => letter.toUpperCase());
 }

@@ -1,9 +1,13 @@
 import {
   ChatInputCommandInteraction,
-  EmbedBuilder,
   Guild,
   SlashCommandBuilder,
 } from "discord.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  GODS_EMOJI,
+} from "./ui.js";
 
 export const data = new SlashCommandBuilder()
   .setName("info")
@@ -16,7 +20,14 @@ export async function execute(
 
   if (!guild) {
     await interaction.reply({
-      content: "This command can only be used in a server.",
+      embeds: [
+        createGodsEmbed({
+          title: "Server Information Unavailable",
+          description: "Run this command inside a server to view its details.",
+          emoji: GODS_EMOJI.logo,
+          tone: "error",
+        }),
+      ],
       ephemeral: true,
     });
     return;
@@ -24,19 +35,40 @@ export async function execute(
 
   const owner = await guild.fetchOwner();
 
-  const embed = new EmbedBuilder()
-    .setTitle(guild.name)
-    .setColor(0x57f287)
+  const createdAt = Math.floor(guild.createdTimestamp / 1000);
+  const embed = createGodsEmbed({
+    title: "Server Overview",
+    emoji: GODS_EMOJI.logo,
+    tone: "info",
+    description: `A clear snapshot of **${guild.name}**.`,
+  })
     .setThumbnail(guild.iconURL())
     .addFields(
-      { name: "Owner", value: owner.user.tag, inline: true },
-      { name: "Members", value: guild.memberCount.toString(), inline: true },
-      { name: "Channels", value: guild.channels.cache.size.toString(), inline: true },
-      { name: "Roles", value: guild.roles.cache.size.toString(), inline: true },
-      { name: "Created", value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
-      { name: "Server ID", value: guild.id, inline: true }
+      {
+        name: "Server Owner",
+        value: `${arrowLine("Owner", `<@${owner.id}> · \`${owner.user.tag}\``)}`,
+        inline: false,
+      },
+      {
+        name: "Community",
+        value: [
+          arrowLine("Members", guild.memberCount.toLocaleString()),
+          arrowLine("Channels", guild.channels.cache.size.toLocaleString()),
+          arrowLine("Roles", guild.roles.cache.size.toLocaleString()),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Server Created",
+        value: `${arrowLine("Date", `<t:${createdAt}:D> · <t:${createdAt}:R>`)}`,
+        inline: false,
+      },
+      {
+        name: "Server ID",
+        value: `${arrowLine("ID", `\`${guild.id}\``)}`,
+        inline: false,
+      },
     )
-    .setTimestamp();
 
   await interaction.reply({ embeds: [embed] });
 }

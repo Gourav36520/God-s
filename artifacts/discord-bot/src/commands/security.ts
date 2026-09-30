@@ -12,6 +12,13 @@ import {
   normalizeConfiguredWord,
 } from "../security/modules/BadWordProtection.js";
 import { logger } from "../lib/logger.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  GODS_EMOJI,
+  GOLDEN_ARROW,
+} from "./ui.js";
+import type { EmbedTone } from "./ui.js";
 
 const MODULE_LABELS: Record<ModuleKey, string> = {
   antiSpam: "Anti-Spam",
@@ -21,6 +28,16 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
   antiRaid: "Anti-Raid",
   badWord: "Bad Word Protection",
   godsJudgment: "God's Judgment",
+};
+
+const MODULE_EMOJIS: Record<ModuleKey, string> = {
+  antiSpam: GODS_EMOJI.security,
+  antiMention: GODS_EMOJI.antiMention,
+  antiLink: GODS_EMOJI.antiLink,
+  antiInvite: GODS_EMOJI.antiInvite,
+  antiRaid: GODS_EMOJI.security,
+  badWord: GODS_EMOJI.badWord,
+  godsJudgment: GODS_EMOJI.judgment,
 };
 
 const MODULE_CHOICES = (Object.keys(MODULE_LABELS) as ModuleKey[])
@@ -184,7 +201,17 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.guildId) {
-    await interaction.reply({ content: "This command can only be used in a server.", ephemeral: true });
+    await interaction.reply({
+      embeds: [
+        createGodsEmbed({
+          title: "Server Required",
+          description: "Run Security commands inside the server you want to configure.",
+          emoji: GODS_EMOJI.security,
+          tone: "error",
+        }),
+      ],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -242,23 +269,43 @@ async function handleGlobalStatus(interaction: ChatInputCommandInteraction, guil
   const config = securityManager.getConfig(guildId);
   const status = securityManager.getModuleStatus(guildId);
 
-  const moduleFields = (Object.entries(status) as [ModuleKey, boolean][]).map(([key, enabled]) => ({
-    name: MODULE_LABELS[key],
-    value: enabled ? "🟢 Enabled" : "🔴 Disabled",
-    inline: true,
-  }));
+  const moduleLines = (Object.entries(status) as [ModuleKey, boolean][]).map(
+    ([key, enabled]) =>
+      `${GOLDEN_ARROW} ${MODULE_EMOJIS[key]} **${MODULE_LABELS[key]}:** ${enabled ? "Enabled" : "Disabled"}`
+  );
 
-  const embed = new EmbedBuilder()
-    .setTitle("🛡️ Security Configuration")
-    .setColor(0x5865f2)
+  const embed = createGodsEmbed({
+    title: "Security Overview",
+    emoji: GODS_EMOJI.security,
+    tone: "info",
+    description: "Current protection settings and module status for this server.",
+  })
     .addFields(
-      { name: "Log Channel", value: config.logChannelId ? `<#${config.logChannelId}>` : "Not set — use `/security setlog`", inline: false },
-      { name: "Exempt Roles", value: config.exemptRoles.length > 0 ? config.exemptRoles.map((r) => `<@&${r}>`).join(", ") : "None", inline: false },
-      { name: "\u200b", value: "**Modules**", inline: false },
-      ...moduleFields
+      {
+        name: "Security Log Channel",
+        value: config.logChannelId
+          ? arrowLine("Destination", `<#${config.logChannelId}>`)
+          : `Not set.\n${arrowLine("Set one", "`/security general setlog #channel`")}`,
+        inline: false,
+      },
+      {
+        name: `Heat Exception Roles (${config.exemptRoles.length})`,
+        value: config.exemptRoles.length > 0
+          ? config.exemptRoles.map((roleId) => arrowLine("Role", `<@&${roleId}>`)).join("\n")
+          : "None configured.",
+        inline: false,
+      },
+      {
+        name: "Protection Modules",
+        value: moduleLines.join("\n"),
+        inline: false,
+      },
+      {
+        name: "Last Updated",
+        value: arrowLine("Updated", new Date(config.updatedAt).toLocaleString()),
+        inline: false,
+      },
     )
-    .setFooter({ text: `Updated: ${new Date(config.updatedAt).toLocaleString()}` })
-    .setTimestamp();
 
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
@@ -266,24 +313,64 @@ async function handleGlobalStatus(interaction: ChatInputCommandInteraction, guil
 async function handleModuleEnable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const module = interaction.options.getString("module", true) as ModuleKey;
   await securityManager.setModuleEnabled(guildId, module, true);
-  await interaction.reply({ embeds: [card(`✅ **${MODULE_LABELS[module]}** has been **enabled**.`, 0x57f287)], ephemeral: true });
+  await interaction.reply({
+    embeds: [
+      securityCard(
+        "Protection Enabled",
+        `${arrowLine("Module", MODULE_LABELS[module])}\n${arrowLine("Status", "Enabled")}`,
+        "success",
+        MODULE_EMOJIS[module],
+      ),
+    ],
+    ephemeral: true,
+  });
 }
 
 async function handleModuleDisable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const module = interaction.options.getString("module", true) as ModuleKey;
   await securityManager.setModuleEnabled(guildId, module, false);
-  await interaction.reply({ embeds: [card(`🔴 **${MODULE_LABELS[module]}** has been **disabled**.`, 0xed4245)], ephemeral: true });
+  await interaction.reply({
+    embeds: [
+      securityCard(
+        "Protection Disabled",
+        `${arrowLine("Module", MODULE_LABELS[module])}\n${arrowLine("Status", "Disabled")}`,
+        "warning",
+        MODULE_EMOJIS[module],
+      ),
+    ],
+    ephemeral: true,
+  });
 }
 
 async function handleSetLog(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const channel = interaction.options.getChannel("channel", true);
   await securityManager.updateConfig(guildId, { logChannelId: channel.id });
-  await interaction.reply({ embeds: [card(`📋 Security log channel set to <#${channel.id}>.`, 0x57f287)], ephemeral: true });
+  await interaction.reply({
+    embeds: [
+      securityCard(
+        "Security Log Destination Updated",
+        arrowLine("Channel", `<#${channel.id}>`),
+        "success",
+        GODS_EMOJI.security,
+      ),
+    ],
+    ephemeral: true,
+  });
 }
 
 async function handleUnknownSecuritySubcommand(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.reply({
-    content: "That security subcommand is no longer available. Use `/security exempt-add <role>` or `/security exempt-remove <role>` for Heat Exception Roles.",
+    embeds: [
+      securityCard(
+        "Security Action Unavailable",
+        [
+          "Select an available Security option from the slash-command menu.",
+          "",
+          arrowLine("Heat exceptions", "Use `/security general exempt-add` or `/security general exempt-remove`."),
+        ].join("\n"),
+        "error",
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -295,7 +382,14 @@ async function handleExemptRoleAdd(interaction: ChatInputCommandInteraction, gui
 
   if (current.includes(role.id)) {
     await interaction.editReply({
-      content: `<@&${role.id}> is already a Heat Exception Role.`,
+      embeds: [
+        securityCard(
+          "Role Already Exempt",
+          arrowLine("Role", `<@&${role.id}> is already a Heat Exception Role.`),
+          "info",
+          GODS_EMOJI.heat,
+        ),
+      ],
     });
     return;
   }
@@ -304,7 +398,14 @@ async function handleExemptRoleAdd(interaction: ChatInputCommandInteraction, gui
     exemptRoles: [...current, role.id],
   });
   await interaction.editReply({
-    embeds: [card(`✅ <@&${role.id}> is now a Heat Exception Role.`, 0x57f287)],
+    embeds: [
+      securityCard(
+        "Heat Exception Role Added",
+        arrowLine("Role", `<@&${role.id}> is now exempt from Heat.`),
+        "success",
+        GODS_EMOJI.heat,
+      ),
+    ],
   });
 }
 
@@ -315,7 +416,14 @@ async function handleExemptRoleRemove(interaction: ChatInputCommandInteraction, 
 
   if (!current.includes(role.id)) {
     await interaction.editReply({
-      content: `<@&${role.id}> is not configured as a Heat Exception Role.`,
+      embeds: [
+        securityCard(
+          "Role Not Configured",
+          arrowLine("Role", `<@&${role.id}> is not a Heat Exception Role.`),
+          "info",
+          GODS_EMOJI.heat,
+        ),
+      ],
     });
     return;
   }
@@ -324,20 +432,47 @@ async function handleExemptRoleRemove(interaction: ChatInputCommandInteraction, 
     exemptRoles: current.filter((roleId) => roleId !== role.id),
   });
   await interaction.editReply({
-    embeds: [card(`🔴 <@&${role.id}> is no longer a Heat Exception Role.`, 0xed4245)],
+    embeds: [
+      securityCard(
+        "Heat Exception Role Removed",
+        arrowLine("Role", `<@&${role.id}> is no longer exempt from Heat.`),
+        "success",
+        GODS_EMOJI.heat,
+      ),
+    ],
   });
 }
 
 async function handleAntiSpamEnable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   await securityManager.setModuleEnabled(guildId, "antiSpam", true);
   logger.info(`security antispam enable: enabled in guild ${guildId}`);
-  await interaction.reply({ embeds: [card("✅ **Anti-Spam** is now **enabled**.", 0x57f287)], ephemeral: true });
+  await interaction.reply({
+    embeds: [
+      securityCard(
+        "Anti-Spam Enabled",
+        arrowLine("Status", "Anti-Spam is now enabled."),
+        "success",
+        GODS_EMOJI.security,
+      ),
+    ],
+    ephemeral: true,
+  });
 }
 
 async function handleAntiSpamDisable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   await securityManager.setModuleEnabled(guildId, "antiSpam", false);
   logger.info(`security antispam disable: disabled in guild ${guildId}`);
-  await interaction.reply({ embeds: [card("🔴 **Anti-Spam** is now **disabled**.", 0xed4245)], ephemeral: true });
+  await interaction.reply({
+    embeds: [
+      securityCard(
+        "Anti-Spam Disabled",
+        arrowLine("Status", "Anti-Spam is now disabled."),
+        "warning",
+        GODS_EMOJI.security,
+      ),
+    ],
+    ephemeral: true,
+  });
 }
 
 async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
@@ -345,20 +480,56 @@ async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, gu
   const antiSpam = securityManager.getModule<AntiSpam>("antiSpam");
   const trackedUsers = antiSpam?.getTrackedUserCount(guildId) ?? 0;
 
-  const embed = new EmbedBuilder()
-    .setTitle("🔫 Anti-Spam Status")
-    .setColor(cfg.enabled ? 0x57f287 : 0xed4245)
+  const embed = createGodsEmbed({
+    title: "Anti-Spam Status",
+    emoji: GODS_EMOJI.security,
+    tone: cfg.enabled ? "success" : "warning",
+    description: [
+      arrowLine("Status", cfg.enabled ? "Enabled" : "Disabled"),
+      arrowLine("Tracking", `${trackedUsers.toLocaleString()} users currently tracked`),
+    ].join("\n"),
+  })
     .addFields(
-      { name: "Status", value: cfg.enabled ? "🟢 Enabled" : "🔴 Disabled", inline: true },
-      { name: "Punishment", value: "Fixed progression by confirmed violation count", inline: true },
-      { name: "Live Tracked Users", value: trackedUsers.toString(), inline: true },
-      { name: "Rate Limit", value: `${cfg.maxMessages} messages / ${cfg.timeWindowMs / 1_000}s`, inline: true },
-      { name: "Punishment Table", value: "1–2 Warn • 3–4 10m • 5–6 30m • 7–8 1h • 9 6h • 10 God's Judgment", inline: false },
-      { name: `Exception Roles (${cfg.bypassRoles.length})`, value: cfg.bypassRoles.length > 0 ? cfg.bypassRoles.map((r) => `<@&${r}>`).join(", ") : "None", inline: false },
-      { name: `Bypass Users (${cfg.bypassUsers.length})`, value: cfg.bypassUsers.length > 0 ? cfg.bypassUsers.map((u) => `<@${u}>`).join(", ") : "None", inline: false }
-    )
-    .setFooter({ text: "Server owner and Administrators are always exempt." })
-    .setTimestamp();
+      {
+        name: "Detection Settings",
+        value: [
+          arrowLine("Rate limit", `${cfg.maxMessages} messages / ${cfg.timeWindowMs / 1_000}s`),
+          arrowLine("Punishment model", "Fixed progression by confirmed violation count"),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "Punishment Progression",
+        value: [
+          arrowLine("Violations 1–2", "Warn"),
+          arrowLine("Violations 3–4", "10m"),
+          arrowLine("Violations 5–6", "30m"),
+          arrowLine("Violations 7–8", "1h"),
+          arrowLine("Violation 9", "6h"),
+          arrowLine("Violation 10", "God's Judgment"),
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: `Exception Roles (${cfg.bypassRoles.length})`,
+        value: cfg.bypassRoles.length > 0
+          ? cfg.bypassRoles.map((roleId) => arrowLine("Role", `<@&${roleId}>`)).join("\n")
+          : "None configured.",
+        inline: false,
+      },
+      {
+        name: `Bypass Users (${cfg.bypassUsers.length})`,
+        value: cfg.bypassUsers.length > 0
+          ? cfg.bypassUsers.map((userId) => arrowLine("User", `<@${userId}>`)).join("\n")
+          : "None configured.",
+        inline: false,
+      },
+      {
+        name: "Always Exempt",
+        value: "The server owner and Administrators are always exempt.",
+        inline: false,
+      },
+    );
 
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
@@ -368,7 +539,17 @@ async function handleAntiSpamConfig(interaction: ChatInputCommandInteraction, gu
   const window = interaction.options.getInteger("window");
 
   if (threshold === null && window === null) {
-    await interaction.reply({ content: "Provide at least one option to update.", ephemeral: true });
+    await interaction.reply({
+      embeds: [
+        securityCard(
+          "No Settings Changed",
+          "Provide at least one setting to update: `threshold`, `window`, or both.",
+          "error",
+          GODS_EMOJI.security,
+        ),
+      ],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -376,18 +557,19 @@ async function handleAntiSpamConfig(interaction: ChatInputCommandInteraction, gu
   const patch: Partial<typeof current> = {};
   const lines: string[] = [];
 
-  if (threshold !== null)    { patch.maxMessages = threshold;                 lines.push(`• Rate limit: **${threshold}** messages`); }
-  if (window !== null)       { patch.timeWindowMs = window * 1_000;           lines.push(`• Time window: **${window}s**`); }
+  if (threshold !== null)    { patch.maxMessages = threshold;                 lines.push(arrowLine("Rate limit", `${threshold} messages`)); }
+  if (window !== null)       { patch.timeWindowMs = window * 1_000;           lines.push(arrowLine("Time window", `${window}s`)); }
 
   await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
 
   await interaction.reply({
     embeds: [
-      new EmbedBuilder()
-        .setTitle("✅ Anti-Spam Configuration Updated")
-        .setColor(0x57f287)
-        .setDescription(lines.join("\n"))
-        .setTimestamp(),
+      securityCard(
+        "Anti-Spam Settings Updated",
+        lines.join("\n"),
+        "success",
+        GODS_EMOJI.security,
+      ),
     ],
     ephemeral: true,
   });
@@ -398,7 +580,17 @@ async function handleBypassAdd(interaction: ChatInputCommandInteraction, guildId
   const user = interaction.options.getUser("user");
 
   if (!role && !user) {
-    await interaction.reply({ content: "Provide a role or user to whitelist.", ephemeral: true });
+    await interaction.reply({
+      embeds: [
+        securityCard(
+          "Role or User Required",
+          "Select a role, a user, or both to add to the Anti-Spam bypass list.",
+          "error",
+          GODS_EMOJI.security,
+        ),
+      ],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -408,18 +600,26 @@ async function handleBypassAdd(interaction: ChatInputCommandInteraction, guildId
 
   if (role && !current.bypassRoles.includes(role.id)) {
     patch.bypassRoles = [...current.bypassRoles, role.id];
-    lines.push(`• Role added: <@&${role.id}>`);
-  } else if (role) lines.push(`• Role <@&${role.id}> is already whitelisted`);
+    lines.push(arrowLine("Role added", `<@&${role.id}>`));
+  } else if (role) lines.push(arrowLine("Already bypassed", `<@&${role.id}>`));
 
   if (user && !current.bypassUsers.includes(user.id)) {
     patch.bypassUsers = [...current.bypassUsers, user.id];
-    lines.push(`• User added: <@${user.id}>`);
-  } else if (user) lines.push(`• User <@${user.id}> is already whitelisted`);
+    lines.push(arrowLine("User added", `<@${user.id}>`));
+  } else if (user) lines.push(arrowLine("Already bypassed", `<@${user.id}>`));
 
-  if (Object.keys(patch).length > 0) await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
+  const changed = Object.keys(patch).length > 0;
+  if (changed) await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
 
   await interaction.reply({
-    embeds: [new EmbedBuilder().setTitle("✅ Bypass List Updated").setColor(0x57f287).setDescription(lines.join("\n")).setTimestamp()],
+    embeds: [
+      securityCard(
+        changed ? "Bypass List Updated" : "Bypass Already Set",
+        lines.join("\n"),
+        changed ? "success" : "info",
+        GODS_EMOJI.security,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -429,7 +629,17 @@ async function handleBypassRemove(interaction: ChatInputCommandInteraction, guil
   const user = interaction.options.getUser("user");
 
   if (!role && !user) {
-    await interaction.reply({ content: "Provide a role or user to remove from the whitelist.", ephemeral: true });
+    await interaction.reply({
+      embeds: [
+        securityCard(
+          "Role or User Required",
+          "Select a role, a user, or both to remove from the Anti-Spam bypass list.",
+          "error",
+          GODS_EMOJI.security,
+        ),
+      ],
+      ephemeral: true,
+    });
     return;
   }
 
@@ -440,21 +650,29 @@ async function handleBypassRemove(interaction: ChatInputCommandInteraction, guil
   if (role) {
     if (current.bypassRoles.includes(role.id)) {
       patch.bypassRoles = current.bypassRoles.filter((id) => id !== role.id);
-      lines.push(`• Role removed: <@&${role.id}>`);
-    } else lines.push(`• Role <@&${role.id}> was not in the whitelist`);
+      lines.push(arrowLine("Role removed", `<@&${role.id}>`));
+    } else lines.push(arrowLine("Not bypassed", `<@&${role.id}>`));
   }
 
   if (user) {
     if (current.bypassUsers.includes(user.id)) {
       patch.bypassUsers = current.bypassUsers.filter((id) => id !== user.id);
-      lines.push(`• User removed: <@${user.id}>`);
-    } else lines.push(`• User <@${user.id}> was not in the whitelist`);
+      lines.push(arrowLine("User removed", `<@${user.id}>`));
+    } else lines.push(arrowLine("Not bypassed", `<@${user.id}>`));
   }
 
-  if (Object.keys(patch).length > 0) await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
+  const changed = Object.keys(patch).length > 0;
+  if (changed) await securityManager.updateModuleConfig(guildId, "antiSpam", patch);
 
   await interaction.reply({
-    embeds: [new EmbedBuilder().setTitle("🔴 Bypass List Updated").setColor(0xed4245).setDescription(lines.join("\n")).setTimestamp()],
+    embeds: [
+      securityCard(
+        changed ? "Bypass List Updated" : "Bypass Already Clear",
+        lines.join("\n"),
+        changed ? "success" : "info",
+        GODS_EMOJI.security,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -468,7 +686,14 @@ async function handleAntiLinkBypassAdd(
 
   if (current.includes(role.id)) {
     await interaction.reply({
-      content: `<@&${role.id}> is already an Anti-Link exception role.`,
+      embeds: [
+        securityCard(
+          "Role Already Exempt",
+          arrowLine("Role", `<@&${role.id}> is already an Anti-Link exception role.`),
+          "info",
+          GODS_EMOJI.antiLink,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -478,7 +703,14 @@ async function handleAntiLinkBypassAdd(
     bypassRoles: [...current, role.id],
   });
   await interaction.reply({
-    embeds: [card(`✅ <@&${role.id}> is now an Anti-Link exception role.`, 0x57f287)],
+    embeds: [
+      securityCard(
+        "Anti-Link Exception Added",
+        arrowLine("Role", `<@&${role.id}> is now exempt from Anti-Link protection.`),
+        "success",
+        GODS_EMOJI.antiLink,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -492,7 +724,14 @@ async function handleAntiLinkBypassRemove(
 
   if (!current.includes(role.id)) {
     await interaction.reply({
-      content: `<@&${role.id}> is not configured as an Anti-Link exception role.`,
+      embeds: [
+        securityCard(
+          "Role Not Configured",
+          arrowLine("Role", `<@&${role.id}> is not an Anti-Link exception role.`),
+          "info",
+          GODS_EMOJI.antiLink,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -502,7 +741,14 @@ async function handleAntiLinkBypassRemove(
     bypassRoles: current.filter((roleId) => roleId !== role.id),
   });
   await interaction.reply({
-    embeds: [card(`🔴 <@&${role.id}> is no longer an Anti-Link exception role.`, 0xed4245)],
+    embeds: [
+      securityCard(
+        "Anti-Link Exception Removed",
+        arrowLine("Role", `<@&${role.id}> is no longer exempt from Anti-Link protection.`),
+        "success",
+        GODS_EMOJI.antiLink,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -514,7 +760,14 @@ async function handleBadWordAdd(
   const word = normalizeConfiguredWord(interaction.options.getString("word", true));
   if (!word || !isValidConfiguredWord(word)) {
     await interaction.reply({
-      content: "Provide a bad word or phrase containing at least one letter or number.",
+      embeds: [
+        securityCard(
+          "Word Not Added",
+          "Enter a word or phrase containing at least one letter or number.",
+          "error",
+          GODS_EMOJI.badWord,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -523,7 +776,14 @@ async function handleBadWordAdd(
   const current = securityManager.getConfig(guildId).badWord.words;
   if (current.includes(word)) {
     await interaction.reply({
-      content: `\`${word}\` is already configured.`,
+      embeds: [
+        securityCard(
+          "Word Already Configured",
+          arrowLine("Word", `\`${word}\` is already in Bad Word Protection.`),
+          "info",
+          GODS_EMOJI.badWord,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -533,7 +793,14 @@ async function handleBadWordAdd(
     words: [...current, word],
   });
   await interaction.reply({
-    embeds: [card(`✅ Added \`${word}\` to Bad Word Protection.`, 0x57f287)],
+    embeds: [
+      securityCard(
+        "Word Added",
+        arrowLine("Configured word", `\`${word}\``),
+        "success",
+        GODS_EMOJI.badWord,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -546,7 +813,14 @@ async function handleBadWordRemove(
   const current = securityManager.getConfig(guildId).badWord.words;
   if (!current.includes(word)) {
     await interaction.reply({
-      content: `\`${word}\` is not configured.`,
+      embeds: [
+        securityCard(
+          "Word Not Found",
+          arrowLine("Configured word", `\`${word}\` is not in Bad Word Protection.`),
+          "info",
+          GODS_EMOJI.badWord,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -556,7 +830,14 @@ async function handleBadWordRemove(
     words: current.filter((configuredWord) => configuredWord !== word),
   });
   await interaction.reply({
-    embeds: [card(`🔴 Removed \`${word}\` from Bad Word Protection.`, 0xed4245)],
+    embeds: [
+      securityCard(
+        "Word Removed",
+        arrowLine("Removed word", `\`${word}\``),
+        "success",
+        GODS_EMOJI.badWord,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -567,15 +848,18 @@ async function handleBadWordList(
 ): Promise<void> {
   const config = securityManager.getConfig(guildId).badWord;
   const words = config.words.length > 0
-    ? config.words.map((word, index) => `${index + 1}. \`${word}\``).join("\n")
+    ? config.words.map((word, index) => `${GOLDEN_ARROW} ${index + 1}. \`${word}\``).join("\n")
     : "No bad words configured.";
   const roleList = config.exceptionRoles.length > 0
-    ? config.exceptionRoles.map((roleId) => `<@&${roleId}>`).join(", ")
-    : "None";
+    ? config.exceptionRoles.map((roleId) => arrowLine("Role", `<@&${roleId}>`)).join("\n")
+    : "None configured.";
 
-  const embed = new EmbedBuilder()
-    .setTitle("Bad Word Protection")
-    .setColor(config.words.length > 0 ? 0x57f287 : 0x99aab5)
+  const embed = createGodsEmbed({
+    title: "Bad Word Protection",
+    emoji: GODS_EMOJI.badWord,
+    tone: config.words.length > 0 ? "info" : "warning",
+    description: "Configured words and roles exempt from detection.",
+  })
     .addFields(
       {
         name: `Configured Words (${config.words.length})`,
@@ -586,9 +870,8 @@ async function handleBadWordList(
         name: `Exception Roles (${config.exceptionRoles.length})`,
         value: roleList.slice(0, 1_024),
         inline: false,
-      }
-    )
-    .setTimestamp();
+      },
+    );
 
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
@@ -601,7 +884,14 @@ async function handleBadWordExceptionAdd(
   const current = securityManager.getConfig(guildId).badWord.exceptionRoles;
   if (current.includes(role.id)) {
     await interaction.reply({
-      content: `<@&${role.id}> is already a Bad Word Exception Role.`,
+      embeds: [
+        securityCard(
+          "Role Already Exempt",
+          arrowLine("Role", `<@&${role.id}> is already a Bad Word Exception Role.`),
+          "info",
+          GODS_EMOJI.badWord,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -611,7 +901,14 @@ async function handleBadWordExceptionAdd(
     exceptionRoles: [...current, role.id],
   });
   await interaction.reply({
-    embeds: [card(`✅ <@&${role.id}> is now a Bad Word Exception Role.`, 0x57f287)],
+    embeds: [
+      securityCard(
+        "Bad Word Exception Added",
+        arrowLine("Role", `<@&${role.id}> is now exempt from Bad Word Protection.`),
+        "success",
+        GODS_EMOJI.badWord,
+      ),
+    ],
     ephemeral: true,
   });
 }
@@ -624,7 +921,14 @@ async function handleBadWordExceptionRemove(
   const current = securityManager.getConfig(guildId).badWord.exceptionRoles;
   if (!current.includes(role.id)) {
     await interaction.reply({
-      content: `<@&${role.id}> is not configured as a Bad Word Exception Role.`,
+      embeds: [
+        securityCard(
+          "Role Not Configured",
+          arrowLine("Role", `<@&${role.id}> is not a Bad Word Exception Role.`),
+          "info",
+          GODS_EMOJI.badWord,
+        ),
+      ],
       ephemeral: true,
     });
     return;
@@ -634,11 +938,23 @@ async function handleBadWordExceptionRemove(
     exceptionRoles: current.filter((roleId) => roleId !== role.id),
   });
   await interaction.reply({
-    embeds: [card(`🔴 <@&${role.id}> is no longer a Bad Word Exception Role.`, 0xed4245)],
+    embeds: [
+      securityCard(
+        "Bad Word Exception Removed",
+        arrowLine("Role", `<@&${role.id}> is no longer exempt from Bad Word Protection.`),
+        "success",
+        GODS_EMOJI.badWord,
+      ),
+    ],
     ephemeral: true,
   });
 }
 
-function card(description: string, color: number): EmbedBuilder {
-  return new EmbedBuilder().setDescription(description).setColor(color).setTimestamp();
+function securityCard(
+  title: string,
+  description: string,
+  tone: EmbedTone,
+  emoji: string = GODS_EMOJI.security,
+): EmbedBuilder {
+  return createGodsEmbed({ title, description, tone, emoji });
 }
