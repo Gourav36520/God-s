@@ -17,7 +17,12 @@ async function main(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
-  const setPrefix = await import("./commands/set.js");
+  const set = await import("./commands/set.js");
+  const remove = await import("./commands/remove.js");
+  const welcome = await import("./commands/welcome.js");
+  const goodbye = await import("./commands/goodbye.js");
+  const create = await import("./commands/create.js");
+  const embed = await import("./commands/embed.js");
 
   const commandData = [
     ping.data,
@@ -28,7 +33,12 @@ async function main(): Promise<void> {
     judgment.releaseData,
     logging.data,
     heat.data,
-    setPrefix.data,
+    set.data,
+    remove.data,
+    welcome.data,
+    goodbye.data,
+    create.data,
+    embed.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

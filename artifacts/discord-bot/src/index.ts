@@ -120,7 +120,12 @@ async function loadCommands(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
-  const setPrefix = await import("./commands/set.js");
+  const set = await import("./commands/set.js");
+  const remove = await import("./commands/remove.js");
+  const welcome = await import("./commands/welcome.js");
+  const goodbye = await import("./commands/goodbye.js");
+  const create = await import("./commands/create.js");
+  const embed = await import("./commands/embed.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -137,9 +142,29 @@ async function loadCommands(): Promise<void> {
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
   commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
   commands.set(heat.data.name, { data: heat.data, execute: heat.execute });
-  commands.set(setPrefix.data.name, {
-    data: setPrefix.data,
-    execute: setPrefix.execute,
+  commands.set(set.data.name, {
+    data: set.data,
+    execute: set.execute,
+  });
+  commands.set(remove.data.name, {
+    data: remove.data,
+    execute: remove.execute,
+  });
+  commands.set(welcome.data.name, {
+    data: welcome.data,
+    execute: welcome.execute,
+  });
+  commands.set(goodbye.data.name, {
+    data: goodbye.data,
+    execute: goodbye.execute,
+  });
+  commands.set(create.data.name, {
+    data: create.data,
+    execute: create.execute,
+  });
+  commands.set(embed.data.name, {
+    data: embed.data,
+    execute: embed.execute,
   });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
@@ -163,6 +188,22 @@ async function loadEvents(client: Client): Promise<void> {
     }
   }
   logger.info(`Registered ${mods.length} core event listener(s)`);
+}
+
+async function loadWelcomeGoodbyeEvents(client: Client): Promise<void> {
+  const mods = [
+    await import("./events/guildMemberAdd.js"),
+    await import("./events/guildMemberRemove.js"),
+    await import("./events/welcomeGoodbyeInteractionCreate.js"),
+  ];
+  for (const mod of mods) {
+    if (mod.once) {
+      client.once(mod.name, (...args) => mod.execute(...(args as [never])));
+    } else {
+      client.on(mod.name, (...args) => mod.execute(...(args as [never])));
+    }
+  }
+  logger.info(`Registered ${mods.length} Welcome/Goodbye event listener(s)`);
 }
 
 /**
@@ -246,12 +287,15 @@ async function main(): Promise<void> {
   }
 
   const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
-  const wantGuildMembers = envBool("INTENT_GUILD_MEMBERS");
+  const wantGuildMembers =
+    process.env.INTENT_GUILD_MEMBERS === undefined
+      ? true
+      : envBool("INTENT_GUILD_MEMBERS");
 
   logger.info(
     `[INTENT DIAGNOSTIC] ` +
       `INTENT_MESSAGE_CONTENT raw="${process.env.INTENT_MESSAGE_CONTENT ?? "<unset>"}" → envBool=${wantMessageContent} | ` +
-      `INTENT_GUILD_MEMBERS raw="${process.env.INTENT_GUILD_MEMBERS ?? "<unset>"}" → envBool=${wantGuildMembers}`
+      `INTENT_GUILD_MEMBERS raw="${process.env.INTENT_GUILD_MEMBERS ?? "<unset>"}" → requested=${wantGuildMembers}`
   );
 
   await loadCommands();
@@ -302,6 +346,7 @@ async function main(): Promise<void> {
 
   await loadEvents(client);
   await securityManager.init(client);
+  await loadWelcomeGoodbyeEvents(client);
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
 

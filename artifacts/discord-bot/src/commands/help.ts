@@ -285,7 +285,13 @@ export async function handleHelpInteraction(
 
   if (interaction.isStringSelectMenu() && interaction.customId === HELP_CATEGORY_SELECT) {
     const selected = interaction.values[0] as HelpCategoryKey;
-    await interaction.update(selected === "security" ? securityView() : emptyCategoryView(selected));
+    await interaction.update(
+      selected === "security"
+        ? securityView()
+        : selected === "welcomeGoodbye"
+          ? welcomeGoodbyeView()
+          : emptyCategoryView(selected),
+    );
     return;
   }
 
@@ -330,7 +336,9 @@ function categoriesView() {
           description:
             key === "security"
               ? "Explore the available security modules"
-              : "No modules are currently registered in this category",
+              : key === "welcomeGoodbye"
+                ? "Set up and test Welcome and Goodbye messages"
+                : "No modules are currently registered in this category",
           emoji: category.emoji,
         })
       )
@@ -373,6 +381,49 @@ function emptyCategoryView(categoryKey: Exclude<HelpCategoryKey, "security">) {
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         backButton(HELP_BACK_CATEGORIES, "← Back")
+      ),
+    ],
+  };
+}
+
+function welcomeGoodbyeView() {
+  const commands: ModuleCommand[] = [
+    { usage: "/set general prefix <prefix>", description: "Choose the server's message prefix." },
+    { usage: "/set welcome channel <channel>", description: "Choose where new-member messages are sent." },
+    { usage: "/set goodbye channel <channel>", description: "Choose where leaving-member messages are sent." },
+    { usage: "/remove welcome channel", description: "Remove the Welcome channel and turn off that flow; saved message and embeds stay." },
+    { usage: "/remove goodbye channel", description: "Remove the Goodbye channel and turn off that flow; saved message and embeds stay." },
+    { usage: "/welcome embed", description: "Choose a saved embed for Welcome messages." },
+    { usage: "/welcome message", description: "Write or clear the Welcome message." },
+    { usage: "/welcome config [enabled]", description: "View settings or turn Welcome messages on or off." },
+    { usage: "/welcome test", description: "Send the current Welcome output to its configured channel." },
+    { usage: "/goodbye embed", description: "Choose a saved embed for Goodbye messages." },
+    { usage: "/goodbye message", description: "Write or clear the Goodbye message." },
+    { usage: "/goodbye config [enabled]", description: "View settings or turn Goodbye messages on or off." },
+    { usage: "/goodbye test", description: "Send the current Goodbye output to its configured channel." },
+    { usage: "/create embed <name>", description: "Build and save a reusable embed for this server." },
+    { usage: "/embed list", description: "Browse and preview embeds saved in this server." },
+  ];
+  return {
+    embeds: [
+      baseEmbed(
+        "Welcome / Goodbye",
+        [
+          "Configure each flow separately. Choose a channel, write a message, optionally select a saved embed, then test it.",
+          "",
+          ...commands.map(
+            (command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`,
+          ),
+          "",
+          "**Message variables**",
+          "`(user)` member mention · `(name)` member name · `(user{avatar})` avatar URL · `(server)` server name · `(membercount)` current member count",
+        ].join("\n\n"),
+        CUSTOM_EMOJIS.hi,
+      ),
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        backButton(HELP_BACK_CATEGORIES, "← Back"),
       ),
     ],
   };
