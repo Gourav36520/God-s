@@ -11,7 +11,7 @@ export interface EmbedDraftSession {
   expiresAt: number;
 }
 
-const DRAFT_LIFETIME_MS = 30 * 60 * 1000;
+const DRAFT_INACTIVITY_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const drafts = new Map<string, EmbedDraftSession>();
 
 export function createEmbedDraft(
@@ -29,7 +29,7 @@ export function createEmbedDraft(
     userId,
     name,
     definition: createDefaultEmbedDefinition(),
-    expiresAt: now + DRAFT_LIFETIME_MS,
+    expiresAt: now + DRAFT_INACTIVITY_TIMEOUT_MS,
   };
   drafts.set(draft.id, draft);
   return draft;
@@ -50,7 +50,11 @@ export function updateEmbedDraft(
   definition: WelcomeGoodbyeEmbedDefinition,
 ): void {
   draft.definition = definition;
-  draft.expiresAt = Date.now() + DRAFT_LIFETIME_MS;
+  touchEmbedDraft(draft);
+}
+
+export function touchEmbedDraft(draft: EmbedDraftSession): void {
+  draft.expiresAt = Date.now() + DRAFT_INACTIVITY_TIMEOUT_MS;
   drafts.set(draft.id, draft);
 }
 

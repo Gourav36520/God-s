@@ -22,6 +22,7 @@ import {
 import {
   deleteEmbedDraft,
   getEmbedDraft,
+  touchEmbedDraft,
   updateEmbedDraft,
 } from "../welcome-goodbye/drafts.js";
 import type { EmbedDraftSession } from "../welcome-goodbye/drafts.js";
@@ -137,6 +138,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     }
     return;
   }
+  touchEmbedDraft(draft);
 
   if (action === "timestamp") {
     updateEmbedDraft(draft, {
@@ -177,14 +179,29 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
       );
       return;
     }
-    await welcomeGoodbyeStore.saveEmbed(draft.guildId, {
-      id: randomUUID(),
-      name: draft.name,
-      definition: draft.definition,
-      createdAt: new Date().toISOString(),
-    });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      await welcomeGoodbyeStore.saveEmbed(draft.guildId, {
+        id: randomUUID(),
+        name: draft.name,
+        definition: draft.definition,
+        createdAt: new Date().toISOString(),
+      });
+    } catch {
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Could Not Save Embed",
+            description: "The draft is still available. Please try saving it again.",
+            emoji: GODS_EMOJI.settings,
+            tone: "error",
+          }),
+        ],
+      });
+      return;
+    }
     deleteEmbedDraft(draft.id);
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [
         createGodsEmbed({
           title: "Embed Saved",
@@ -193,7 +210,6 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
           tone: "success",
         }),
       ],
-      ephemeral: true,
     });
   }
 
@@ -216,6 +232,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
       await replyError(interaction, "Choose a field group from the menu.");
       return;
     }
+    touchEmbedDraft(draft);
     await interaction.showModal(buildFieldModal(draft, group, fields));
     return;
   }
@@ -276,51 +293,10 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
     }
     if (!(await validateComponent(interaction, ownerId, guildId))) return;
 
+    const raw = interaction.fields.getTextInputValue("json");
+    let imported: ReturnType<typeof convertRawEmbedJson>;
     try {
-      const raw = interaction.fields.getTextInputValue("json");
-      const imported = convertRawEmbedJson(raw);
-      const name = imported.name;
-      const saved = {
-        id: randomUUID(),
-        name,
-        definition: imported.definition,
-        createdAt: new Date().toISOString(),
-      };
-
-      try {
-        await welcomeGoodbyeStore.saveEmbed(guildId, saved);
-      } catch {
-        await replyError(
-          interaction,
-          "The JSON passed validation, but this embed could not be saved for the server. Please try again.",
-        );
-        return;
-      }
-
-      const notes = [
-        imported.fieldsFlattened
-          ? "Discord fields were converted into formatted description text to match the existing saved-embed format."
-          : "",
-        imported.timestampIncluded
-          ? "The imported timestamp will show the current time when a greeting is sent."
-          : "",
-      ].filter(Boolean);
-      await interaction.reply({
-        embeds: [
-          createGodsEmbed({
-            title: "Raw Embed Imported",
-            description: [
-              `**${name}** is saved for this server and is available in \`/embed list\`, \`/welcome embed\`, and \`/goodbye embed\`.`,
-              ...notes,
-            ].join("\n\n"),
-            emoji: GODS_EMOJI.settings,
-            tone: "success",
-          }),
-          imported.preview,
-        ],
-        allowedMentions: { parse: [] },
-        ephemeral: true,
-      });
+      imported = convertRawEmbedJson(raw);
     } catch (error) {
       const reason =
         error instanceof RawEmbedImportError
@@ -330,7 +306,56 @@ async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
         interaction,
         `${reason}\n\nCorrect the JSON and run \`/add raw json\` again.`,
       );
+      return;
     }
+
+    const name = imported.name;
+    const saved = {
+      id: randomUUID(),
+      name,
+      definition: imported.definition,
+      createdAt: new Date().toISOString(),
+    };
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      await welcomeGoodbyeStore.saveEmbed(guildId, saved);
+    } catch {
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Could Not Save Embed",
+            description: "The JSON passed validation, but this embed could not be saved for the server. Please try again.",
+            emoji: GODS_EMOJI.settings,
+            tone: "error",
+          }),
+        ],
+      });
+      return;
+    }
+
+    const notes = [
+      imported.fieldsFlattened
+        ? "Discord fields were converted into formatted description text to match the existing saved-embed format."
+        : "",
+      imported.timestampIncluded
+        ? "The imported timestamp will show the current time when a greeting is sent."
+        : "",
+    ].filter(Boolean);
+    await interaction.editReply({
+      embeds: [
+        createGodsEmbed({
+          title: "Raw Embed Imported",
+          description: [
+            `**${name}** is saved for this server and is available in \`/embed list\`, \`/welcome embed\`, and \`/goodbye embed\`.`,
+            ...notes,
+          ].join("\n\n"),
+          emoji: GODS_EMOJI.settings,
+          tone: "success",
+        }),
+        imported.preview,
+      ],
+      allowedMentions: { parse: [] },
+    });
     return;
   }
 

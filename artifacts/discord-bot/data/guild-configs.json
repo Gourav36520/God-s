@@ -75,7 +75,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-10-01T15:26:58.837Z",
+    "updatedAt": "2026-10-01T15:33:19.055Z",
     "heatEngine": {
       "enabled": true
     },
@@ -83,7 +83,7 @@
       "welcome": {
         "enabled": true,
         "channelId": "1555178198642204732",
-        "embedId": null,
+        "embedId": "aec6c516-c37f-49d9-b50c-4472b0fdaf73",
         "message": ""
       },
       "goodbye": {
@@ -92,7 +92,29 @@
         "embedId": null,
         "message": ""
       },
-      "embeds": []
+      "embeds": [
+        {
+          "id": "aec6c516-c37f-49d9-b50c-4472b0fdaf73",
+          "name": "welcome",
+          "definition": {
+            "content": "",
+            "title": "Hello",
+            "titleUrl": "",
+            "authorName": "",
+            "authorUrl": "",
+            "authorIconUrl": "",
+            "description": "",
+            "thumbnailUrl": "",
+            "imageUrl": "",
+            "footerText": "",
+            "footerIconUrl": "",
+            "footerUrl": "",
+            "color": "",
+            "timestamp": true
+          },
+          "createdAt": "2026-10-01T15:32:59.797Z"
+        }
+      ]
     }
   }
 }
