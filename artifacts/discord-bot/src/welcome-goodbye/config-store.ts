@@ -136,6 +136,20 @@ export class WelcomeGoodbyeStore {
     return true;
   }
 
+  async deleteEmbed(
+    guildId: string,
+    embedId: string,
+  ): Promise<SavedWelcomeGoodbyeEmbed | undefined> {
+    const current = this.get(guildId);
+    const index = current.embeds.findIndex((embed) => embed.id === embedId);
+    if (index === -1) return undefined;
+
+    const embeds = [...current.embeds];
+    const [deleted] = embeds.splice(index, 1);
+    await this.persist(guildId, { ...current, embeds });
+    return deleted;
+  }
+
   async selectEmbed(
     guildId: string,
     kind: GreetingKind,

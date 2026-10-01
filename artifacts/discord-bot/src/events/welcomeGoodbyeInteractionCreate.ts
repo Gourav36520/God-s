@@ -35,6 +35,7 @@ import type { GreetingKind } from "../welcome-goodbye/types.js";
 import type { WelcomeGoodbyeEmbedDefinition } from "../welcome-goodbye/types.js";
 import { MEMBER_AVATAR_VARIABLE } from "../welcome-goodbye/variables.js";
 import {
+  buildSavedEmbedDeleteConfirmation,
   buildEmbedBuilderPanel,
   buildSavedEmbedPicker,
   buildSavedEmbedPreview,
@@ -105,6 +106,92 @@ export async function execute(interaction: Interaction): Promise<void> {
 
 async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const parts = interaction.customId.split(":");
+
+  if (parts[0] === "wg" && parts[1] === "delete") {
+    const action = parts[2];
+    const guildId = parts[3];
+    const embedId = parts[4];
+    const ownerId = parts[5];
+    if (
+      (action !== "confirm" && action !== "cancel") ||
+      !guildId ||
+      !embedId ||
+      !ownerId
+    ) {
+      await replyError(
+        interaction,
+        "This delete confirmation is no longer valid. Run `/embed delete` again.",
+      );
+      return;
+    }
+    if (!(await validateComponent(interaction, ownerId, guildId))) {
+      return;
+    }
+
+    if (action === "cancel") {
+      const selected = welcomeGoodbyeStore.findEmbed(guildId, embedId);
+      await interaction.update({
+        embeds: [
+          createGodsEmbed({
+            title: "Deletion Cancelled",
+            description: selected
+              ? `**${selected.name}** was not deleted.`
+              : "Nothing was deleted.",
+            emoji: GODS_EMOJI.settings,
+            tone: "info",
+          }),
+        ],
+        components: [],
+      });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    const pickerOptions = {
+      kind: "delete" as const,
+      guildId,
+      userId: interaction.user.id,
+    };
+    try {
+      const deleted = await welcomeGoodbyeStore.deleteEmbed(guildId, embedId);
+      const picker = buildSavedEmbedPicker({
+        ...pickerOptions,
+        page: 0,
+      });
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: deleted ? "Embed Deleted" : "Saved Embed Not Found",
+            description: deleted
+              ? `**${deleted.name}** was permanently deleted from this server.`
+              : "This saved embed is no longer available. No other embeds were changed.",
+            emoji: GODS_EMOJI.settings,
+            tone: deleted ? "success" : "error",
+          }),
+          ...picker.embeds,
+        ],
+        components: picker.components,
+      });
+    } catch {
+      const picker = buildSavedEmbedPicker({
+        ...pickerOptions,
+        page: 0,
+      });
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Could Not Delete Embed",
+            description: "The saved embed could not be deleted. No changes were confirmed.",
+            emoji: GODS_EMOJI.settings,
+            tone: "error",
+          }),
+          ...picker.embeds,
+        ],
+        components: picker.components,
+      });
+    }
+    return;
+  }
 
   if (parts[0] === "wg" && parts[1] === "message" && parts[2] === "open") {
     const kind = parts[3] as GreetingKind;
@@ -268,7 +355,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
   }
 
   if (parts[0] === "wg" && parts[1] === "picker" && parts[2] === "select") {
-    const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit";
+    const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit" | "delete";
     const ownerId = parts[5];
     if (!isPickerKind(kind) || !(await validateComponent(interaction, ownerId))) return;
     const guildId = interaction.guildId;
@@ -302,6 +389,17 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     if (kind === "edit") {
       const draft = createEmbedDraft(guildId, interaction.user.id, saved.name, saved);
       await interaction.update(buildEmbedBuilderPanel(draft));
+      return;
+    }
+
+    if (kind === "delete") {
+      await interaction.update(
+        buildSavedEmbedDeleteConfirmation({
+          guildId,
+          userId: interaction.user.id,
+          embed: saved,
+        }),
+      );
       return;
     }
 
@@ -573,7 +671,7 @@ function isHttpUrl(value: string): boolean {
 
 async function handlePickerPage(interaction: ButtonInteraction): Promise<void> {
   const parts = interaction.customId.split(":");
-  const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit";
+  const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit" | "delete";
   const page = Number(parts[4]);
   const ownerId = parts[5];
   if (!isPickerKind(kind) || !(await validateComponent(interaction, ownerId))) return;
@@ -639,8 +737,8 @@ function isGreetingKind(value: string): value is GreetingKind {
   return value === "welcome" || value === "goodbye";
 }
 
-function isPickerKind(value: string): value is "welcome" | "goodbye" | "list" | "edit" {
-  return value === "welcome" || value === "goodbye" || value === "list" || value === "edit";
+function isPickerKind(value: string): value is "welcome" | "goodbye" | "list" | "edit" | "delete" {
+  return value === "welcome" || value === "goodbye" || value === "list" || value === "edit" || value === "delete";
 }
 
 function isPageButton(customId: string): boolean {

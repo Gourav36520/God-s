@@ -21,6 +21,11 @@ export const data = new SlashCommandBuilder()
     subcommand
       .setName("edit")
       .setDescription("Edit one of this server's saved embeds"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("delete")
+      .setDescription("Permanently delete one of this server's saved embeds"),
   );
 
 export async function execute(
@@ -29,7 +34,11 @@ export async function execute(
   const guildId = await requireGuildAdministrator(interaction);
   if (!guildId) return;
   try {
-    const kind = interaction.options.getSubcommand(true) === "edit" ? "edit" : "list";
+    const subcommand = interaction.options.getSubcommand(true);
+    const kind =
+      subcommand === "edit" || subcommand === "delete"
+        ? subcommand
+        : "list";
     await interaction.reply({
       ...buildSavedEmbedPicker({
         kind,

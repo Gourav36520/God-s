@@ -11,11 +11,12 @@ import { buildEmbedPreview, validateEmbedDefinition } from "./render.js";
 import type { EmbedDraftSession } from "./drafts.js";
 import type {
   GreetingKind,
+  SavedWelcomeGoodbyeEmbed,
   WelcomeGoodbyeGuildConfig,
 } from "./types.js";
 import { VARIABLE_GUIDE } from "./variables.js";
 
-export type EmbedPickerKind = GreetingKind | "list" | "edit";
+export type EmbedPickerKind = GreetingKind | "list" | "edit" | "delete";
 
 const EDIT_GROUPS = [
   { value: "basics", label: "Message & text", description: "Content, title, title link and description" },
@@ -137,7 +138,9 @@ export function buildSavedEmbedPicker(options: {
   const entries = config.embeds.slice(page * pageSize, (page + 1) * pageSize);
   const label = kind === "welcome" ? "Welcome" : kind === "goodbye" ? "Goodbye" : "Saved";
   const selectedId =
-    kind === "list" || kind === "edit" ? null : config[kind].embedId;
+    kind === "list" || kind === "edit" || kind === "delete"
+      ? null
+      : config[kind].embedId;
 
   if (config.embeds.length === 0) {
     const title =
@@ -145,13 +148,17 @@ export function buildSavedEmbedPicker(options: {
         ? "Saved Embeds"
         : kind === "edit"
           ? "Edit Saved Embed"
+          : kind === "delete"
+            ? "Delete Saved Embed"
           : `${label} Embed`;
     const description =
       kind === "list"
         ? "This server has no saved embeds yet. Create one with `/create embed`."
         : kind === "edit"
           ? "This server has no saved embeds to edit yet. Create one with `/create embed` or import one with `/add raw json`."
-          : `This server has no saved embeds yet. Create one with \`/create embed\`, then choose it here.`;
+          : kind === "delete"
+            ? "This server has no saved embeds to delete."
+            : `This server has no saved embeds yet. Create one with \`/create embed\`, then choose it here.`;
     return {
       embeds: [
         createGodsEmbed({
@@ -172,6 +179,8 @@ export function buildSavedEmbedPicker(options: {
         ? "Choose an embed to preview"
         : kind === "edit"
           ? "Choose an embed to edit"
+          : kind === "delete"
+            ? "Choose an embed to delete"
           : "Choose an embed",
     )
     .addOptions(
@@ -218,6 +227,8 @@ export function buildSavedEmbedPicker(options: {
       ? "Choose a saved embed to preview. Only embeds saved in this server are shown."
       : kind === "edit"
         ? "Choose a saved embed to open it in the existing builder."
+        : kind === "delete"
+          ? "Choose a saved embed to delete from this server."
         : `Choose which saved embed to use for ${label.toLowerCase()} messages.`,
     currentText ? `\n${arrowLine("Currently selected", currentText)}` : "",
     pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : "",
@@ -231,6 +242,8 @@ export function buildSavedEmbedPicker(options: {
             ? "Saved Embeds"
             : kind === "edit"
               ? "Edit Saved Embed"
+              : kind === "delete"
+                ? "Delete Saved Embed"
               : `${label} Embed`,
         description,
         emoji: GODS_EMOJI.settings,
@@ -238,6 +251,42 @@ export function buildSavedEmbedPicker(options: {
       }),
     ],
     components,
+  };
+}
+
+export function buildSavedEmbedDeleteConfirmation(options: {
+  guildId: string;
+  userId: string;
+  embed: SavedWelcomeGoodbyeEmbed;
+}) {
+  const { guildId, userId, embed } = options;
+  const confirm = new ButtonBuilder()
+    .setCustomId(`wg:delete:confirm:${guildId}:${embed.id}:${userId}`)
+    .setLabel("Delete Permanently")
+    .setStyle(ButtonStyle.Danger);
+  const cancel = new ButtonBuilder()
+    .setCustomId(`wg:delete:cancel:${guildId}:${embed.id}:${userId}`)
+    .setLabel("Cancel")
+    .setStyle(ButtonStyle.Secondary);
+
+  return {
+    embeds: [
+      createGodsEmbed({
+        title: "Confirm Embed Deletion",
+        description: [
+          `Permanently delete **${embed.name}** from this server?`,
+          `Embed ID: \`${embed.id}\``,
+          "",
+          "This cannot be undone.",
+          "If currently selected for Welcome or Goodbye, that flow will need another embed selected before it can send.",
+        ].join("\n"),
+        emoji: GODS_EMOJI.settings,
+        tone: "warning",
+      }),
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(confirm, cancel),
+    ],
   };
 }
 
