@@ -15,7 +15,7 @@ import type {
 } from "./types.js";
 import { VARIABLE_GUIDE } from "./variables.js";
 
-export type EmbedPickerKind = GreetingKind | "list";
+export type EmbedPickerKind = GreetingKind | "list" | "edit";
 
 const EDIT_GROUPS = [
   { value: "basics", label: "Message & text", description: "Content, title, title link and description" },
@@ -136,16 +136,27 @@ export function buildSavedEmbedPicker(options: {
   const page = Math.min(Math.max(0, options.page), pageCount - 1);
   const entries = config.embeds.slice(page * pageSize, (page + 1) * pageSize);
   const label = kind === "welcome" ? "Welcome" : kind === "goodbye" ? "Goodbye" : "Saved";
-  const selectedId = kind === "list" ? null : config[kind].embedId;
+  const selectedId =
+    kind === "list" || kind === "edit" ? null : config[kind].embedId;
 
   if (config.embeds.length === 0) {
+    const title =
+      kind === "list"
+        ? "Saved Embeds"
+        : kind === "edit"
+          ? "Edit Saved Embed"
+          : `${label} Embed`;
+    const description =
+      kind === "list"
+        ? "This server has no saved embeds yet. Create one with `/create embed`."
+        : kind === "edit"
+          ? "This server has no saved embeds to edit yet. Create one with `/create embed` or import one with `/add raw json`."
+          : `This server has no saved embeds yet. Create one with \`/create embed\`, then choose it here.`;
     return {
       embeds: [
         createGodsEmbed({
-          title: kind === "list" ? "Saved Embeds" : `${label} Embed`,
-          description: kind === "list"
-            ? "This server has no saved embeds yet. Create one with `/create embed`."
-            : `This server has no saved embeds yet. Create one with \`/create embed\`, then choose it here.`,
+          title,
+          description,
           emoji: GODS_EMOJI.settings,
           tone: "info",
         }),
@@ -156,7 +167,13 @@ export function buildSavedEmbedPicker(options: {
 
   const selector = new StringSelectMenuBuilder()
     .setCustomId(`wg:picker:select:${kind}:${page}:${userId}`)
-    .setPlaceholder(kind === "list" ? "Choose an embed to preview" : "Choose an embed")
+    .setPlaceholder(
+      kind === "list"
+        ? "Choose an embed to preview"
+        : kind === "edit"
+          ? "Choose an embed to edit"
+          : "Choose an embed",
+    )
     .addOptions(
       entries.map((embed) => {
         const option = new StringSelectMenuOptionBuilder()
@@ -199,7 +216,9 @@ export function buildSavedEmbedPicker(options: {
   const description = [
     kind === "list"
       ? "Choose a saved embed to preview. Only embeds saved in this server are shown."
-      : `Choose which saved embed to use for ${label.toLowerCase()} messages.`,
+      : kind === "edit"
+        ? "Choose a saved embed to open it in the existing builder."
+        : `Choose which saved embed to use for ${label.toLowerCase()} messages.`,
     currentText ? `\n${arrowLine("Currently selected", currentText)}` : "",
     pageCount > 1 ? `\nPage ${page + 1} of ${pageCount}` : "",
   ].join("");
@@ -207,7 +226,12 @@ export function buildSavedEmbedPicker(options: {
   return {
     embeds: [
       createGodsEmbed({
-        title: kind === "list" ? "Saved Embeds" : `${label} Embed`,
+        title:
+          kind === "list"
+            ? "Saved Embeds"
+            : kind === "edit"
+              ? "Edit Saved Embed"
+              : `${label} Embed`,
         description,
         emoji: GODS_EMOJI.settings,
         tone: "info",

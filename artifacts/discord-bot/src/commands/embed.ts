@@ -16,6 +16,11 @@ export const data = new SlashCommandBuilder()
     subcommand
       .setName("list")
       .setDescription("Show and preview this server's saved embeds"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("edit")
+      .setDescription("Edit one of this server's saved embeds"),
   );
 
 export async function execute(
@@ -24,9 +29,10 @@ export async function execute(
   const guildId = await requireGuildAdministrator(interaction);
   if (!guildId) return;
   try {
+    const kind = interaction.options.getSubcommand(true) === "edit" ? "edit" : "list";
     await interaction.reply({
       ...buildSavedEmbedPicker({
-        kind: "list",
+        kind,
         guildId,
         userId: interaction.user.id,
         page: 0,

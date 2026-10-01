@@ -20,6 +20,7 @@ import {
   RawEmbedImportError,
 } from "../welcome-goodbye/raw-json.js";
 import {
+  createEmbedDraft,
   deleteEmbedDraft,
   getEmbedDraft,
   touchEmbedDraft,
@@ -181,18 +182,45 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     }
     await interaction.deferReply({ ephemeral: true });
     try {
-      await welcomeGoodbyeStore.saveEmbed(draft.guildId, {
-        id: randomUUID(),
+      const savedEmbed = {
+        id: draft.savedEmbedId ?? randomUUID(),
         name: draft.name,
         definition: draft.definition,
-        createdAt: new Date().toISOString(),
-      });
+        createdAt: draft.savedEmbedCreatedAt ?? new Date().toISOString(),
+      };
+      if (draft.savedEmbedId) {
+        const updated = await welcomeGoodbyeStore.updateEmbed(
+          draft.guildId,
+          savedEmbed,
+        );
+        if (!updated) {
+          deleteEmbedDraft(draft.id);
+          await interaction.editReply({
+            embeds: [
+              createGodsEmbed({
+                title: "Saved Embed Not Found",
+                description:
+                  "This saved embed was deleted or is no longer available. No changes were saved.",
+                emoji: GODS_EMOJI.settings,
+                tone: "error",
+              }),
+            ],
+          });
+          return;
+        }
+      } else {
+        await welcomeGoodbyeStore.saveEmbed(draft.guildId, savedEmbed);
+      }
     } catch {
       await interaction.editReply({
         embeds: [
           createGodsEmbed({
-            title: "Could Not Save Embed",
-            description: "The draft is still available. Please try saving it again.",
+            title: draft.savedEmbedId
+              ? "Could Not Update Embed"
+              : "Could Not Save Embed",
+            description: draft.savedEmbedId
+              ? "The edit is still available. Please try saving it again."
+              : "The draft is still available. Please try saving it again.",
             emoji: GODS_EMOJI.settings,
             tone: "error",
           }),
@@ -204,8 +232,10 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     await interaction.editReply({
       embeds: [
         createGodsEmbed({
-          title: "Embed Saved",
-          description: `${draft.name} is saved for this server. Choose it with \`/welcome embed\` or \`/goodbye embed\`.`,
+          title: draft.savedEmbedId ? "Embed Updated" : "Embed Saved",
+          description: draft.savedEmbedId
+            ? `**${draft.name}** was updated in place. Existing Welcome/Goodbye selections still use this embed.`
+            : `${draft.name} is saved for this server. Choose it with \`/welcome embed\` or \`/goodbye embed\`.`,
           emoji: GODS_EMOJI.settings,
           tone: "success",
         }),
@@ -238,7 +268,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
   }
 
   if (parts[0] === "wg" && parts[1] === "picker" && parts[2] === "select") {
-    const kind = parts[3] as "welcome" | "goodbye" | "list";
+    const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit";
     const ownerId = parts[5];
     if (!isPickerKind(kind) || !(await validateComponent(interaction, ownerId))) return;
     const guildId = interaction.guildId;
@@ -266,6 +296,12 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
         ],
         ephemeral: true,
       });
+      return;
+    }
+
+    if (kind === "edit") {
+      const draft = createEmbedDraft(guildId, interaction.user.id, saved.name, saved);
+      await interaction.update(buildEmbedBuilderPanel(draft));
       return;
     }
 
@@ -537,7 +573,7 @@ function isHttpUrl(value: string): boolean {
 
 async function handlePickerPage(interaction: ButtonInteraction): Promise<void> {
   const parts = interaction.customId.split(":");
-  const kind = parts[3] as "welcome" | "goodbye" | "list";
+  const kind = parts[3] as "welcome" | "goodbye" | "list" | "edit";
   const page = Number(parts[4]);
   const ownerId = parts[5];
   if (!isPickerKind(kind) || !(await validateComponent(interaction, ownerId))) return;
@@ -603,8 +639,8 @@ function isGreetingKind(value: string): value is GreetingKind {
   return value === "welcome" || value === "goodbye";
 }
 
-function isPickerKind(value: string): value is "welcome" | "goodbye" | "list" {
-  return value === "welcome" || value === "goodbye" || value === "list";
+function isPickerKind(value: string): value is "welcome" | "goodbye" | "list" | "edit" {
+  return value === "welcome" || value === "goodbye" || value === "list" || value === "edit";
 }
 
 function isPageButton(customId: string): boolean {

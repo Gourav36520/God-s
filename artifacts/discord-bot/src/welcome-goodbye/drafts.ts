@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { createDefaultEmbedDefinition } from "./types.js";
-import type { WelcomeGoodbyeEmbedDefinition } from "./types.js";
+import type {
+  SavedWelcomeGoodbyeEmbed,
+  WelcomeGoodbyeEmbedDefinition,
+} from "./types.js";
 
 export interface EmbedDraftSession {
   id: string;
   guildId: string;
   userId: string;
   name: string;
+  savedEmbedId?: string;
+  savedEmbedCreatedAt?: string;
   definition: WelcomeGoodbyeEmbedDefinition;
   expiresAt: number;
 }
@@ -18,6 +23,7 @@ export function createEmbedDraft(
   guildId: string,
   userId: string,
   name: string,
+  savedEmbed?: SavedWelcomeGoodbyeEmbed,
 ): EmbedDraftSession {
   const now = Date.now();
   for (const [id, draft] of drafts) {
@@ -27,8 +33,16 @@ export function createEmbedDraft(
     id: randomUUID().replaceAll("-", ""),
     guildId,
     userId,
-    name,
-    definition: createDefaultEmbedDefinition(),
+    name: savedEmbed?.name ?? name,
+    ...(savedEmbed
+      ? {
+          savedEmbedId: savedEmbed.id,
+          savedEmbedCreatedAt: savedEmbed.createdAt,
+        }
+      : {}),
+    definition: savedEmbed
+      ? { ...savedEmbed.definition }
+      : createDefaultEmbedDefinition(),
     expiresAt: now + DRAFT_INACTIVITY_TIMEOUT_MS,
   };
   drafts.set(draft.id, draft);

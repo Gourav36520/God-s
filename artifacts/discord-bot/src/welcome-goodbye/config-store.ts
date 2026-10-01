@@ -122,6 +122,20 @@ export class WelcomeGoodbyeStore {
     });
   }
 
+  async updateEmbed(
+    guildId: string,
+    embed: SavedWelcomeGoodbyeEmbed,
+  ): Promise<boolean> {
+    const current = this.get(guildId);
+    const index = current.embeds.findIndex((saved) => saved.id === embed.id);
+    if (index === -1) return false;
+
+    const embeds = [...current.embeds];
+    embeds[index] = embed;
+    await this.persist(guildId, { ...current, embeds });
+    return true;
+  }
+
   async selectEmbed(
     guildId: string,
     kind: GreetingKind,
