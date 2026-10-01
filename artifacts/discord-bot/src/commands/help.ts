@@ -403,6 +403,7 @@ function welcomeGoodbyeView() {
     { usage: "/goodbye test", description: "Send the current Goodbye output to its configured channel." },
     { usage: "/create embed <name>", description: "Build and save a reusable embed for this server." },
     { usage: "/embed list", description: "Browse and preview embeds saved in this server." },
+    { usage: "/add raw json", description: "Advanced import: paste raw Discord Embed JSON to save a reusable embed." },
   ];
   return {
     embeds: [

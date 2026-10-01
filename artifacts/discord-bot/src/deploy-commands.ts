@@ -23,6 +23,7 @@ async function main(): Promise<void> {
   const goodbye = await import("./commands/goodbye.js");
   const create = await import("./commands/create.js");
   const embed = await import("./commands/embed.js");
+  const add = await import("./commands/add.js");
 
   const commandData = [
     ping.data,
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
     goodbye.data,
     create.data,
     embed.data,
+    add.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

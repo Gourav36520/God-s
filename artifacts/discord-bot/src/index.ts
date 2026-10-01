@@ -126,6 +126,7 @@ async function loadCommands(): Promise<void> {
   const goodbye = await import("./commands/goodbye.js");
   const create = await import("./commands/create.js");
   const embed = await import("./commands/embed.js");
+  const add = await import("./commands/add.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -165,6 +166,10 @@ async function loadCommands(): Promise<void> {
   commands.set(embed.data.name, {
     data: embed.data,
     execute: embed.execute,
+  });
+  commands.set(add.data.name, {
+    data: add.data,
+    execute: add.execute,
   });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,

@@ -75,9 +75,24 @@
         "security": true
       }
     },
-    "updatedAt": "2026-09-30T12:12:06.539Z",
+    "updatedAt": "2026-10-01T15:26:58.837Z",
     "heatEngine": {
       "enabled": true
+    },
+    "welcomeGoodbye": {
+      "welcome": {
+        "enabled": true,
+        "channelId": "1555178198642204732",
+        "embedId": null,
+        "message": ""
+      },
+      "goodbye": {
+        "enabled": false,
+        "channelId": null,
+        "embedId": null,
+        "message": ""
+      },
+      "embeds": []
     }
   }
 }

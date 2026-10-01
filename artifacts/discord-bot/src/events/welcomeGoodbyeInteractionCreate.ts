@@ -16,6 +16,10 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../lib/logger.js";
 import { welcomeGoodbyeStore } from "../welcome-goodbye/config-store.js";
 import {
+  convertRawEmbedJson,
+  RawEmbedImportError,
+} from "../welcome-goodbye/raw-json.js";
+import {
   deleteEmbedDraft,
   getEmbedDraft,
   updateEmbedDraft,
@@ -262,6 +266,73 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
 async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const parts = interaction.customId.split(":");
   if (parts[0] !== "wg") return;
+
+  if (parts[1] === "rawjson" && parts[2] === "submit") {
+    const guildId = parts[3];
+    const ownerId = parts[4];
+    if (!guildId || !ownerId) {
+      await replyError(interaction, "This import form is incomplete. Run `/add raw json` again.");
+      return;
+    }
+    if (!(await validateComponent(interaction, ownerId, guildId))) return;
+
+    try {
+      const raw = interaction.fields.getTextInputValue("json");
+      const imported = convertRawEmbedJson(raw);
+      const name = imported.name;
+      const saved = {
+        id: randomUUID(),
+        name,
+        definition: imported.definition,
+        createdAt: new Date().toISOString(),
+      };
+
+      try {
+        await welcomeGoodbyeStore.saveEmbed(guildId, saved);
+      } catch {
+        await replyError(
+          interaction,
+          "The JSON passed validation, but this embed could not be saved for the server. Please try again.",
+        );
+        return;
+      }
+
+      const notes = [
+        imported.fieldsFlattened
+          ? "Discord fields were converted into formatted description text to match the existing saved-embed format."
+          : "",
+        imported.timestampIncluded
+          ? "The imported timestamp will show the current time when a greeting is sent."
+          : "",
+      ].filter(Boolean);
+      await interaction.reply({
+        embeds: [
+          createGodsEmbed({
+            title: "Raw Embed Imported",
+            description: [
+              `**${name}** is saved for this server and is available in \`/embed list\`, \`/welcome embed\`, and \`/goodbye embed\`.`,
+              ...notes,
+            ].join("\n\n"),
+            emoji: GODS_EMOJI.settings,
+            tone: "success",
+          }),
+          imported.preview,
+        ],
+        allowedMentions: { parse: [] },
+        ephemeral: true,
+      });
+    } catch (error) {
+      const reason =
+        error instanceof RawEmbedImportError
+          ? error.message
+          : "The embed could not be safely converted.";
+      await replyError(
+        interaction,
+        `${reason}\n\nCorrect the JSON and run \`/add raw json\` again.`,
+      );
+    }
+    return;
+  }
 
   if (parts[1] === "message" && parts[2] === "save") {
     const kind = parts[3] as GreetingKind;
