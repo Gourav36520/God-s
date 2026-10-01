@@ -32,7 +32,7 @@ const CUSTOM_EMOJIS = {
   security: { name: "Gods_security", id: "1553646039339376660" },
   logs: { name: "security_logs", id: "1553676459489628241" },
   ticket: { name: "Gods_ticket", id: "1553647434498973817" },
-  hi: { name: "Gods_hi", id: "1553646590588358726" },
+  gate: { name: "Gate", id: "1554865259016233001" },
   setting: { name: "Gods_setting", id: "1553647566061830195" },
   judgment: { name: "Judgement", id: "1553680621673521153" },
   antiCaps: { name: "security_anticaps", id: "1553680193812693154" },
@@ -243,7 +243,7 @@ const HELP_BACK_SECURITY = "help:back:security";
 
 const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: HelpEmoji }> = {
   security: { label: "Security", emoji: CUSTOM_EMOJIS.security },
-  welcomeGoodbye: { label: "Welcome / Goodbye", emoji: CUSTOM_EMOJIS.hi },
+  welcomeGoodbye: { label: "Welcome / Goodbye", emoji: CUSTOM_EMOJIS.gate },
   tickets: { label: "Tickets", emoji: CUSTOM_EMOJIS.ticket },
 };
 
@@ -419,7 +419,7 @@ function welcomeGoodbyeView() {
           "**Message variables**",
           "`(user)` member mention · `(name)` member name · `(user{avatar})` avatar URL · `(server)` server name · `(membercount)` current member count",
         ].join("\n\n"),
-        CUSTOM_EMOJIS.hi,
+        CUSTOM_EMOJIS.gate,
       ),
     ],
     components: [

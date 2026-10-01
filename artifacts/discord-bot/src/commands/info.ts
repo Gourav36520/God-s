@@ -38,7 +38,7 @@ export async function execute(
   const createdAt = Math.floor(guild.createdTimestamp / 1000);
   const embed = createGodsEmbed({
     title: "Server Overview",
-    emoji: GODS_EMOJI.logo,
+    emoji: GODS_EMOJI.statistics,
     tone: "info",
     description: `A clear snapshot of **${guild.name}**.`,
   })

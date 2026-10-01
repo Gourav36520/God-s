@@ -10,6 +10,7 @@ export const GODS_EMOJI = {
   antiLink: "<:security_antilink:1553678253213098014>",
   antiMention: "<:security_antimention:1553678901887369278>",
   antiInvite: "<:security_anti_invite:1553679724637716611>",
+  statistics: "<:Statics:1554866241435471902>",
 } as const;
 
 export const GOLDEN_ARROW = "<a:arrow_arrow_1:1554486982439079966>";
