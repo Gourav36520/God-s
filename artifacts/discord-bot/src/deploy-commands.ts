@@ -17,6 +17,8 @@ async function main(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
+  const autorole = await import("./commands/autorole.js");
+  const reactionrole = await import("./commands/reactionrole.js");
   const set = await import("./commands/set.js");
   const remove = await import("./commands/remove.js");
   const welcome = await import("./commands/welcome.js");
@@ -34,6 +36,8 @@ async function main(): Promise<void> {
     judgment.releaseData,
     logging.data,
     heat.data,
+    autorole.data,
+    reactionrole.data,
     set.data,
     remove.data,
     welcome.data,

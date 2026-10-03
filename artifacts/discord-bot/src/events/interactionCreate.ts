@@ -4,6 +4,10 @@ import {
   Interaction,
 } from "discord.js";
 import { handleHelpInteraction, isHelpComponent } from "../commands/help.js";
+import {
+  handleReactionRoleListButton,
+  isReactionRoleListButton,
+} from "../commands/reactionrole.js";
 import { commands } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 
@@ -14,6 +18,8 @@ export async function execute(interaction: Interaction): Promise<void> {
   if (interaction.isButton()) {
     if (isHelpComponent(interaction.customId)) {
       await handleHelpInteraction(interaction);
+    } else if (isReactionRoleListButton(interaction.customId)) {
+      await handleReactionRoleListButton(interaction);
     }
     return;
   }

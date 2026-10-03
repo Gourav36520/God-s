@@ -4,6 +4,7 @@ import {
   Events,
   GatewayIntentBits,
   IntentsBitField,
+  Partials,
 } from "discord.js";
 import { logger } from "./lib/logger.js";
 import { commands, loggingService, securityManager } from "./lib/registry.js";
@@ -33,6 +34,7 @@ async function loginWithFallback(
     return [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.GuildModeration,
       ...(mc ? [GatewayIntentBits.MessageContent] : []),
       ...(gm ? [GatewayIntentBits.GuildMembers] : []),
@@ -44,7 +46,15 @@ async function loginWithFallback(
     gm: boolean
   ): Promise<Client | null> {
     const intents = buildIntents(mc, gm);
-    const client = new Client({ intents });
+    const client = new Client({
+      intents,
+      partials: [
+        Partials.Channel,
+        Partials.Message,
+        Partials.Reaction,
+        Partials.User,
+      ],
+    });
 
     // Confirm the ACTUAL bitfield discord.js constructed from the intent array
     const actualBitfield = (client.options.intents as IntentsBitField).bitfield;
@@ -106,7 +116,15 @@ async function loginWithFallback(
     "  Enable Server Members Intent and/or Message Content Intent in the Discord Developer Portal."
   );
   const intents = buildIntents(false, false);
-  const client = new Client({ intents });
+  const client = new Client({
+    intents,
+    partials: [
+      Partials.Channel,
+      Partials.Message,
+      Partials.Reaction,
+      Partials.User,
+    ],
+  });
   await client.login(token);
   logger.warn("[LOGIN] ✓ Degraded login succeeded (base intents only).");
   return { client, messageContentGranted: false, guildMembersGranted: false };
@@ -120,6 +138,8 @@ async function loadCommands(): Promise<void> {
   const judgment = await import("./commands/judgment.js");
   const logging = await import("./commands/logging.js");
   const heat = await import("./commands/heat.js");
+  const autorole = await import("./commands/autorole.js");
+  const reactionrole = await import("./commands/reactionrole.js");
   const set = await import("./commands/set.js");
   const remove = await import("./commands/remove.js");
   const welcome = await import("./commands/welcome.js");
@@ -143,6 +163,14 @@ async function loadCommands(): Promise<void> {
   commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
   commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
   commands.set(heat.data.name, { data: heat.data, execute: heat.execute });
+  commands.set(autorole.data.name, {
+    data: autorole.data,
+    execute: autorole.execute,
+  });
+  commands.set(reactionrole.data.name, {
+    data: reactionrole.data,
+    execute: reactionrole.execute,
+  });
   commands.set(set.data.name, {
     data: set.data,
     execute: set.execute,
@@ -184,6 +212,8 @@ async function loadEvents(client: Client): Promise<void> {
     await import("./events/ready.js"),
     await import("./events/interactionCreate.js"),
     await import("./events/messageCreate.js"),
+    await import("./events/messageReactionAdd.js"),
+    await import("./events/messageReactionRemove.js"),
   ];
   for (const mod of mods) {
     if (mod.once) {

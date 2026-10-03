@@ -38,11 +38,13 @@ const CUSTOM_EMOJIS = {
   antiCaps: { name: "security_anticaps", id: "1553680193812693154" },
   antiInvite: { name: "security_anti_invite", id: "1553679724637716611" },
   heat: { name: "Security_heat", id: "1553680339103129640" },
+  reactionRole: { name: "Reaction_role", id: "1554865929391841330" },
   badWord: { name: "security_badword", id: "1553678437191786586" },
   antiMention: { name: "security_antimention", id: "1553678901887369278" },
   antiLink: { name: "security_antilink", id: "1553678253213098014" },
   antiEmoji: { name: "security_antiemoji", id: "1553677117785514035" },
   antiAttachment: { name: "Security_antiattachement", id: "1553677885431226429" },
+  autorole: { name: "Autorole", id: "1554865871824883722" },
 } satisfies Record<string, { name: string; id: string }>;
 
 function emojiText(emoji: HelpEmoji): string {
@@ -233,19 +235,51 @@ const SECURITY_MODULES = {
 
 type SecurityModuleKey = keyof typeof SECURITY_MODULES;
 
-type HelpCategoryKey = "security" | "welcomeGoodbye" | "tickets";
+type HelpCategoryKey = "security" | "welcomeGoodbye" | "serverManagement" | "tickets";
 
 const HELP_CATEGORY_SELECT = "help:category-select";
 const HELP_MODULE_SELECT = "help:module-select";
+const HELP_SERVER_MANAGEMENT_SELECT = "help:server-management-select";
 const HELP_MODULE_PREFIX = "help:module:";
 const HELP_BACK_CATEGORIES = "help:back:categories";
 const HELP_BACK_SECURITY = "help:back:security";
+const HELP_BACK_SERVER_MANAGEMENT = "help:back:server-management";
 
 const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: HelpEmoji }> = {
   security: { label: "Security", emoji: CUSTOM_EMOJIS.security },
   welcomeGoodbye: { label: "Welcome / Goodbye", emoji: CUSTOM_EMOJIS.gate },
+  serverManagement: { label: "Server Management", emoji: CUSTOM_EMOJIS.autorole },
   tickets: { label: "Tickets", emoji: CUSTOM_EMOJIS.ticket },
 };
+
+const SERVER_MANAGEMENT_MODULES = {
+  autoRole: {
+    label: "Auto Role",
+    emoji: CUSTOM_EMOJIS.autorole,
+    description: "Assign a selected role to human members when they join.",
+    commands: [
+      { usage: "/autorole setup", description: "Choose and enable the Auto Role." },
+      { usage: "/autorole role", description: "Show or change the Auto Role." },
+      { usage: "/autorole remove", description: "Disable the Auto Role." },
+      { usage: "/autorole config", description: "Show Auto Role status and configured role." },
+    ],
+  },
+  reactionRole: {
+    label: "Reaction Role",
+    emoji: CUSTOM_EMOJIS.reactionRole,
+    description: "Grant a role from an emoji reaction, including on an existing message.",
+    commands: [
+      { usage: "/reactionrole create", description: "Create a new Reaction Role panel." },
+      { usage: "/reactionrole add", description: "Add an emoji and role mapping to a panel." },
+      { usage: "/reactionrole remove", description: "Remove an emoji and role mapping." },
+      { usage: "/reactionrole edit", description: "Edit a panel created by Gods Bot." },
+      { usage: "/reactionrole list", description: "List configured panels and their mappings." },
+      { usage: "/reactionrole delete", description: "Remove a panel configuration without deleting its message." },
+      { usage: "/reactionrole config", description: "Show Reaction Role settings for this server." },
+      { usage: "/reactionrole assign", description: "Attach Reaction Roles to an existing Discord message." },
+    ],
+  },
+} satisfies Record<string, { label: string; emoji: HelpEmoji; description: string; commands: ModuleCommand[] }>;
 
 const isSecurityModuleKey = (value: string): value is SecurityModuleKey =>
   value in SECURITY_MODULES;
@@ -264,8 +298,10 @@ export function isHelpComponent(customId: string): boolean {
   return (
     customId === HELP_CATEGORY_SELECT ||
     customId === HELP_MODULE_SELECT ||
+    customId === HELP_SERVER_MANAGEMENT_SELECT ||
     customId === HELP_BACK_CATEGORIES ||
     customId === HELP_BACK_SECURITY ||
+    customId === HELP_BACK_SERVER_MANAGEMENT ||
     customId.startsWith(HELP_MODULE_PREFIX)
   );
 }
@@ -275,6 +311,11 @@ export async function handleHelpInteraction(
 ): Promise<void> {
   if (interaction.customId === HELP_BACK_SECURITY) {
     await interaction.update(securityView());
+    return;
+  }
+
+  if (interaction.customId === HELP_BACK_SERVER_MANAGEMENT) {
+    await interaction.update(serverManagementView());
     return;
   }
 
@@ -290,8 +331,30 @@ export async function handleHelpInteraction(
         ? securityView()
         : selected === "welcomeGoodbye"
           ? welcomeGoodbyeView()
+          : selected === "serverManagement"
+            ? serverManagementView()
           : emptyCategoryView(selected),
     );
+    return;
+  }
+
+  if (
+    interaction.isStringSelectMenu() &&
+    interaction.customId === HELP_SERVER_MANAGEMENT_SELECT
+  ) {
+    const selected = interaction.values[0];
+    if (
+      selected &&
+      Object.prototype.hasOwnProperty.call(SERVER_MANAGEMENT_MODULES, selected)
+    ) {
+      await interaction.update(
+        serverManagementModuleView(
+          selected as keyof typeof SERVER_MANAGEMENT_MODULES,
+        ),
+      );
+    } else {
+      await interaction.update(serverManagementView());
+    }
     return;
   }
 
@@ -338,6 +401,8 @@ function categoriesView() {
               ? "Explore the available security modules"
               : key === "welcomeGoodbye"
                 ? "Set up and test Welcome and Goodbye messages"
+                  : key === "serverManagement"
+                    ? "Configure roles and other server settings"
                 : "No modules are currently registered in this category",
           emoji: category.emoji,
         })
@@ -381,6 +446,61 @@ function emptyCategoryView(categoryKey: Exclude<HelpCategoryKey, "security">) {
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         backButton(HELP_BACK_CATEGORIES, "← Back")
+      ),
+    ],
+  };
+}
+
+function serverManagementView() {
+  const moduleMenu = new StringSelectMenuBuilder()
+    .setCustomId(HELP_SERVER_MANAGEMENT_SELECT)
+    .setPlaceholder("Choose a server management module")
+    .addOptions(
+      Object.entries(SERVER_MANAGEMENT_MODULES).map(([key, module]) => ({
+        label: module.label,
+        value: key,
+        description: module.description,
+        emoji: module.emoji,
+      })),
+    );
+
+  return {
+    embeds: [
+      baseEmbed(
+        "Server Management",
+        "Select a module to configure server features.",
+        CUSTOM_EMOJIS.autorole,
+      ),
+    ],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(moduleMenu),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        backButton(HELP_BACK_CATEGORIES, "← Back"),
+      ),
+    ],
+  };
+}
+
+function serverManagementModuleView(
+  moduleKey: keyof typeof SERVER_MANAGEMENT_MODULES,
+) {
+  const module = SERVER_MANAGEMENT_MODULES[moduleKey];
+  const commandDescription = module.commands
+    .map((command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`)
+    .join("\n\n");
+
+  return {
+    embeds: [
+      baseEmbed(
+        module.label,
+        `${module.description}\n\n${commandDescription}`,
+        module.emoji,
+        true,
+      ),
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        backButton(HELP_BACK_SERVER_MANAGEMENT, "← Back"),
       ),
     ],
   };

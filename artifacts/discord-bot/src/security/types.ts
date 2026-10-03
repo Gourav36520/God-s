@@ -1,4 +1,8 @@
 import type { LoggingConfig } from "../logging/types.js";
+import type {
+  ReactionRoleAssignment,
+  ReactionRolePanel,
+} from "../reactionrole/types.js";
 
 export type { LoggingConfig };
 
@@ -77,6 +81,9 @@ export interface GuildSecurityConfig {
   prefix: string;
   logChannelId: string | null;
   muteRoleId: string | null;
+  autoRoleRoleId: string | null;
+  reactionRolePanels: ReactionRolePanel[];
+  reactionRoleAssignments: Record<string, ReactionRoleAssignment>;
   exemptRoles: string[];
   exemptChannels: string[];
   antiSpam: AntiSpamConfig;
