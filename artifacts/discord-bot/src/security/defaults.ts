@@ -55,6 +55,14 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
       judgmentChannelId: null,
       activeJudgments: {},
     },
+    ticket: {
+      enabled: false,
+      staffRoleId: null,
+      categoryId: null,
+      transcriptChannelId: null,
+      panelChannelId: null,
+      panelEmbedId: null,
+    },
     logging: {
       channelId: null,
       channelIds: {},

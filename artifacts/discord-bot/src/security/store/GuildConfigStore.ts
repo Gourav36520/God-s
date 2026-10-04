@@ -39,6 +39,7 @@ function mergeWithDefaults(
       exceptionRoles: stored.badWord?.exceptionRoles ?? [],
     },
     godsJudgment: { ...defaults.godsJudgment, ...stored.godsJudgment },
+    ticket: { ...defaults.ticket, ...(stored.ticket ?? {}) },
     logging: {
       ...defaults.logging,
       ...stored.logging,

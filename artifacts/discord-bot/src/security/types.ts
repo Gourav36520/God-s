@@ -76,6 +76,15 @@ export interface GodsJudgmentConfig {
   activeJudgments: Record<string, JudgmentRecord>;
 }
 
+export interface TicketConfig {
+  enabled: boolean;
+  staffRoleId: string | null;
+  categoryId: string | null;
+  transcriptChannelId: string | null;
+  panelChannelId: string | null;
+  panelEmbedId: string | null;
+}
+
 export interface GuildSecurityConfig {
   guildId: string;
   prefix: string;
@@ -93,6 +102,7 @@ export interface GuildSecurityConfig {
   antiRaid: AntiRaidConfig;
   badWord: BadWordConfig;
   godsJudgment: GodsJudgmentConfig;
+  ticket: TicketConfig;
   logging: LoggingConfig;
   updatedAt: string;
 }

@@ -34,8 +34,10 @@ export async function execute(interaction: Interaction): Promise<void> {
   if (!interaction.isChatInputCommand()) return;
 
   const cmd = interaction as ChatInputCommandInteraction;
+  const group = cmd.options.getSubcommandGroup(false);
   const sub = cmd.options.getSubcommand(false);
-  const label = sub ? `/${cmd.commandName} ${sub}` : `/${cmd.commandName}`;
+  const route = [group, sub].filter((part): part is string => Boolean(part)).join(" ");
+  const label = route ? `/${cmd.commandName} ${route}` : `/${cmd.commandName}`;
 
   const command = commands.get(cmd.commandName);
 

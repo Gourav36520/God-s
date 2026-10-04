@@ -147,6 +147,7 @@ async function loadCommands(): Promise<void> {
   const create = await import("./commands/create.js");
   const embed = await import("./commands/embed.js");
   const add = await import("./commands/add.js");
+  const ticket = await import("./commands/ticket.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -199,6 +200,10 @@ async function loadCommands(): Promise<void> {
     data: add.data,
     execute: add.execute,
   });
+  commands.set(ticket.data.name, {
+    data: ticket.data,
+    execute: ticket.execute,
+  });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
@@ -211,6 +216,7 @@ async function loadEvents(client: Client): Promise<void> {
   const mods = [
     await import("./events/ready.js"),
     await import("./events/interactionCreate.js"),
+    await import("./events/ticketInteractionCreate.js"),
     await import("./events/messageCreate.js"),
     await import("./events/messageReactionAdd.js"),
     await import("./events/messageReactionRemove.js"),
