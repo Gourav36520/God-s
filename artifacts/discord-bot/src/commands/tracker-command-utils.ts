@@ -6,11 +6,10 @@ import {
   type LeaderboardPeriod,
 } from "../trackers/time.js";
 
-export function selectedPeriod(
-  interaction: ChatInputCommandInteraction,
-): LeaderboardPeriod {
-  const value = interaction.options.getString("period") ?? "all-time";
-  return value === "today" || value === "yesterday" ? value : "all-time";
+export function periodForSubcommand(subcommand: string): LeaderboardPeriod {
+  if (subcommand === "daily") return "today";
+  if (subcommand === "yesterday") return "yesterday";
+  return "all-time";
 }
 
 export function periodTitle(

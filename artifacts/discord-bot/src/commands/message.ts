@@ -4,8 +4,8 @@ import {
 } from "discord.js";
 import {
   formatLeaderboard,
+  periodForSubcommand,
   periodTitle,
-  selectedPeriod,
   trackerEmbed,
 } from "./tracker-command-utils.js";
 import { messageTracker } from "../trackers/message-tracker.js";
@@ -17,17 +17,16 @@ export const data = new SlashCommandBuilder()
     subcommand
       .setName("leaderboard")
       .setDescription("Show the message leaderboard")
-      .addStringOption((option) =>
-        option
-          .setName("period")
-          .setDescription("Which period to rank")
-          .setRequired(false)
-          .addChoices(
-            { name: "All-time", value: "all-time" },
-            { name: "Today", value: "today" },
-            { name: "Yesterday", value: "yesterday" },
-          ),
-      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("daily")
+      .setDescription("Show today's message leaderboard"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("yesterday")
+      .setDescription("Show yesterday's message leaderboard"),
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -53,7 +52,8 @@ export async function execute(
     return;
   }
 
-  if (interaction.options.getSubcommand() === "user") {
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === "user") {
     const user = interaction.options.getUser("user", true);
     const stats = messageTracker.getUserStats(guildId, user.id);
     await interaction.reply({
@@ -70,7 +70,7 @@ export async function execute(
     return;
   }
 
-  const period = selectedPeriod(interaction);
+  const period = periodForSubcommand(subcommand);
   const entries = messageTracker.getLeaderboard(guildId, period);
   await interaction.reply({
     embeds: [

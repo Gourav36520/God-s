@@ -4,8 +4,8 @@ import {
 } from "discord.js";
 import {
   formatLeaderboard,
+  periodForSubcommand,
   periodTitle,
-  selectedPeriod,
   trackerEmbed,
 } from "./tracker-command-utils.js";
 import { inviteTracker } from "../trackers/invite-tracker.js";
@@ -17,17 +17,16 @@ export const data = new SlashCommandBuilder()
     subcommand
       .setName("leaderboard")
       .setDescription("Show the invite leaderboard")
-      .addStringOption((option) =>
-        option
-          .setName("period")
-          .setDescription("Which period to rank")
-          .setRequired(false)
-          .addChoices(
-            { name: "All-time", value: "all-time" },
-            { name: "Today", value: "today" },
-            { name: "Yesterday", value: "yesterday" },
-          ),
-      ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("daily")
+      .setDescription("Show today's invite leaderboard"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("yesterday")
+      .setDescription("Show yesterday's invite leaderboard"),
   );
 
 export async function execute(
@@ -42,7 +41,7 @@ export async function execute(
     return;
   }
 
-  const period = selectedPeriod(interaction);
+  const period = periodForSubcommand(interaction.options.getSubcommand());
   const entries = inviteTracker.getLeaderboard(guildId, period);
   await interaction.reply({
     embeds: [

@@ -517,40 +517,86 @@ function serverManagementModuleView(
 }
 
 function statisticsView() {
-  const commands: ModuleCommand[] = [
+  const modules = [
     {
-      usage: "/message leaderboard [period]",
-      description: "Rank message counts for all-time, today, or yesterday.",
+      title: "Message Tracking",
+      commands: [
+        {
+          usage: "/message leaderboard",
+          description: "Show the all-time message leaderboard.",
+        },
+        {
+          usage: "/message daily",
+          description: "Show today's message leaderboard.",
+        },
+        {
+          usage: "/message yesterday",
+          description: "Show yesterday's message leaderboard.",
+        },
+        {
+          usage: "/message user user:<member>",
+          description: "Show a member's message counts for today and all-time.",
+        },
+      ],
     },
     {
-      usage: "/message user <user>",
-      description: "Show a member's message counts for today and all-time.",
+      title: "Voice Tracking",
+      commands: [
+        {
+          usage: "/voice leaderboard",
+          description: "Show the all-time voice leaderboard.",
+        },
+        {
+          usage: "/voice daily",
+          description: "Show today's voice leaderboard.",
+        },
+        {
+          usage: "/voice yesterday",
+          description: "Show yesterday's voice leaderboard.",
+        },
+        {
+          usage: "/voice user user:<member>",
+          description: "Show a member's voice duration for today and all-time.",
+        },
+      ],
     },
     {
-      usage: "/voice leaderboard [period]",
-      description: "Rank voice duration for all-time, today, or yesterday.",
-    },
-    {
-      usage: "/voice user <user>",
-      description: "Show a member's voice duration for today and all-time.",
-    },
-    {
-      usage: "/invite leaderboard [period]",
-      description: "Rank verified invite attributions for all-time, today, or yesterday.",
-    },
-    {
-      usage: "/invited <user>",
-      description: "Show a member's join time and verified or unknown invite attribution.",
+      title: "Invite Tracking",
+      commands: [
+        {
+          usage: "/invite leaderboard",
+          description: "Show the all-time invite leaderboard.",
+        },
+        {
+          usage: "/invite daily",
+          description: "Show today's invite leaderboard.",
+        },
+        {
+          usage: "/invite yesterday",
+          description: "Show yesterday's invite leaderboard.",
+        },
+        {
+          usage: "/invited user:<member>",
+          description: "Show a member's join time and verified or unknown invite attribution.",
+        },
+      ],
     },
   ];
+
+  const description = modules
+    .map(
+      (module) =>
+        `**${module.title}**\n${module.commands
+          .map((command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`)
+          .join("\n\n")}`,
+    )
+    .join("\n\n");
 
   return {
     embeds: [
       baseEmbed(
         "Activity & Invites",
-        commands
-          .map((command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`)
-          .join("\n\n"),
+        description,
         CUSTOM_EMOJIS.logs,
         true,
       ),
