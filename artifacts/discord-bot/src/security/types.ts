@@ -89,6 +89,7 @@ export interface GuildSecurityConfig {
   guildId: string;
   prefix: string;
   logChannelId: string | null;
+  inviteChannelId: string | null;
   muteRoleId: string | null;
   autoRoleRoleId: string | null;
   reactionRolePanels: ReactionRolePanel[];

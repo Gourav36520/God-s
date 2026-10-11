@@ -6,6 +6,7 @@ export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
     guildId,
     prefix: "!",
     logChannelId: null,
+    inviteChannelId: null,
     muteRoleId: null,
     autoRoleRoleId: null,
     reactionRolePanels: [],

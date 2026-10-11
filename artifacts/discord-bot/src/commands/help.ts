@@ -564,6 +564,10 @@ function statisticsView() {
       title: "Invite Tracking",
       commands: [
         {
+          usage: "/invite channel #channel",
+          description: "Set the new-member invite notification channel (Administrator only).",
+        },
+        {
           usage: "/invite leaderboard",
           description: "Show the all-time invite leaderboard.",
         },
