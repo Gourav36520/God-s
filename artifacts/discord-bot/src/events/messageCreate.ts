@@ -2,12 +2,15 @@ import { Events } from "discord.js";
 import type { Message } from "discord.js";
 import { commands, securityManager } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
+import { messageTracker } from "../trackers/message-tracker.js";
 
 export const name = Events.MessageCreate;
 export const once = false;
 
 export async function execute(message: Message): Promise<void> {
   if (!message.guildId || message.author.bot) return;
+
+  messageTracker.recordMessage(message.guildId, message.author.id);
 
   const prefix = securityManager.getConfig(message.guildId).prefix;
   if (!prefix || !message.content.startsWith(prefix)) return;

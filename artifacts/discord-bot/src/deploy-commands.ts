@@ -27,6 +27,10 @@ async function main(): Promise<void> {
   const embed = await import("./commands/embed.js");
   const add = await import("./commands/add.js");
   const ticket = await import("./commands/ticket.js");
+  const message = await import("./commands/message.js");
+  const voice = await import("./commands/voice.js");
+  const invite = await import("./commands/invite.js");
+  const invited = await import("./commands/invited.js");
 
   const commandData = [
     ping.data,
@@ -47,6 +51,10 @@ async function main(): Promise<void> {
     embed.data,
     add.data,
     ticket.data,
+    message.data,
+    voice.data,
+    invite.data,
+    invited.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

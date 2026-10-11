@@ -235,7 +235,12 @@ const SECURITY_MODULES = {
 
 type SecurityModuleKey = keyof typeof SECURITY_MODULES;
 
-type HelpCategoryKey = "security" | "welcomeGoodbye" | "serverManagement" | "tickets";
+type HelpCategoryKey =
+  | "security"
+  | "welcomeGoodbye"
+  | "serverManagement"
+  | "statistics"
+  | "tickets";
 
 const HELP_CATEGORY_SELECT = "help:category-select";
 const HELP_MODULE_SELECT = "help:module-select";
@@ -249,6 +254,7 @@ const HELP_CATEGORIES: Record<HelpCategoryKey, { label: string; emoji: HelpEmoji
   security: { label: "Security", emoji: CUSTOM_EMOJIS.security },
   welcomeGoodbye: { label: "Welcome / Goodbye", emoji: CUSTOM_EMOJIS.gate },
   serverManagement: { label: "Server Management", emoji: CUSTOM_EMOJIS.autorole },
+  statistics: { label: "Activity & Invites", emoji: CUSTOM_EMOJIS.logs },
   tickets: { label: "Tickets", emoji: CUSTOM_EMOJIS.ticket },
 };
 
@@ -333,7 +339,9 @@ export async function handleHelpInteraction(
           ? welcomeGoodbyeView()
           : selected === "serverManagement"
             ? serverManagementView()
-          : emptyCategoryView(selected),
+            : selected === "statistics"
+              ? statisticsView()
+              : emptyCategoryView(selected),
     );
     return;
   }
@@ -401,9 +409,11 @@ function categoriesView() {
               ? "Explore the available security modules"
               : key === "welcomeGoodbye"
                 ? "Set up and test Welcome and Goodbye messages"
-                  : key === "serverManagement"
-                    ? "Configure roles and other server settings"
-                : "No modules are currently registered in this category",
+                : key === "serverManagement"
+                  ? "Configure roles and other server settings"
+                  : key === "statistics"
+                    ? "View message, voice, and invite activity"
+                    : "No modules are currently registered in this category",
           emoji: category.emoji,
         })
       )
@@ -501,6 +511,53 @@ function serverManagementModuleView(
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         backButton(HELP_BACK_SERVER_MANAGEMENT, "← Back"),
+      ),
+    ],
+  };
+}
+
+function statisticsView() {
+  const commands: ModuleCommand[] = [
+    {
+      usage: "/message leaderboard [period]",
+      description: "Rank message counts for all-time, today, or yesterday.",
+    },
+    {
+      usage: "/message user <user>",
+      description: "Show a member's message counts for today and all-time.",
+    },
+    {
+      usage: "/voice leaderboard [period]",
+      description: "Rank voice duration for all-time, today, or yesterday.",
+    },
+    {
+      usage: "/voice user <user>",
+      description: "Show a member's voice duration for today and all-time.",
+    },
+    {
+      usage: "/invite leaderboard [period]",
+      description: "Rank verified invite attributions for all-time, today, or yesterday.",
+    },
+    {
+      usage: "/invited <user>",
+      description: "Show a member's join time and verified or unknown invite attribution.",
+    },
+  ];
+
+  return {
+    embeds: [
+      baseEmbed(
+        "Activity & Invites",
+        commands
+          .map((command) => `${ARROW} **\`${command.usage}\`**\n${command.description}`)
+          .join("\n\n"),
+        CUSTOM_EMOJIS.logs,
+        true,
+      ),
+    ],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        backButton(HELP_BACK_CATEGORIES, "← Back"),
       ),
     ],
   };

@@ -18,6 +18,7 @@ import { EmojiStickerDetector } from "./security/modules/EmojiStickerDetector.js
 import { AttachmentDetector } from "./security/modules/AttachmentDetector.js";
 import { BadWordProtection } from "./security/modules/BadWordProtection.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
+import { voiceTracker } from "./trackers/voice-tracker.js";
 
 function envBool(key: string): boolean {
   return ["true", "1", "yes"].includes(
@@ -36,6 +37,8 @@ async function loginWithFallback(
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildInvites,
       ...(mc ? [GatewayIntentBits.MessageContent] : []),
       ...(gm ? [GatewayIntentBits.GuildMembers] : []),
     ];
@@ -148,6 +151,10 @@ async function loadCommands(): Promise<void> {
   const embed = await import("./commands/embed.js");
   const add = await import("./commands/add.js");
   const ticket = await import("./commands/ticket.js");
+  const message = await import("./commands/message.js");
+  const voice = await import("./commands/voice.js");
+  const invite = await import("./commands/invite.js");
+  const invited = await import("./commands/invited.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -204,6 +211,22 @@ async function loadCommands(): Promise<void> {
     data: ticket.data,
     execute: ticket.execute,
   });
+  commands.set(message.data.name, {
+    data: message.data,
+    execute: message.execute,
+  });
+  commands.set(voice.data.name, {
+    data: voice.data,
+    execute: voice.execute,
+  });
+  commands.set(invite.data.name, {
+    data: invite.data,
+    execute: invite.execute,
+  });
+  commands.set(invited.data.name, {
+    data: invited.data,
+    execute: invited.execute,
+  });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
     execute: judgment.executeRelease,
@@ -218,6 +241,8 @@ async function loadEvents(client: Client): Promise<void> {
     await import("./events/interactionCreate.js"),
     await import("./events/ticketInteractionCreate.js"),
     await import("./events/messageCreate.js"),
+    await import("./events/inviteCreate.js"),
+    await import("./events/inviteDelete.js"),
     await import("./events/messageReactionAdd.js"),
     await import("./events/messageReactionRemove.js"),
   ];
@@ -228,7 +253,11 @@ async function loadEvents(client: Client): Promise<void> {
       client.on(mod.name, (...args) => mod.execute(...(args as [never])));
     }
   }
-  logger.info(`Registered ${mods.length} core event listener(s)`);
+  const voiceStateUpdate = await import("./events/voiceStateUpdate.js");
+  client.on(voiceStateUpdate.name, (oldState, newState) =>
+    voiceStateUpdate.execute(oldState, newState),
+  );
+  logger.info(`Registered ${mods.length + 1} core event listener(s)`);
 }
 
 async function loadWelcomeGoodbyeEvents(client: Client): Promise<void> {
@@ -346,6 +375,13 @@ async function main(): Promise<void> {
     wantMessageContent,
     wantGuildMembers
   );
+  const shutdown = (exitCode: number): void => {
+    voiceTracker.shutdown();
+    client.destroy();
+    process.exit(exitCode);
+  };
+  process.once("SIGINT", () => shutdown(130));
+  process.once("SIGTERM", () => shutdown(0));
 
   const grantedBitfield = (client.options.intents as IntentsBitField).bitfield;
   const mcActuallyActive = (grantedBitfield & GatewayIntentBits.MessageContent) !== 0;

@@ -48,3 +48,6 @@ Thumbs.db
 .cache/
 .local/
 artifacts/discord-bot/.env
+artifacts/discord-bot/data/message-tracker.json
+artifacts/discord-bot/data/voice-tracker.json
+artifacts/discord-bot/data/invite-tracker.json
