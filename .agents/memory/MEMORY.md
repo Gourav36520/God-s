@@ -1,1 +1,2 @@
 - [Discord command structure](discord-command-structure.md) — root commands cannot mix direct subcommands with subcommand groups.
+- [Discord bot scope](discord-bot-scope.md) — keep this project a Discord bot; preserve existing structure and avoid mobile/web app work.
