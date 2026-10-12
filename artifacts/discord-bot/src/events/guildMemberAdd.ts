@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  EmbedBuilder,
   Events,
   PermissionFlagsBits,
 } from "discord.js";
@@ -46,8 +47,11 @@ async function sendInviteNotification(
     return;
   }
 
-  const isVerified = Boolean(trackedJoin?.verified && trackedJoin.inviterId);
-  const inviterId = isVerified ? trackedJoin?.inviterId : null;
+  const inviterId =
+    trackedJoin?.verified && trackedJoin.inviterId
+      ? trackedJoin.inviterId
+      : null;
+  const isVerified = inviterId !== null;
   const inviter = inviterId
     ? await member.client.users.fetch(inviterId).catch(() => null)
     : null;
@@ -58,14 +62,29 @@ async function sendInviteNotification(
     isVerified && trackedJoin?.inviteCode
       ? `\`${trackedJoin.inviteCode}\``
       : "Unknown";
+  const trackedInviteCount = inviterId
+    ? inviteTracker.getInviterTotal(member.guild.id, inviterId).toLocaleString()
+    : "Unknown";
+  const embed = new EmbedBuilder()
+    .setTitle("<:Statics:1554866241435471902> New Member")
+    .setColor(0xd4af37)
+    .addFields(
+      {
+        name: "Member",
+        value: `<@${member.id}> (${member.user.username})`,
+      },
+      { name: "Inviter", value: inviterDisplay },
+      { name: "Invite Code", value: inviteCode, inline: true },
+      { name: "Tracked Invites", value: trackedInviteCount, inline: true },
+    )
+    .setFooter({
+      text: "Gods Bot • Your Server's Guardian • Developed by @gourav.s",
+    });
+  if (member.joinedAt) embed.setTimestamp(member.joinedAt);
 
   await channel
     .send({
-      content: [
-        `**New member:** <@${member.id}> (${member.user.username})`,
-        `**Inviter:** ${inviterDisplay}`,
-        `**Invite code:** ${inviteCode}`,
-      ].join("\n"),
+      embeds: [embed],
       allowedMentions: {
         parse: [],
         users: [member.id, ...(inviterId ? [inviterId] : [])],
@@ -84,7 +103,10 @@ async function recordJoinAndNotify(member: GuildMember): Promise<void> {
   let trackedJoin: TrackedJoin = null;
   try {
     await inviteTracker.recordJoin(member);
-    trackedJoin = inviteTracker.getLatestJoin(member.guild.id, member.id);
+    const latestJoin = inviteTracker.getLatestJoin(member.guild.id, member.id);
+    const joinedAt = member.joinedAt?.toISOString() ?? null;
+    trackedJoin =
+      joinedAt && latestJoin?.joinedAt === joinedAt ? latestJoin : null;
   } catch (error) {
     logger.error(
       `Invite tracking failed for member ${member.id}: ${

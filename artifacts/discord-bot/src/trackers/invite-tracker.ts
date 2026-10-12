@@ -128,6 +128,10 @@ export class InviteTracker {
     return matches[0] ?? null;
   }
 
+  getInviterTotal(guildId: string, inviterId: string): number {
+    return this.data.guilds[guildId]?.inviters[inviterId]?.total ?? 0;
+  }
+
   getLeaderboard(
     guildId: string,
     period: LeaderboardPeriod,
