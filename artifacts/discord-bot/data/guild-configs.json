@@ -2,8 +2,12 @@
   "1519269173937836084": {
     "guildId": "1519269173937836084",
     "prefix": "God",
-    "logChannelId": "1521121964012470333",
+    "logChannelId": "1560711884997664968",
+    "inviteChannelId": null,
     "muteRoleId": null,
+    "autoRoleRoleId": null,
+    "reactionRolePanels": [],
+    "reactionRoleAssignments": {},
     "exemptRoles": [],
     "exemptChannels": [],
     "antiSpam": {
@@ -63,9 +67,24 @@
         }
       }
     },
+    "ticket": {
+      "enabled": false,
+      "staffRoleId": null,
+      "categoryId": null,
+      "transcriptChannelId": null,
+      "panelChannelId": null,
+      "panelEmbedId": null
+    },
     "logging": {
-      "channelId": "1521121964012470333",
-      "channelIds": {},
+      "channelId": "1560711884997664968",
+      "channelIds": {
+        "security": "1560711884997664968",
+        "messages": "1560711493132091453",
+        "moderation": "1560711359526862940",
+        "members": "1560711622387961997",
+        "channels": "1560711727480311869",
+        "roles": "1560711784997060728"
+      },
       "categories": {
         "moderation": true,
         "messages": true,
@@ -75,7 +94,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-10-01T15:33:19.055Z",
+    "updatedAt": "2026-10-16T18:08:44.082Z",
     "heatEngine": {
       "enabled": true
     },
