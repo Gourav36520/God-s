@@ -2,6 +2,7 @@ import "dotenv/config";
 import "dotenv/config";
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startVerificationRetentionCleanup } from "./lib/verification/retention";
 
 const rawPort = process.env["PORT"];
 
@@ -24,4 +25,5 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+  startVerificationRetentionCleanup();
 });

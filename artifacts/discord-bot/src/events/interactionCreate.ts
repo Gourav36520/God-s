@@ -10,13 +10,19 @@ import {
 } from "../commands/reactionrole.js";
 import { commands } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
+import {
+  handleVerificationButton,
+  isVerificationButton,
+} from "../verification/interaction.js";
 
 export const name = Events.InteractionCreate;
 export const once = false;
 
 export async function execute(interaction: Interaction): Promise<void> {
   if (interaction.isButton()) {
-    if (isHelpComponent(interaction.customId)) {
+    if (isVerificationButton(interaction.customId)) {
+      await handleVerificationButton(interaction);
+    } else if (isHelpComponent(interaction.customId)) {
       await handleHelpInteraction(interaction);
     } else if (isReactionRoleListButton(interaction.customId)) {
       await handleReactionRoleListButton(interaction);

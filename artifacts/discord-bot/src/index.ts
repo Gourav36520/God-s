@@ -155,6 +155,7 @@ async function loadCommands(): Promise<void> {
   const voice = await import("./commands/voice.js");
   const invite = await import("./commands/invite.js");
   const invited = await import("./commands/invited.js");
+  const verification = await import("./commands/verification.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -226,6 +227,10 @@ async function loadCommands(): Promise<void> {
   commands.set(invited.data.name, {
     data: invited.data,
     execute: invited.execute,
+  });
+  commands.set(verification.data.name, {
+    data: verification.data,
+    execute: verification.execute,
   });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,

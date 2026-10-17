@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   const voice = await import("./commands/voice.js");
   const invite = await import("./commands/invite.js");
   const invited = await import("./commands/invited.js");
+  const verification = await import("./commands/verification.js");
 
   const commandData = [
     ping.data,
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     voice.data,
     invite.data,
     invited.data,
+    verification.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);
