@@ -1,0 +1,139 @@
+{
+  "1519269173937836084": {
+    "guildId": "1519269173937836084",
+    "prefix": "God",
+    "logChannelId": "1560711884997664968",
+    "inviteChannelId": null,
+    "muteRoleId": null,
+    "autoRoleRoleId": null,
+    "reactionRolePanels": [],
+    "reactionRoleAssignments": {},
+    "exemptRoles": [],
+    "exemptChannels": [],
+    "antiSpam": {
+      "enabled": true,
+      "maxMessages": 3,
+      "timeWindowMs": 5000,
+      "action": "warn",
+      "timeoutDurationMs": 300000,
+      "warnThreshold": 3,
+      "bypassRoles": [
+        "1551140059577716846"
+      ],
+      "bypassUsers": []
+    },
+    "antiMention": {
+      "enabled": true
+    },
+    "antiLink": {
+      "enabled": true,
+      "allowedDomains": [],
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiInvite": {
+      "enabled": true,
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiRaid": {
+      "enabled": true,
+      "joinThreshold": 10,
+      "joinWindowMs": 10000,
+      "action": "kick",
+      "lockdownDurationMs": 300000
+    },
+    "badWord": {
+      "words": [
+        "madarchod"
+      ],
+      "exceptionRoles": [
+        "1540020282088099840"
+      ]
+    },
+    "godsJudgment": {
+      "enabled": true,
+      "logChannelId": null,
+      "dmOnAction": true,
+      "judgmentRoleId": "1521121056809549844",
+      "judgmentChannelId": "1521121058676150354",
+      "activeJudgments": {
+        "1456628281611784202": {
+          "userId": "1456628281611784202",
+          "savedRoles": [],
+          "judgedAt": "2026-06-29T15:54:26.154Z",
+          "reason": "Spam detected: 5 messages in 5s (limit: 5)",
+          "judgedBy": "1519254891158175775"
+        }
+      }
+    },
+    "ticket": {
+      "enabled": false,
+      "staffRoleId": null,
+      "categoryId": null,
+      "transcriptChannelId": null,
+      "panelChannelId": null,
+      "panelEmbedId": null
+    },
+    "logging": {
+      "channelId": "1560711884997664968",
+      "channelIds": {
+        "security": "1560711884997664968",
+        "messages": "1560711493132091453",
+        "moderation": "1560711359526862940",
+        "members": "1560711622387961997",
+        "channels": "1560711727480311869",
+        "roles": "1560711784997060728"
+      },
+      "categories": {
+        "moderation": true,
+        "messages": true,
+        "members": true,
+        "channels": true,
+        "roles": true,
+        "security": true
+      }
+    },
+    "updatedAt": "2026-10-16T18:08:44.082Z",
+    "heatEngine": {
+      "enabled": true
+    },
+    "welcomeGoodbye": {
+      "welcome": {
+        "enabled": true,
+        "channelId": "1555178198642204732",
+        "embedId": "aec6c516-c37f-49d9-b50c-4472b0fdaf73",
+        "message": ""
+      },
+      "goodbye": {
+        "enabled": false,
+        "channelId": null,
+        "embedId": null,
+        "message": ""
+      },
+      "embeds": [
+        {
+          "id": "aec6c516-c37f-49d9-b50c-4472b0fdaf73",
+          "name": "welcome",
+          "definition": {
+            "content": "",
+            "title": "Hello",
+            "titleUrl": "",
+            "authorName": "",
+            "authorUrl": "",
+            "authorIconUrl": "",
+            "description": "",
+            "thumbnailUrl": "",
+            "imageUrl": "",
+            "footerText": "",
+            "footerIconUrl": "",
+            "footerUrl": "",
+            "color": "",
+            "timestamp": true
+          },
+          "createdAt": "2026-10-01T15:32:59.797Z"
+        }
+      ]
+    }
+  }
+}

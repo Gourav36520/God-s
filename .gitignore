@@ -7,12 +7,6 @@ out-tsc
 *.tsbuildinfo
 .expo
 .expo-shared
-.next
-.turbo
-.svelte-kit
-.nuxt
-.output
-.vercel
 
 # dependencies
 node_modules
@@ -53,3 +47,7 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+artifacts/discord-bot/.env
+artifacts/discord-bot/data/message-tracker.json
+artifacts/discord-bot/data/voice-tracker.json
+artifacts/discord-bot/data/invite-tracker.json

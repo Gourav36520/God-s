@@ -1,0 +1,475 @@
+import "dotenv/config";
+import {
+  Client,
+  Events,
+  GatewayIntentBits,
+  IntentsBitField,
+  Partials,
+} from "discord.js";
+import { logger } from "./lib/logger.js";
+import { commands, loggingService, securityManager } from "./lib/registry.js";
+import type { Command } from "./lib/registry.js";
+import { GodsJudgment } from "./security/modules/GodsJudgment.js";
+import { AntiSpam } from "./security/modules/AntiSpam.js";
+import { AntiLink } from "./security/modules/AntiLink.js";
+import { AntiMention } from "./security/modules/AntiMention.js";
+import { CapsDetector } from "./security/modules/CapsDetector.js";
+import { EmojiStickerDetector } from "./security/modules/EmojiStickerDetector.js";
+import { AttachmentDetector } from "./security/modules/AttachmentDetector.js";
+import { BadWordProtection } from "./security/modules/BadWordProtection.js";
+import { registerLoggingHandlers } from "./logging/handlers.js";
+import { voiceTracker } from "./trackers/voice-tracker.js";
+
+function envBool(key: string): boolean {
+  return ["true", "1", "yes"].includes(
+    (process.env[key] ?? "").trim().toLowerCase()
+  );
+}
+
+async function loginWithFallback(
+  token: string,
+  wantMessageContent: boolean,
+  wantGuildMembers: boolean
+): Promise<{ client: Client; messageContentGranted: boolean; guildMembersGranted: boolean }> {
+  function buildIntents(mc: boolean, gm: boolean): GatewayIntentBits[] {
+    return [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildVoiceStates,
+      GatewayIntentBits.GuildInvites,
+      ...(mc ? [GatewayIntentBits.MessageContent] : []),
+      ...(gm ? [GatewayIntentBits.GuildMembers] : []),
+    ];
+  }
+
+  async function tryLogin(
+    mc: boolean,
+    gm: boolean
+  ): Promise<Client | null> {
+    const intents = buildIntents(mc, gm);
+    const client = new Client({
+      intents,
+      partials: [
+        Partials.Channel,
+        Partials.Message,
+        Partials.Reaction,
+        Partials.User,
+      ],
+    });
+
+    // Confirm the ACTUAL bitfield discord.js constructed from the intent array
+    const actualBitfield = (client.options.intents as IntentsBitField).bitfield;
+    const gmBit = GatewayIntentBits.GuildMembers; // 2
+    const mcBit = GatewayIntentBits.MessageContent; // 32768
+    logger.info(
+      `[LOGIN] Attempting login: MC=${mc} GM=${gm} | ` +
+        `computed=${intents.reduce((a, b) => a | b, 0)} ` +
+        `actual-djs-bitfield=${actualBitfield} ` +
+        `GM-bit-set=${(actualBitfield & gmBit) !== 0} ` +
+        `MC-bit-set=${(actualBitfield & mcBit) !== 0}`
+    );
+
+    try {
+      await client.login(token);
+      return client;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("disallowed intents")) throw err;
+      logger.warn(`[LOGIN] ✗ Discord rejected intent(s) for MC=${mc} GM=${gm}: "${msg}"`);
+      await client.destroy();
+      // Brief pause so Discord's gateway has time to clean up the session
+      await new Promise<void>((r) => setTimeout(r, 1_000));
+      return null;
+    }
+  }
+
+  // Step 1: try both privileged intents together
+  if (wantMessageContent || wantGuildMembers) {
+    const client = await tryLogin(wantMessageContent, wantGuildMembers);
+    if (client) {
+      logger.info("[LOGIN] ✓ Login succeeded with all requested intents");
+      return { client, messageContentGranted: wantMessageContent, guildMembersGranted: wantGuildMembers };
+    }
+  }
+
+  // Step 2: try GuildMembers alone (member join/leave/update events)
+  if (wantGuildMembers) {
+    const client = await tryLogin(false, true);
+    if (client) {
+      logger.warn("[LOGIN] ✓ Login succeeded with GuildMembers only (MessageContent was rejected — Anti-Link URL detection will NOT work).");
+      return { client, messageContentGranted: false, guildMembersGranted: true };
+    }
+  }
+
+  // Step 3: try MessageContent alone (anti-link / anti-spam content scanning)
+  if (wantMessageContent) {
+    const client = await tryLogin(true, false);
+    if (client) {
+      logger.warn("[LOGIN] ✓ Login succeeded with MessageContent only (GuildMembers was rejected — member join/leave/role events will NOT fire).");
+      return { client, messageContentGranted: true, guildMembersGranted: false };
+    }
+  }
+
+  // Step 4: base intents only — fully degraded
+  logger.error(
+    "[LOGIN] All privileged intent combinations rejected. Falling back to base intents only.\n" +
+    "  Member join/leave/role events and Anti-Link/Anti-Spam content detection will NOT work.\n" +
+    "  Enable Server Members Intent and/or Message Content Intent in the Discord Developer Portal."
+  );
+  const intents = buildIntents(false, false);
+  const client = new Client({
+    intents,
+    partials: [
+      Partials.Channel,
+      Partials.Message,
+      Partials.Reaction,
+      Partials.User,
+    ],
+  });
+  await client.login(token);
+  logger.warn("[LOGIN] ✓ Degraded login succeeded (base intents only).");
+  return { client, messageContentGranted: false, guildMembersGranted: false };
+}
+
+async function loadCommands(): Promise<void> {
+  const ping = await import("./commands/ping.js");
+  const help = await import("./commands/help.js");
+  const info = await import("./commands/info.js");
+  const security = await import("./commands/security.js");
+  const judgment = await import("./commands/judgment.js");
+  const logging = await import("./commands/logging.js");
+  const heat = await import("./commands/heat.js");
+  const autorole = await import("./commands/autorole.js");
+  const reactionrole = await import("./commands/reactionrole.js");
+  const set = await import("./commands/set.js");
+  const remove = await import("./commands/remove.js");
+  const welcome = await import("./commands/welcome.js");
+  const goodbye = await import("./commands/goodbye.js");
+  const create = await import("./commands/create.js");
+  const embed = await import("./commands/embed.js");
+  const add = await import("./commands/add.js");
+  const ticket = await import("./commands/ticket.js");
+  const message = await import("./commands/message.js");
+  const voice = await import("./commands/voice.js");
+  const invite = await import("./commands/invite.js");
+  const invited = await import("./commands/invited.js");
+  const verification = await import("./commands/verification.js");
+
+  commands.set(ping.data.name, {
+    data: ping.data,
+    execute: ping.execute,
+    executePrefix: ping.executePrefix,
+  });
+  commands.set(help.data.name, {
+    data: help.data,
+    execute: help.execute,
+    executePrefix: help.executePrefix,
+  });
+  commands.set(info.data.name, { data: info.data, execute: info.execute });
+  commands.set(security.data.name, { data: security.data, execute: security.execute });
+  commands.set(judgment.data.name, { data: judgment.data, execute: judgment.execute });
+  commands.set(logging.data.name, { data: logging.data, execute: logging.execute });
+  commands.set(heat.data.name, { data: heat.data, execute: heat.execute });
+  commands.set(autorole.data.name, {
+    data: autorole.data,
+    execute: autorole.execute,
+  });
+  commands.set(reactionrole.data.name, {
+    data: reactionrole.data,
+    execute: reactionrole.execute,
+  });
+  commands.set(set.data.name, {
+    data: set.data,
+    execute: set.execute,
+  });
+  commands.set(remove.data.name, {
+    data: remove.data,
+    execute: remove.execute,
+  });
+  commands.set(welcome.data.name, {
+    data: welcome.data,
+    execute: welcome.execute,
+  });
+  commands.set(goodbye.data.name, {
+    data: goodbye.data,
+    execute: goodbye.execute,
+  });
+  commands.set(create.data.name, {
+    data: create.data,
+    execute: create.execute,
+  });
+  commands.set(embed.data.name, {
+    data: embed.data,
+    execute: embed.execute,
+  });
+  commands.set(add.data.name, {
+    data: add.data,
+    execute: add.execute,
+  });
+  commands.set(ticket.data.name, {
+    data: ticket.data,
+    execute: ticket.execute,
+  });
+  commands.set(message.data.name, {
+    data: message.data,
+    execute: message.execute,
+  });
+  commands.set(voice.data.name, {
+    data: voice.data,
+    execute: voice.execute,
+  });
+  commands.set(invite.data.name, {
+    data: invite.data,
+    execute: invite.execute,
+  });
+  commands.set(invited.data.name, {
+    data: invited.data,
+    execute: invited.execute,
+  });
+  commands.set(verification.data.name, {
+    data: verification.data,
+    execute: verification.execute,
+  });
+  commands.set(judgment.releaseData.name, {
+    data: judgment.releaseData,
+    execute: judgment.executeRelease,
+  });
+
+  logger.info(`Loaded ${commands.size} command(s): ${[...commands.keys()].join(", ")}`);
+}
+
+async function loadEvents(client: Client): Promise<void> {
+  const mods = [
+    await import("./events/ready.js"),
+    await import("./events/interactionCreate.js"),
+    await import("./events/ticketInteractionCreate.js"),
+    await import("./events/messageCreate.js"),
+    await import("./events/inviteCreate.js"),
+    await import("./events/inviteDelete.js"),
+    await import("./events/messageReactionAdd.js"),
+    await import("./events/messageReactionRemove.js"),
+  ];
+  for (const mod of mods) {
+    if (mod.once) {
+      client.once(mod.name, (...args) => mod.execute(...(args as [never])));
+    } else {
+      client.on(mod.name, (...args) => mod.execute(...(args as [never])));
+    }
+  }
+  const voiceStateUpdate = await import("./events/voiceStateUpdate.js");
+  client.on(voiceStateUpdate.name, (oldState, newState) =>
+    voiceStateUpdate.execute(oldState, newState),
+  );
+  logger.info(`Registered ${mods.length + 1} core event listener(s)`);
+}
+
+async function loadWelcomeGoodbyeEvents(client: Client): Promise<void> {
+  const mods = [
+    await import("./events/guildMemberAdd.js"),
+    await import("./events/guildMemberRemove.js"),
+    await import("./events/welcomeGoodbyeInteractionCreate.js"),
+  ];
+  for (const mod of mods) {
+    if (mod.once) {
+      client.once(mod.name, (...args) => mod.execute(...(args as [never])));
+    } else {
+      client.on(mod.name, (...args) => mod.execute(...(args as [never])));
+    }
+  }
+  logger.info(`Registered ${mods.length} Welcome/Goodbye event listener(s)`);
+}
+
+/**
+ * After the bot is fully ready (guilds cached), run startup validation for
+ * every guild that has God's Judgment configured. This repairs any channel
+ * overwrites that were removed or are missing since the last run.
+ */
+function scheduleStartupValidation(client: Client, godsJudgment: GodsJudgment): void {
+  client.once(Events.ClientReady, async (readyClient) => {
+    logger.info(
+      `[STARTUP VALIDATION] Beginning God's Judgment channel audit across ` +
+        `${readyClient.guilds.cache.size} guild(s)...`
+    );
+
+    let totalChecked = 0;
+    let totalRepaired = 0;
+    let totalSkipped = 0;
+    let totalErrors = 0;
+    let guildsAudited = 0;
+
+    for (const guild of readyClient.guilds.cache.values()) {
+      const cfg = securityManager.getConfig(guild.id).godsJudgment;
+      if (!cfg.enabled || !cfg.judgmentRoleId || !cfg.judgmentChannelId) continue;
+
+      guildsAudited++;
+      logger.info(`[STARTUP VALIDATION] Auditing guild: "${guild.name}" (${guild.id})`);
+
+      const stats = await godsJudgment.validateAndRepair(guild).catch((err) => {
+        logger.error(
+          `[STARTUP VALIDATION] Error validating guild "${guild.name}": ` +
+            (err instanceof Error ? err.message : String(err))
+        );
+        return null;
+      });
+
+      if (stats) {
+        totalChecked += stats.checked;
+        totalRepaired += stats.repaired;
+        totalSkipped += stats.skipped;
+        totalErrors += stats.errors;
+      }
+    }
+
+    if (guildsAudited === 0) {
+      logger.info(
+        "[STARTUP VALIDATION] No guilds have God's Judgment configured yet. " +
+          "Run `/judgment setup` to enable it."
+      );
+    } else {
+      logger.info(
+        `[STARTUP VALIDATION] ✓ Audit complete — ` +
+          `guilds=${guildsAudited} checked=${totalChecked} repaired=${totalRepaired} ` +
+          `skipped=${totalSkipped} errors=${totalErrors}`
+      );
+      if (totalRepaired > 0) {
+        logger.warn(
+          `[STARTUP VALIDATION] ⚠️  Repaired ${totalRepaired} channel overwrite(s). ` +
+            `They were missing or incorrect since the last run.`
+        );
+      } else {
+        logger.info("[STARTUP VALIDATION] ✓ All judgment channel overwrites are correct.");
+      }
+    }
+  });
+}
+
+async function main(): Promise<void> {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) {
+    logger.error("DISCORD_BOT_TOKEN is not set.");
+    process.exit(1);
+  }
+
+  // Decode the Application ID from the token (first segment is base64-encoded app ID).
+  // This is NOT a secret — the app ID is the same as the Client ID shown in the portal.
+  try {
+    const appId = Buffer.from(token.split(".")[0], "base64").toString("utf8");
+    logger.info(`[STARTUP] Bot Application ID: ${appId} — verify this matches your Developer Portal application`);
+  } catch {
+    logger.warn("[STARTUP] Could not decode Application ID from token");
+  }
+
+  const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
+  const wantGuildMembers =
+    process.env.INTENT_GUILD_MEMBERS === undefined
+      ? true
+      : envBool("INTENT_GUILD_MEMBERS");
+
+  logger.info(
+    `[INTENT DIAGNOSTIC] ` +
+      `INTENT_MESSAGE_CONTENT raw="${process.env.INTENT_MESSAGE_CONTENT ?? "<unset>"}" → envBool=${wantMessageContent} | ` +
+      `INTENT_GUILD_MEMBERS raw="${process.env.INTENT_GUILD_MEMBERS ?? "<unset>"}" → requested=${wantGuildMembers}`
+  );
+
+  await loadCommands();
+
+  const { client, messageContentGranted, guildMembersGranted } = await loginWithFallback(
+    token,
+    wantMessageContent,
+    wantGuildMembers
+  );
+  const shutdown = (exitCode: number): void => {
+    voiceTracker.shutdown();
+    client.destroy();
+    process.exit(exitCode);
+  };
+  process.once("SIGINT", () => shutdown(130));
+  process.once("SIGTERM", () => shutdown(0));
+
+  const grantedBitfield = (client.options.intents as IntentsBitField).bitfield;
+  const mcActuallyActive = (grantedBitfield & GatewayIntentBits.MessageContent) !== 0;
+  const gmActuallyActive = (grantedBitfield & GatewayIntentBits.GuildMembers) !== 0;
+
+  logger.info(
+    `[INTENT DIAGNOSTIC] Post-login: bitfield=${grantedBitfield} | ` +
+      `GuildMembers=${gmActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"} | ` +
+      `MessageContent=${mcActuallyActive ? "ACTIVE ✓" : "NOT ACTIVE ✗"}`
+  );
+
+  if (wantGuildMembers && !gmActuallyActive) {
+    logger.error(
+      "═══════════════════════════════════════════════════════════════\n" +
+        "  PORTAL ACTION REQUIRED — GuildMembers intent was REJECTED\n" +
+        "  Member join/leave/role/nickname events will NOT be logged.\n" +
+        "  1. Go to: https://discord.com/developers/applications\n" +
+        "  2. Select your application → Click 'Bot'\n" +
+        "  3. Scroll to 'Privileged Gateway Intents'\n" +
+        "  4. Toggle 'Server Members Intent' → ON and click 'Save Changes'\n" +
+        "  5. Restart this bot\n" +
+        "═══════════════════════════════════════════════════════════════"
+    );
+  }
+
+  if (wantMessageContent && !mcActuallyActive) {
+    logger.error(
+      "═══════════════════════════════════════════════════════════════\n" +
+        "  PORTAL ACTION REQUIRED — MessageContent intent was REJECTED\n" +
+        "  Anti-Link URL detection will NOT work.\n" +
+        "  1. Go to: https://discord.com/developers/applications\n" +
+        "  2. Select your application → Click 'Bot'\n" +
+        "  3. Scroll to 'Privileged Gateway Intents'\n" +
+        "  4. Toggle 'Message Content Intent' → ON and click 'Save Changes'\n" +
+        "  5. Restart this bot\n" +
+        "═══════════════════════════════════════════════════════════════"
+    );
+  }
+
+  await loadEvents(client);
+  await securityManager.init(client);
+  await loadWelcomeGoodbyeEvents(client);
+  loggingService.init(client, securityManager);
+  registerLoggingHandlers(client);
+
+  // ── Register modules ──────────────────────────────────────────────────────
+  const godsJudgment = new GodsJudgment(securityManager);
+  securityManager.registerModule(godsJudgment);
+  godsJudgment.register(client); // channelCreate + messageCreate (leak repair)
+
+  const antiLink = new AntiLink(securityManager);
+  securityManager.registerModule(antiLink);
+  antiLink.register(client);
+
+  const antiMention = new AntiMention(securityManager);
+  securityManager.registerModule(antiMention);
+  antiMention.register(client);
+
+  const capsDetector = new CapsDetector(securityManager);
+  capsDetector.register(client);
+
+  const emojiStickerDetector = new EmojiStickerDetector(securityManager);
+  emojiStickerDetector.register(client);
+
+  const attachmentDetector = new AttachmentDetector(securityManager);
+  attachmentDetector.register(client);
+
+  const badWordProtection = new BadWordProtection(securityManager);
+  securityManager.registerModule(badWordProtection);
+  badWordProtection.register(client);
+
+  const antiSpam = new AntiSpam(securityManager);
+  securityManager.registerModule(antiSpam);
+  antiSpam.register(client);
+
+  // ── Startup validation: audit + repair all guild channels once ready ───────
+  scheduleStartupValidation(client, godsJudgment);
+
+  logger.info(`[STARTUP COMPLETE] Bot running. MessageContent active: ${mcActuallyActive}`);
+  void messageContentGranted;
+}
+
+main().catch((err) => {
+  logger.error(`Fatal startup error: ${err instanceof Error ? err.stack : String(err)}`);
+  process.exit(1);
+});
