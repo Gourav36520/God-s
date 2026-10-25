@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
+  EmbedBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
@@ -14,6 +15,7 @@ import {
   type VerificationGuildConfig,
   verificationAdminRequest,
 } from "../verification/api.js";
+import { checkCaptchaGlyphRendering } from "../verification/captcha.js";
 
 interface ConfigResponse {
   config: VerificationGuildConfig | null;
@@ -179,10 +181,11 @@ async function configure(
     !channelPermissions?.has([
       PermissionFlagsBits.ViewChannel,
       PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
     ])
   ) {
     await interaction.editReply(
-      "The bot needs View Channel and Send Messages permission in the selected channel.",
+      "The bot needs View Channel, Send Messages, and Embed Links permission in the selected channel.",
     );
     return;
   }
@@ -230,21 +233,31 @@ async function postPanel(
   if (
     !channel
       .permissionsFor(botMember)
-      ?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])
+      ?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ])
   ) {
     await interaction.editReply(
-      "The bot needs View Channel and Send Messages permission in the configured channel.",
+      "The bot needs View Channel, Send Messages, and Embed Links permission in the configured channel.",
     );
     return;
   }
 
   const button = new ButtonBuilder()
     .setCustomId(VERIFICATION_BUTTON_ID)
-    .setLabel("Verify with Discord")
+    .setLabel("Verify")
     .setStyle(ButtonStyle.Primary);
   await channel.send({
-    content:
-      "**Discord account verification**\nPress the button to open a private verification link. Review the privacy notice before continuing.",
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("Discord verification")
+        .setDescription(
+          "Press Verify to complete a short CAPTCHA privately inside Discord.",
+        ),
+    ],
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)],
   });
   await interaction.editReply(
@@ -263,6 +276,7 @@ async function runDiagnostics(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const healthOk = await checkVerificationApiHealth();
+  const captchaGlyphsOk = checkCaptchaGlyphRendering();
   let diagnostics: VerificationDiagnostics;
   try {
     diagnostics = await getDiagnostics(interaction);
@@ -296,6 +310,7 @@ async function runDiagnostics(
             ?.has([
               PermissionFlagsBits.ViewChannel,
               PermissionFlagsBits.SendMessages,
+              PermissionFlagsBits.EmbedLinks,
             ]),
         );
       }
@@ -319,7 +334,8 @@ async function runDiagnostics(
     `Bot Manage Roles: ${manageRoles ? "ok" : "missing"}`,
     `Configured channel permissions: ${configuredChannelPermissions ? "ok" : "missing or not configured"}`,
     `Verified-role hierarchy: ${roleHierarchy ? "ok" : "missing or not configured"}`,
-    `CAPTCHA rendering: ${diagnostics.captchaRendering.supported ? "available" : "not applicable; Cloudflare Turnstile is used and no local bitmap renderer exists"}`,
+    `Discord CAPTCHA image and glyph coverage: ${captchaGlyphsOk ? "ok" : "failed"}`,
+    `CAPTCHA flow: ${diagnostics.captchaRendering.supported ? diagnostics.captchaRendering.provider : "unavailable"}`,
   ];
   if (diagnostics.missingSettings.length > 0) {
     lines.push(

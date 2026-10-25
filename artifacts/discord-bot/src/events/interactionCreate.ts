@@ -12,13 +12,22 @@ import { commands } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 import {
   handleVerificationButton,
+  handleVerificationModal,
   isVerificationButton,
+  isVerificationModal,
 } from "../verification/interaction.js";
 
 export const name = Events.InteractionCreate;
 export const once = false;
 
 export async function execute(interaction: Interaction): Promise<void> {
+  if (interaction.isModalSubmit()) {
+    if (isVerificationModal(interaction.customId)) {
+      await handleVerificationModal(interaction);
+    }
+    return;
+  }
+
   if (interaction.isButton()) {
     if (isVerificationButton(interaction.customId)) {
       await handleVerificationButton(interaction);

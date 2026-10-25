@@ -1,5 +1,6 @@
 import {
   boolean,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -29,6 +30,10 @@ export const verificationSessionsTable = pgTable(
     userId: text("user_id").notNull(),
     guildId: text("guild_id").notNull(),
     status: text("status").notNull().default("pending"),
+    captchaAnswerHash: text("captcha_answer_hash"),
+    captchaSalt: text("captcha_salt"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    cooldownUntil: timestamp("cooldown_until", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consentedAt: timestamp("consented_at", { withTimezone: true }),
     csrfTokenHash: text("csrf_token_hash"),
