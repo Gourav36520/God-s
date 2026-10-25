@@ -100,7 +100,11 @@ router.get("/verification/callback", async (req, res): Promise<void> => {
   }
 
   try {
-    const { db, verificationSessionsTable } = await verificationDatabase();
+    const {
+      db,
+      verificationGuildConfigsTable,
+      verificationSessionsTable,
+    } = await verificationDatabase();
     const stateHash = hashSecret(state);
     const [candidate] = await db
       .select()
@@ -202,6 +206,26 @@ router.get("/verification/callback", async (req, res): Promise<void> => {
       return;
     }
 
+    const [guildConfig] = await db
+      .select()
+      .from(verificationGuildConfigsTable)
+      .where(eq(verificationGuildConfigsTable.guildId, session.guildId))
+      .limit(1);
+    const botToken = process.env.DISCORD_BOT_TOKEN?.trim();
+    if (!guildConfig?.enabled || !botToken) {
+      await db
+        .update(verificationSessionsTable)
+        .set({ status: "failed", updatedAt: new Date() })
+        .where(eq(verificationSessionsTable.sessionHash, session.sessionHash));
+      req.log.error("Verification guild role configuration is unavailable");
+      failHtml(
+        res,
+        503,
+        "Verification could not be completed. Please contact a server moderator.",
+      );
+      return;
+    }
+
     const email = optionalEmail(discordUser.email);
     const verifiedAt = new Date();
     const eventId = randomUUID();
@@ -234,6 +258,34 @@ router.get("/verification/callback", async (req, res): Promise<void> => {
         res,
         503,
         "Verification could not be completed. Please request a new link in Discord.",
+      );
+      return;
+    }
+
+    let roleResponse: Response;
+    try {
+      roleResponse = await fetch(
+        `https://discord.com/api/v10/guilds/${session.guildId}/members/${session.userId}/roles/${guildConfig.verifiedRoleId}`,
+        {
+          method: "PUT",
+          headers: { authorization: `Bot ${botToken}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(8000),
+        },
+      );
+    } catch {
+      roleResponse = new Response(null, { status: 503 });
+    }
+    if (roleResponse.status !== 204) {
+      await db
+        .update(verificationSessionsTable)
+        .set({ status: "failed", updatedAt: new Date() })
+        .where(eq(verificationSessionsTable.sessionHash, session.sessionHash));
+      req.log.error("Discord did not accept the verified-role assignment");
+      failHtml(
+        res,
+        503,
+        "Your account was verified, but the server role could not be assigned. Please contact a server moderator.",
       );
       return;
     }

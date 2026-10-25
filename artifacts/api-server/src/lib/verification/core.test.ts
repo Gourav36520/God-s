@@ -9,6 +9,7 @@ import {
   validateTurnstileAssessment,
 } from "./core";
 import { getVerificationConfig } from "./config";
+import { signBotAdminRequest } from "./crypto";
 
 const NOW = new Date("2026-10-17T00:00:00.000Z");
 
@@ -116,6 +117,32 @@ test("missing or invalid Discord email remains null", () => {
   assert.equal(optionalEmail(""), null);
   assert.equal(optionalEmail("not-an-email"), null);
   assert.equal(optionalEmail("person@example.test"), "person@example.test");
+});
+
+test("signed verification admin requests bind the complete request body", () => {
+  const timestamp = "1792195200000";
+  const nonce = "test-nonce-which-is-long-enough-to-be-unique";
+  const secret = "x".repeat(32);
+  const configBody = JSON.stringify({
+    userId: "100000000000000001",
+    guildId: "100000000000000002",
+    action: "config:set",
+    channelId: "100000000000000003",
+    verifiedRoleId: "100000000000000004",
+  });
+  const otherRoleBody = JSON.stringify({
+    userId: "100000000000000001",
+    guildId: "100000000000000002",
+    action: "config:set",
+    channelId: "100000000000000003",
+    verifiedRoleId: "100000000000000005",
+  });
+
+  assert.match(signBotAdminRequest(timestamp, nonce, configBody, secret), /^[a-f0-9]{64}$/);
+  assert.notEqual(
+    signBotAdminRequest(timestamp, nonce, configBody, secret),
+    signBotAdminRequest(timestamp, nonce, otherRoleBody, secret),
+  );
 });
 
 test("verification fails closed when required deployment config is missing", () => {

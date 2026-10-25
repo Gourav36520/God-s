@@ -115,3 +115,62 @@ export function getVerificationConfig(
     retentionDays,
   };
 }
+
+export function getMissingVerificationSettings(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const requiredKeys = [
+    "VERIFICATION_PUBLIC_BASE_URL",
+    "VERIFICATION_EXPECTED_HOSTNAME",
+    "DISCORD_OAUTH_CALLBACK_URL",
+    "DISCORD_OAUTH_CLIENT_SECRET",
+    "CLOUDFLARE_TURNSTILE_SITE_KEY",
+    "CLOUDFLARE_TURNSTILE_SECRET_KEY",
+    "VERIFICATION_BOT_HMAC_SECRET",
+    "VERIFICATION_PRIVATE_LOG_URL",
+    "VERIFICATION_LOG_HMAC_SECRET",
+    "VERIFICATION_DATA_ENCRYPTION_KEY",
+    "VERIFICATION_RETENTION_DAYS",
+  ];
+  const missing = requiredKeys.filter((key) => !env[key]?.trim());
+
+  if (!env.DISCORD_OAUTH_CLIENT_ID?.trim() && !env.CLIENT_ID?.trim()) {
+    missing.push("DISCORD_OAUTH_CLIENT_ID or CLIENT_ID");
+  }
+
+  for (const key of [
+    "VERIFICATION_BOT_HMAC_SECRET",
+    "VERIFICATION_LOG_HMAC_SECRET",
+  ]) {
+    const value = env[key]?.trim();
+    if (value && Buffer.byteLength(value, "utf8") < 32 && !missing.includes(key)) {
+      missing.push(key);
+    }
+  }
+
+  const retentionDays = Number(env.VERIFICATION_RETENTION_DAYS);
+  if (
+    env.VERIFICATION_RETENTION_DAYS?.trim() &&
+    (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650)
+  ) {
+    missing.push("VERIFICATION_RETENTION_DAYS");
+  }
+
+  const encryptionKey = env.VERIFICATION_DATA_ENCRYPTION_KEY?.trim();
+  if (
+    encryptionKey &&
+    Buffer.from(encryptionKey, "base64").length !== 32
+  ) {
+    missing.push("VERIFICATION_DATA_ENCRYPTION_KEY");
+  }
+
+  try {
+    getVerificationConfig(env);
+  } catch {
+    if (missing.length === 0) {
+      missing.push("Verification configuration values");
+    }
+  }
+
+  return [...new Set(missing)];
+}

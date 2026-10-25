@@ -1,9 +1,26 @@
 import {
+  boolean,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+
+export const verificationGuildConfigsTable = pgTable(
+  "verification_guild_configs",
+  {
+    guildId: text("guild_id").primaryKey(),
+    channelId: text("channel_id").notNull(),
+    verifiedRoleId: text("verified_role_id").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
 
 export const verificationSessionsTable = pgTable(
   "verification_sessions",

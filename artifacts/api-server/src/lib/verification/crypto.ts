@@ -17,6 +17,17 @@ export function signBotRequest(
     .digest("hex");
 }
 
+export function signBotAdminRequest(
+  timestamp: string,
+  nonce: string,
+  body: string,
+  secret: string,
+): string {
+  return createHmac("sha256", secret)
+    .update(`POST /api/verification/admin\n${timestamp}\n${nonce}\n${body}`)
+    .digest("hex");
+}
+
 export function encryptEmail(email: string, key: Buffer): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
