@@ -10,6 +10,19 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const testGuildId = process.env.DISCORD_TEST_GUILD_ID?.trim();
+  const deployGlobally = process.argv.includes("--global");
+  if (deployGlobally === Boolean(testGuildId)) {
+    logger.error(
+      "Set DISCORD_TEST_GUILD_ID for a test-guild registration, or pass --global for an intentional global registration.",
+    );
+    process.exit(1);
+  }
+  if (testGuildId && !/^\d{17,20}$/.test(testGuildId)) {
+    logger.error("DISCORD_TEST_GUILD_ID must be a valid Discord server ID.");
+    process.exit(1);
+  }
+
   const ping = await import("./commands/ping.js");
   const help = await import("./commands/help.js");
   const info = await import("./commands/info.js");
@@ -60,10 +73,21 @@ async function main(): Promise<void> {
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);
+  const route = testGuildId
+    ? Routes.applicationGuildCommands(clientId, testGuildId)
+    : Routes.applicationCommands(clientId);
 
-  logger.info(`Registering ${commandData.length} slash command(s) globally...`);
-  await rest.put(Routes.applicationCommands(clientId), { body: commandData });
-  logger.info("Successfully registered all commands.");
+  logger.info(
+    testGuildId
+      ? `Registering ${commandData.length} slash command(s) to test guild ${testGuildId}...`
+      : `Registering ${commandData.length} slash command(s) globally...`,
+  );
+  await rest.put(route, { body: commandData });
+  logger.info(
+    testGuildId
+      ? "Successfully registered commands to the test guild."
+      : "Successfully registered all commands globally.",
+  );
 }
 
 main().catch((err) => {

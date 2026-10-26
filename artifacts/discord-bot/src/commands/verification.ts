@@ -365,9 +365,15 @@ async function reset(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const scope = interaction.options.getString("scope", true);
+  if (scope !== "configuration" && scope !== "pending") {
+    await interaction.editReply("Invalid reset scope. No changes were made.");
+    return;
+  }
   if (!interaction.options.getBoolean("confirm", true)) {
     await interaction.editReply(
-      "No changes made. Rerun with `confirm: True` to confirm this server-scoped reset.",
+      scope === "configuration"
+        ? "No changes made. Set `confirm: True` to reset this server's verification configuration."
+        : "No changes made. Set `confirm: True` to invalidate this server's pending CAPTCHA challenges.",
     );
     return;
   }
@@ -386,7 +392,7 @@ async function reset(
     );
   } else {
     await interaction.editReply(
-      `Invalidated ${result.invalidated ?? 0} pending CAPTCHA session(s) for this server. No member roles were changed.`,
+      `Invalidated ${result.invalidated ?? 0} pending CAPTCHA challenge(s) for this server. No member roles were changed.`,
     );
   }
 }

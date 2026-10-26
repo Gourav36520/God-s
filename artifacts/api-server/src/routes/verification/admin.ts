@@ -575,7 +575,6 @@ router.post("/verification/admin", async (req, res): Promise<void> => {
             and(
               eq(verificationSessionsTable.guildId, body.guildId),
               inArray(verificationSessionsTable.status, [
-                "pending",
                 "captcha_pending",
                 "captcha_passed",
               ]),
