@@ -73,19 +73,23 @@ async function main(): Promise<void> {
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);
-  const route = testGuildId
-    ? Routes.applicationGuildCommands(clientId, testGuildId)
-    : Routes.applicationCommands(clientId);
-
   logger.info(
     testGuildId
-      ? `Registering ${commandData.length} slash command(s) to test guild ${testGuildId}...`
+      ? `Registering the verification command to test guild ${testGuildId}...`
       : `Registering ${commandData.length} slash command(s) globally...`,
   );
-  await rest.put(route, { body: commandData });
+  if (testGuildId) {
+    await rest.post(Routes.applicationGuildCommands(clientId, testGuildId), {
+      body: verification.data.toJSON(),
+    });
+  } else {
+    await rest.put(Routes.applicationCommands(clientId), {
+      body: commandData,
+    });
+  }
   logger.info(
     testGuildId
-      ? "Successfully registered commands to the test guild."
+      ? "Successfully registered the verification command to the test guild."
       : "Successfully registered all commands globally.",
   );
 }
