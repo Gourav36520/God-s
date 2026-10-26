@@ -435,27 +435,31 @@ router.post("/verification/admin", async (req, res): Promise<void> => {
             challenge.captchaAnswerHash ?? "",
           );
         if (!answerMatches) {
-          const attempts = challenge.attemptCount + 1;
-          const locked = attempts >= CAPTCHA_MAX_ATTEMPTS;
           const [updated] = await db
             .update(verificationSessionsTable)
             .set({
-              attemptCount: attempts,
-              status: locked ? "failed" : "captcha_pending",
-              cooldownUntil: locked
-                ? new Date(now.getTime() + CAPTCHA_COOLDOWN_MS)
-                : null,
+              attemptCount: sql`${verificationSessionsTable.attemptCount} + 1`,
+              status: sql`CASE
+                WHEN ${verificationSessionsTable.attemptCount} + 1 >= ${CAPTCHA_MAX_ATTEMPTS}
+                  THEN 'failed'
+                ELSE 'captcha_pending'
+              END`,
+              cooldownUntil: sql`CASE
+                WHEN ${verificationSessionsTable.attemptCount} + 1 >= ${CAPTCHA_MAX_ATTEMPTS}
+                  THEN to_timestamp(${(now.getTime() + CAPTCHA_COOLDOWN_MS) / 1000})
+                ELSE NULL
+              END`,
               updatedAt: now,
             })
             .where(
               and(
                 eq(verificationSessionsTable.sessionHash, challenge.sessionHash),
                 eq(verificationSessionsTable.status, "captcha_pending"),
-                eq(verificationSessionsTable.attemptCount, challenge.attemptCount),
+                sql`${verificationSessionsTable.attemptCount} < ${CAPTCHA_MAX_ATTEMPTS}`,
                 gt(verificationSessionsTable.expiresAt, now),
               ),
             )
-            .returning({ sessionHash: verificationSessionsTable.sessionHash });
+            .returning({ attemptCount: verificationSessionsTable.attemptCount });
           if (!updated) {
             res.status(409).json({
               verified: false,
@@ -464,10 +468,14 @@ router.post("/verification/admin", async (req, res): Promise<void> => {
             });
             return;
           }
+          const locked = updated.attemptCount >= CAPTCHA_MAX_ATTEMPTS;
           res.json({
             verified: false,
             reason: locked ? "attempt_limit" : "incorrect",
-            attemptsRemaining: Math.max(0, CAPTCHA_MAX_ATTEMPTS - attempts),
+            attemptsRemaining: Math.max(
+              0,
+              CAPTCHA_MAX_ATTEMPTS - updated.attemptCount,
+            ),
             cooldownSeconds: locked ? CAPTCHA_COOLDOWN_MS / 1000 : 0,
           });
           return;
@@ -485,7 +493,6 @@ router.post("/verification/admin", async (req, res): Promise<void> => {
             and(
               eq(verificationSessionsTable.sessionHash, challenge.sessionHash),
               eq(verificationSessionsTable.status, "captcha_pending"),
-              eq(verificationSessionsTable.attemptCount, challenge.attemptCount),
               gt(verificationSessionsTable.expiresAt, now),
             ),
           )
