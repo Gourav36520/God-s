@@ -273,13 +273,13 @@ router.post("/verification/admin", async (req, res): Promise<void> => {
           !allowRateLimitedAttempt(
             `captcha:create:${body.guildId}:${body.userId}`,
             3,
-            5 * 60 * 1000,
+            60 * 1000,
           )
         ) {
           res.status(429).json({
             error: "Please wait before requesting another CAPTCHA.",
             errorCode: "cooldown",
-            retryAfterSeconds: 300,
+            retryAfterSeconds: 60,
           });
           return;
         }

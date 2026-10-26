@@ -29,7 +29,6 @@ export interface VerificationDiagnostics {
 export class VerificationApiError extends Error {
   constructor(
     readonly status: number,
-    readonly errorCode?: string,
     readonly retryAfterSeconds?: number,
   ) {
     super("Verification is temporarily unavailable.");
@@ -105,14 +104,11 @@ export async function verificationAdminRequest<T>(
     signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) {
-    let errorCode: string | undefined;
     let retryAfterSeconds: number | undefined;
     try {
       const error = (await response.json()) as {
-        errorCode?: unknown;
         retryAfterSeconds?: unknown;
       };
-      if (typeof error.errorCode === "string") errorCode = error.errorCode;
       if (typeof error.retryAfterSeconds === "number") {
         retryAfterSeconds = error.retryAfterSeconds;
       }
@@ -121,7 +117,6 @@ export async function verificationAdminRequest<T>(
     }
     throw new VerificationApiError(
       response.status,
-      errorCode,
       retryAfterSeconds,
     );
   }
