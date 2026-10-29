@@ -375,15 +375,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Decode the Application ID from the token (first segment is base64-encoded app ID).
-  // This is NOT a secret — the app ID is the same as the Client ID shown in the portal.
-  try {
-    const appId = Buffer.from(token.split(".")[0], "base64").toString("utf8");
-    logger.info(`[STARTUP] Bot Application ID: ${appId} — verify this matches your Developer Portal application`);
-  } catch {
-    logger.warn("[STARTUP] Could not decode Application ID from token");
-  }
-
   const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
   // Anti-Nuke bot-admission and member-role correlation require this privileged intent.
   const wantGuildMembers = true;
