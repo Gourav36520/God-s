@@ -7,7 +7,12 @@ import {
   Partials,
 } from "discord.js";
 import { logger } from "./lib/logger.js";
-import { commands, loggingService, securityManager } from "./lib/registry.js";
+import {
+  antiNukeService,
+  commands,
+  loggingService,
+  securityManager,
+} from "./lib/registry.js";
 import type { Command } from "./lib/registry.js";
 import { GodsJudgment } from "./security/modules/GodsJudgment.js";
 import { AntiSpam } from "./security/modules/AntiSpam.js";
@@ -156,6 +161,10 @@ async function loadCommands(): Promise<void> {
   const invite = await import("./commands/invite.js");
   const invited = await import("./commands/invited.js");
   const verification = await import("./commands/verification.js");
+  const antiNuke = await import("./commands/antinuke.js");
+  const trust = await import("./commands/trust.js");
+  const configure = await import("./commands/configure.js");
+  const judgement = await import("./commands/judgement.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -231,6 +240,20 @@ async function loadCommands(): Promise<void> {
   commands.set(verification.data.name, {
     data: verification.data,
     execute: verification.execute,
+  });
+  commands.set(antiNuke.data.name, { data: antiNuke.data, execute: antiNuke.execute });
+  commands.set(trust.whitelistData.name, {
+    data: trust.whitelistData,
+    execute: trust.executeWhitelist,
+  });
+  commands.set(trust.blacklistData.name, {
+    data: trust.blacklistData,
+    execute: trust.executeBlacklist,
+  });
+  commands.set(configure.data.name, { data: configure.data, execute: configure.execute });
+  commands.set(judgement.data.name, {
+    data: judgement.data,
+    execute: judgment.execute,
   });
   commands.set(judgment.releaseData.name, {
     data: judgment.releaseData,
@@ -362,10 +385,8 @@ async function main(): Promise<void> {
   }
 
   const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
-  const wantGuildMembers =
-    process.env.INTENT_GUILD_MEMBERS === undefined
-      ? true
-      : envBool("INTENT_GUILD_MEMBERS");
+  // Anti-Nuke bot-admission and member-role correlation require this privileged intent.
+  const wantGuildMembers = true;
 
   logger.info(
     `[INTENT DIAGNOSTIC] ` +
@@ -428,6 +449,8 @@ async function main(): Promise<void> {
 
   await loadEvents(client);
   await securityManager.init(client);
+  await antiNukeService.init(client);
+  antiNukeService.register(client);
   await loadWelcomeGoodbyeEvents(client);
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
@@ -463,7 +486,13 @@ async function main(): Promise<void> {
   antiSpam.register(client);
 
   // ── Startup validation: audit + repair all guild channels once ready ───────
-  scheduleStartupValidation(client, godsJudgment);
+  if (envBool("SKIP_GODS_JUDGMENT_STARTUP_REPAIR")) {
+    logger.info(
+      "[STARTUP VALIDATION] Skipped by safe-start setting; no channel permissions will be changed."
+    );
+  } else {
+    scheduleStartupValidation(client, godsJudgment);
+  }
 
   logger.info(`[STARTUP COMPLETE] Bot running. MessageContent active: ${mcActuallyActive}`);
   void messageContentGranted;

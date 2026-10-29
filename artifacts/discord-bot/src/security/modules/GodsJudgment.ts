@@ -17,6 +17,8 @@ import type { JudgmentRecord, JudgmentResult } from "../types.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
 
+const judgmentsInProgress = new Set<string>();
+
 export interface SetupResult {
   success: boolean;
   reason: string;
@@ -577,6 +579,10 @@ export class GodsJudgment extends BaseSecurityModule {
       `GodsJudgment.placeInJudgment: user=${member.user.tag} (${member.id}) guild=${member.guild.id}`
     );
 
+    if (member.id === member.guild.ownerId) {
+      return { success: false, reason: "The server owner cannot be placed under God's Judgment." };
+    }
+
     const cfg = this.manager.getConfig(member.guild.id).godsJudgment;
 
     if (!cfg.judgmentRoleId) {
@@ -588,6 +594,16 @@ export class GodsJudgment extends BaseSecurityModule {
       return {
         success: false,
         reason: "God's Judgment role not found. Run `/judgment setup` to recreate it.",
+      };
+    }
+    const botMember = member.guild.members.me;
+    if (
+      !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      !judgmentRole.editable
+    ) {
+      return {
+        success: false,
+        reason: "The bot needs Manage Roles and a role position above the configured quarantine role.",
       };
     }
 
@@ -619,21 +635,17 @@ export class GodsJudgment extends BaseSecurityModule {
       );
     }
 
+    const operationKey = `${member.guild.id}:${member.id}`;
+    if (judgmentsInProgress.has(operationKey)) {
+      return { success: false, reason: "A God's Judgment action is already running for this member." };
+    }
+    judgmentsInProgress.add(operationKey);
+
     // 1. Save the member's current roles (exclude @everyone and the judgment role itself)
     const savedRoles = member.roles.cache
       .filter((r) => r.id !== member.guild.roles.everyone.id && r.id !== judgmentRole.id)
       .map((r) => r.id);
 
-    // 2. Strip all roles, assign judgment role
-    try {
-      await member.roles.set([judgmentRole], `God's Judgment: ${reason}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error(`GodsJudgment.placeInJudgment: failed to set roles — ${msg}`);
-      return { success: false, reason: `Failed to modify roles: ${msg}` };
-    }
-
-    // 3. Persist judgment record
     const record: JudgmentRecord = {
       userId: member.id,
       savedRoles,
@@ -641,19 +653,121 @@ export class GodsJudgment extends BaseSecurityModule {
       reason,
       judgedBy,
     };
-    await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
-      activeJudgments: { ...cfg.activeJudgments, [member.id]: record },
-    });
+    const failures: string[] = [];
+    const blockedRoles = member.roles.cache.filter(
+      (role) =>
+        role.id !== member.guild.roles.everyone.id &&
+        role.id !== judgmentRole.id &&
+        !role.editable,
+    );
+    let roleAssigned = false;
+    try {
+      // Save first so a partial Discord API failure cannot lose the original roles.
+      await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
+        activeJudgments: { ...cfg.activeJudgments, [member.id]: record },
+      });
+
+      const removableRoles = member.roles.cache.filter(
+        (role) =>
+          role.id !== member.guild.roles.everyone.id &&
+          role.id !== judgmentRole.id &&
+          role.editable,
+      );
+      if (removableRoles.size > 0) {
+        try {
+          await member.roles.remove(
+            [...removableRoles.keys()],
+            `God's Judgment: ${reason}`,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          failures.push(`Could not remove all manageable roles: ${msg}`);
+          logger.warn(`GodsJudgment.placeInJudgment: partial role removal — ${msg}`);
+        }
+      }
+      if (blockedRoles.size > 0) {
+        failures.push(
+          `Could not remove ${blockedRoles.size} role(s) above the bot or managed by an integration.`,
+        );
+      }
+      try {
+        await member.roles.add(judgmentRole, `God's Judgment: ${reason}`);
+        roleAssigned = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Could not assign the quarantine role: ${msg}`);
+        logger.error(`GodsJudgment.placeInJudgment: failed to assign role — ${msg}`);
+      }
+
+      record.partial = failures.length > 0;
+      if (record.partial) record.failureDetails = failures;
+      await this.manager
+        .updateModuleConfig(member.guild.id, "godsJudgment", {
+          activeJudgments: { ...cfg.activeJudgments, [member.id]: record },
+        })
+        .catch((error: unknown) => {
+          failures.push(
+            `Could not persist the final judgment state: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          record.partial = true;
+          record.failureDetails = failures;
+        });
+    } finally {
+      judgmentsInProgress.delete(operationKey);
+    }
+
+    if (!roleAssigned) {
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: false,
+        reason:
+          "The quarantine role could not be assigned. Some manageable roles may already have been removed. " +
+          failures.join(" "),
+        record,
+      };
+    }
 
     // 4. Ensure all channel overwrites are present (full validation + repair)
     if (cfg.judgmentChannelId) {
       logger.info("GodsJudgment.placeInJudgment: verifying channel overwrites...");
-      const stats = await this.validateAndRepair(member.guild);
-      if (stats.repaired > 0) {
+      const stats = await this.validateAndRepair(member.guild).catch((error: unknown) => {
+        failures.push(
+          `Could not verify quarantine channel overwrites: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return null;
+      });
+      if (!stats || stats.errors > 0) {
+        if (stats?.errors && failures.length === 0) {
+          failures.push("Some quarantine channel overwrites could not be verified.");
+        }
+        record.partial = true;
+        record.failureDetails = failures.length
+          ? failures
+          : ["Some quarantine channel overwrites could not be verified."];
+        await this.manager
+          .updateModuleConfig(member.guild.id, "godsJudgment", {
+            activeJudgments: { ...cfg.activeJudgments, [member.id]: record },
+          })
+          .catch((error: unknown) => {
+            failures.push(
+              `Could not persist the final judgment state: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            record.partial = true;
+            record.failureDetails = failures;
+          });
+      }
+      if (stats && stats.repaired > 0) {
         logger.warn(
           `GodsJudgment.placeInJudgment: repaired ${stats.repaired} channel overwrite(s) before judgment`
         );
-      } else {
+      } else if (stats) {
         logger.info(
           `GodsJudgment.placeInJudgment: all ${stats.checked} channel overwrites verified ✓`
         );
@@ -664,7 +778,9 @@ export class GodsJudgment extends BaseSecurityModule {
     if (cfg.dmOnAction) {
       await member
         .send(
-          `⚖️ You have been placed under **God's Judgment** in **${member.guild.name}**.\n> **Reason:** ${reason}`
+          record.partial
+            ? `⚖️ God's Judgment role assigned in **${member.guild.name}**, but some protection steps were incomplete.\n> **Review:** ${failures.join(" ").slice(0, 500)}\n> **Reason:** ${reason}`
+            : `⚖️ You have been placed under **God's Judgment** in **${member.guild.name}**.\n> **Reason:** ${reason}`
         )
         .catch(() => logger.warn(`GodsJudgment: could not DM ${member.id}`));
     }
@@ -674,7 +790,9 @@ export class GodsJudgment extends BaseSecurityModule {
       guildId: member.guild.id,
       target: member,
       moderatorId: judgedBy,
-      reason,
+      reason: record.partial
+        ? `${reason} (partial: ${failures.join(" ")})`
+        : reason,
       savedRoles,
     });
 
@@ -682,13 +800,27 @@ export class GodsJudgment extends BaseSecurityModule {
       const ch = member.guild.channels.cache.get(cfg.judgmentChannelId) as TextChannel | undefined;
       if (ch) {
         await ch
-          .send(`⚖️ <@${member.id}>, you have been placed under **God's Judgment**.\n> **Reason:** ${reason}`)
+          .send(
+            record.partial
+              ? `⚠️ God's Judgment was partially applied to <@${member.id}>. Staff review is required.\n> **Details:** ${failures.join(" ").slice(0, 500)}\n> **Reason:** ${reason}`
+              : `⚖️ <@${member.id}>, you have been placed under **God's Judgment**.\n> **Reason:** ${reason}`,
+          )
           .catch(() => null);
       }
     }
 
-    logger.info(`GodsJudgment.placeInJudgment: ✓ complete for ${member.user.tag}`);
-    return { success: true, reason: "User placed under God's Judgment.", record };
+    logger.info(
+      `GodsJudgment.placeInJudgment: ${record.partial ? "PARTIAL" : "complete"} for ${member.user.tag}`,
+    );
+    return {
+      success: true,
+      partial: record.partial,
+      roleAssigned: true,
+      reason: record.partial
+        ? `Quarantine role assigned, but some roles could not be removed: ${failures.join(" ")}`
+        : "User placed under God's Judgment.",
+      record,
+    };
   }
 
   /**
@@ -716,33 +848,114 @@ export class GodsJudgment extends BaseSecurityModule {
       };
     }
 
-    // Re-apply the judgment role, stripping any roles the member may have
-    // acquired since the judgment was first placed
-    try {
-      await member.roles.set(
-        [judgmentRole],
-        `God's Judgment self-heal (triggered by <@${repairedBy}>): original reason — ${existingRecord.reason}`
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error(`GodsJudgment.repairHalfJudgedState: failed to re-apply role — ${msg}`);
-      return { success: false, reason: `Failed to re-apply judgment role: ${msg}` };
+    const botMember = member.guild.members.me;
+    if (
+      !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      !judgmentRole.editable
+    ) {
+      return {
+        success: false,
+        reason: "The bot needs Manage Roles and a role position above the configured quarantine role.",
+      };
     }
 
-    // Keep the original record intact — savedRoles must reflect what the member
-    // had BEFORE the first judgment, not the roles they accumulated since
-    await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
-      activeJudgments: { ...cfg.activeJudgments, [member.id]: existingRecord },
-    });
+    const failures: string[] = [];
+    const blockedRoles = member.roles.cache.filter(
+      (role) =>
+        role.id !== member.guild.roles.everyone.id &&
+        role.id !== judgmentRole.id &&
+        !role.editable,
+    );
+    let roleAssigned = false;
+    const removableRoles = member.roles.cache.filter(
+      (role) =>
+        role.id !== member.guild.roles.everyone.id &&
+        role.id !== judgmentRole.id &&
+        role.editable,
+    );
+    if (removableRoles.size > 0) {
+      try {
+        await member.roles.remove(
+          [...removableRoles.keys()],
+          `God's Judgment self-heal by ${repairedBy}`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Could not remove all manageable roles: ${msg}`);
+      }
+    }
+    if (blockedRoles.size > 0) {
+      failures.push(
+        `Could not remove ${blockedRoles.size} role(s) above the bot or managed by an integration.`,
+      );
+    }
+    try {
+      await member.roles.add(
+        judgmentRole,
+        `God's Judgment self-heal (triggered by <@${repairedBy}>): original reason — ${existingRecord.reason}`,
+      );
+      roleAssigned = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      failures.push(`Could not assign the quarantine role: ${msg}`);
+      logger.error(`GodsJudgment.repairHalfJudgedState: failed to re-apply role — ${msg}`);
+    }
+
+    existingRecord.partial = failures.length > 0;
+    if (existingRecord.partial) existingRecord.failureDetails = failures;
+    else delete existingRecord.failureDetails;
+    await this.manager
+      .updateModuleConfig(member.guild.id, "godsJudgment", {
+        activeJudgments: { ...cfg.activeJudgments, [member.id]: existingRecord },
+      })
+      .catch((error: unknown) => {
+        failures.push(
+          `Could not persist the recovery result: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        existingRecord.partial = true;
+        existingRecord.failureDetails = failures;
+      });
+    if (!roleAssigned) {
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: false,
+        reason:
+          "The quarantine role could not be assigned. Some manageable roles may already have been removed. " +
+          failures.join(" "),
+        record: existingRecord,
+      };
+    }
 
     // Re-validate all channel overwrites so the lockdown is complete
     if (cfg.judgmentChannelId) {
-      const stats = await this.validateAndRepair(member.guild);
-      if (stats.repaired > 0) {
+      const stats = await this.validateAndRepair(member.guild).catch((error: unknown) => {
+        failures.push(
+          `Could not verify all quarantine channel overwrites: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return null;
+      });
+      if (!stats || stats.errors > 0) {
+        if (stats?.errors && failures.length === 0) {
+          failures.push("Some quarantine channel overwrites could not be verified.");
+        }
+        existingRecord.partial = true;
+        existingRecord.failureDetails = failures.length
+          ? failures
+          : ["Some quarantine channel overwrites could not be verified."];
+        await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
+          activeJudgments: { ...cfg.activeJudgments, [member.id]: existingRecord },
+        });
+      }
+      if (stats && stats.repaired > 0) {
         logger.warn(
           `GodsJudgment.repairHalfJudgedState: repaired ${stats.repaired} channel overwrite(s) during self-heal`
         );
-      } else {
+      } else if (stats) {
         logger.info(
           `GodsJudgment.repairHalfJudgedState: all ${stats.checked} channel overwrites verified ✓`
         );
@@ -753,23 +966,26 @@ export class GodsJudgment extends BaseSecurityModule {
     if (cfg.dmOnAction) {
       await member
         .send(
-          `⚠️ Your **God's Judgment** in **${member.guild.name}** was detected as incomplete and has been automatically restored.\n` +
-            `> The judgment role was found missing and has been re-applied.\n` +
+          `⚠️ God's Judgment recovery was attempted in **${member.guild.name}**.\n` +
+            `> The quarantine role ${roleAssigned ? "was re-applied" : "could not be re-applied"}.\n` +
+            (failures.length ? `> **Partial failures:** ${failures.join(" ").slice(0, 500)}\n` : "") +
             `> **Original Reason:** ${existingRecord.reason}`
         )
         .catch(() => null);
     }
 
     logger.info(
-      `GodsJudgment.repairHalfJudgedState: ✓ self-heal complete for ${member.user.tag} (${member.id})`
+      `GodsJudgment.repairHalfJudgedState: ${existingRecord.partial ? "PARTIAL" : "complete"} for ${member.user.tag} (${member.id})`
     );
 
     return {
-      success: true,
+      success: roleAssigned,
+      partial: existingRecord.partial,
+      roleAssigned,
       wasRepaired: true,
-      reason:
-        `Self-healed: ${member.user.tag}'s judgment role was re-applied after being ` +
-        `manually removed. Original reason: ${existingRecord.reason}`,
+      reason: existingRecord.partial
+        ? `Quarantine role ${roleAssigned ? "re-applied" : "not assigned"} with partial failures: ${failures.join(" ")}`
+        : `Self-healed: ${member.user.tag}'s judgment role was re-applied after being manually removed. Original reason: ${existingRecord.reason}`,
       record: existingRecord,
     };
   }

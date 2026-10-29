@@ -8,7 +8,7 @@ import type { GuildMember } from "discord.js";
 import { assignAutoRole } from "../autorole/service.js";
 import { sendMemberWelcome } from "../welcome-goodbye/service.js";
 import { logger } from "../lib/logger.js";
-import { securityManager } from "../lib/registry.js";
+import { antiNukeService, securityManager } from "../lib/registry.js";
 import { inviteTracker } from "../trackers/invite-tracker.js";
 
 export const name = Events.GuildMemberAdd;
@@ -118,6 +118,15 @@ async function recordJoinAndNotify(member: GuildMember): Promise<void> {
 }
 
 export async function execute(member: GuildMember): Promise<void> {
+  try {
+    if (await antiNukeService.handleMemberJoin(member)) return;
+  } catch (error) {
+    logger.error(
+      `Anti-Nuke join handling failed for ${member.id}: ${
+        error instanceof Error ? error.stack ?? error.message : String(error)
+      }`,
+    );
+  }
   void recordJoinAndNotify(member).catch((error: unknown) => {
     logger.error(
       `Invite notification failed for member ${member.id}: ${

@@ -65,6 +65,8 @@ export interface JudgmentRecord {
   judgedAt: string;
   reason: string;
   judgedBy: string;
+  partial?: boolean;
+  failureDetails?: string[];
 }
 
 export interface GodsJudgmentConfig {
@@ -121,4 +123,6 @@ export interface JudgmentResult {
   reason: string;
   record?: JudgmentRecord;
   wasRepaired?: boolean;
+  partial?: boolean;
+  roleAssigned?: boolean;
 }

@@ -5,6 +5,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { securityManager } from "../lib/registry.js";
+import { isManualJudgementOwner } from "../security/antinuke/policy.js";
 import type { GodsJudgment } from "../security/modules/GodsJudgment.js";
 import { logger } from "../lib/logger.js";
 import {
@@ -206,6 +207,23 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
   }
 
   try {
+    if (
+      !interaction.guild ||
+      !isManualJudgementOwner(interaction.user.id, interaction.guild.ownerId)
+    ) {
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Server Owner Only",
+            description: "Only this server's actual owner can use `/judgement user`.",
+            emoji: GODS_EMOJI.judgment,
+            tone: "error",
+          }),
+        ],
+      });
+      return;
+    }
+
     const target = interaction.options.getMember("user") as GuildMember | null;
     const reason = interaction.options.getString("reason") ?? "No reason provided";
 
@@ -222,25 +240,12 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
       });
       return;
     }
-    if (target.id === interaction.user.id) {
+    if (target.id === interaction.guild.ownerId) {
       await interaction.editReply({
         embeds: [
           createGodsEmbed({
             title: "Action Not Allowed",
-            description: "You cannot place yourself under God's Judgment.",
-            emoji: GODS_EMOJI.judgment,
-            tone: "error",
-          }),
-        ],
-      });
-      return;
-    }
-    if (target.permissions.has(PermissionFlagsBits.Administrator)) {
-      await interaction.editReply({
-        embeds: [
-          createGodsEmbed({
-            title: "Action Not Allowed",
-            description: "Administrators cannot be placed under God's Judgment.",
+            description: "The server owner cannot be placed under God's Judgment.",
             emoji: GODS_EMOJI.judgment,
             tone: "error",
           }),
@@ -256,8 +261,10 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
       await interaction.editReply({
         embeds: [
           createGodsEmbed({
-            title: "Judgment Not Applied",
-            description: "The request couldn't be completed. Confirm the member is eligible and that the bot can manage their roles, then try again.",
+            title: result.partial ? "Judgment Partially Applied" : "Judgment Not Applied",
+            description:
+              result.reason ||
+              "The request couldn't be completed. Check the bot's role hierarchy and permissions.",
             emoji: GODS_EMOJI.judgment,
             tone: "error",
           }),
@@ -267,10 +274,15 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
     }
 
     const isRepair = result.wasRepaired === true;
+    const isPartial = result.partial === true;
     const embed = createGodsEmbed({
-      title: isRepair ? "Judgment Protection Restored" : "Member Placed Under Judgment",
+      title: isPartial
+        ? "Judgment Partially Applied"
+        : isRepair
+          ? "Judgment Protection Restored"
+          : "Member Placed Under Judgment",
       emoji: GODS_EMOJI.judgment,
-      tone: isRepair ? "warning" : "error",
+      tone: isRepair || isPartial ? "warning" : "error",
       description: arrowLine("Member", `<@${target.id}>`),
     })
       .addFields(
@@ -282,6 +294,14 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
               value:
                 "The judgment role was found missing (manually removed). " +
                 "It has been automatically re-applied and channel access has been verified.",
+              inline: false,
+            }]
+          : [])
+        ,
+        ...(isPartial
+          ? [{
+              name: "Partial Result",
+              value: result.reason,
               inline: false,
             }]
           : [])

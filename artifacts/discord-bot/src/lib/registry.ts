@@ -6,6 +6,7 @@ import type {
 } from "discord.js";
 import { SecurityManager } from "../security/SecurityManager.js";
 import { LoggingService } from "../logging/LoggingService.js";
+import { AntiNukeService } from "../security/antinuke/AntiNukeService.js";
 
 export interface Command {
   data: SharedSlashCommand;
@@ -17,3 +18,4 @@ export const commands = new Collection<string, Command>();
 
 export const securityManager = new SecurityManager();
 export const loggingService = new LoggingService();
+export const antiNukeService = new AntiNukeService(securityManager);

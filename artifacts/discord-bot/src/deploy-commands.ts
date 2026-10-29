@@ -32,6 +32,10 @@ async function main(): Promise<void> {
   const invite = await import("./commands/invite.js");
   const invited = await import("./commands/invited.js");
   const verification = await import("./commands/verification.js");
+  const antiNuke = await import("./commands/antinuke.js");
+  const trust = await import("./commands/trust.js");
+  const configure = await import("./commands/configure.js");
+  const judgement = await import("./commands/judgement.js");
 
   const commandData = [
     ping.data,
@@ -57,6 +61,11 @@ async function main(): Promise<void> {
     invite.data,
     invited.data,
     verification.data,
+    antiNuke.data,
+    trust.whitelistData,
+    trust.blacklistData,
+    configure.data,
+    judgement.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

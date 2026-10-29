@@ -17,4 +17,5 @@
 //   export type InsertPost = z.infer<typeof insertPostSchema>;
 //   export type Post = typeof postsTable.$inferSelect;
 
-export * from "./verification";
+export * from "./verification.js";
+export * from "./anti-nuke.js";
