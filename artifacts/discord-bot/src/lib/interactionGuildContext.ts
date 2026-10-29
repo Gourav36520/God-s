@@ -1,4 +1,5 @@
 import type { ChatInputCommandInteraction, Guild } from "discord.js";
+import { logger } from "./logger.js";
 
 export type InteractionGuildContext =
   | { kind: "dm" }
@@ -21,19 +22,46 @@ export async function resolveInteractionGuild(
   if (!guild) {
     try {
       guild = await interaction.client.guilds.fetch(guildId);
-    } catch {
+    } catch (error) {
+      logger.warn(
+        `AntiNuke: could not fetch interaction guild ${guildId} (${summarizeDiscordError(error)}).`,
+      );
       return { kind: "unavailable" };
     }
   }
-  if (guild.id !== guildId) return { kind: "unavailable" };
+  if (guild.id !== guildId) {
+    logger.warn(
+      `AntiNuke: guild context ID mismatch for interaction ${guildId}; fetched ${guild.id}.`,
+    );
+    return { kind: "unavailable" };
+  }
 
   if (!guild.members.me) {
     try {
       await guild.members.fetchMe();
-    } catch {
-      return { kind: "unavailable" };
+    } catch (error) {
+      // A missing bot-member cache must not block guild-ID-scoped configuration
+      // reads/writes. Operations that need bot permissions still fail closed.
+      logger.warn(
+        `AntiNuke: bot member could not be loaded for guild ${guildId} (${summarizeDiscordError(error)}); continuing with guild context.`,
+      );
     }
   }
 
   return { kind: "guild", guild };
+}
+
+function summarizeDiscordError(error: unknown): string {
+  if (!error || typeof error !== "object") return `type=${typeof error}`;
+
+  const value = error as { name?: unknown; code?: unknown; status?: unknown };
+  const details = [
+    typeof value.name === "string" ? `name=${value.name}` : null,
+    typeof value.code === "string" || typeof value.code === "number"
+      ? `code=${value.code}`
+      : null,
+    typeof value.status === "number" ? `status=${value.status}` : null,
+  ].filter((detail): detail is string => detail !== null);
+
+  return details.join(" ") || "type=unknown";
 }

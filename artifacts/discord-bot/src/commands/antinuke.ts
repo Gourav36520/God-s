@@ -5,6 +5,7 @@ import {
 } from "discord.js";
 import type {
   ChatInputCommandInteraction,
+  Guild,
   SlashCommandSubcommandBuilder,
   TextChannel,
 } from "discord.js";
@@ -290,42 +291,52 @@ function detectorSubcommand(
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  if (!interaction.guildId) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
     await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
 
   await interaction.deferReply({ ephemeral: true });
-  const context = await resolveInteractionGuild(interaction);
-  if (context.kind === "dm") {
-    await interaction.editReply("Use this command in a server.");
-    return;
-  }
-  if (context.kind === "unavailable") {
-    await interaction.editReply(
-      "I couldn't load this server context. Please try again.",
-    );
-    return;
-  }
-  const { guild } = context;
+  let guild: Guild | null = null;
+  let guildLookupAttempted = false;
+  const resolveGuild = async (): Promise<Guild | null> => {
+    if (guildLookupAttempted) return guild;
+    guildLookupAttempted = true;
+    const context = await resolveInteractionGuild(interaction);
+    guild = context.kind === "guild" ? context.guild : null;
+    return guild;
+  };
+  const requireGuild = async (): Promise<Guild | null> => {
+    const resolvedGuild = await resolveGuild();
+    if (!resolvedGuild) {
+      await interaction.editReply(
+        "This action needs access to server resources. Confirm God's Bot is a member of this server and has the required permissions.",
+      );
+    }
+    return resolvedGuild;
+  };
 
-  if (
-    interaction.user.id !== guild.ownerId &&
-    !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-  ) {
-    await interaction.editReply("Administrator permission is required.");
-    return;
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    const resolvedGuild = await resolveGuild();
+    if (interaction.user.id === resolvedGuild?.ownerId) {
+      // The server owner is authorized even if the interaction permission
+      // snapshot does not include Administrator.
+    } else {
+      await interaction.editReply("Administrator permission is required.");
+      return;
+    }
   }
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
 
   if (group === "config") {
     if (sub === "reset") {
-      await antiNukeService.resetConfig(guild.id);
-      await auditConfigChange(interaction, "config-reset");
+      await antiNukeService.resetConfig(guildId);
+      await auditConfigChange(interaction, guildId, guild, "config-reset");
       await interaction.editReply("Anti-Nuke configuration reset. Incident history was retained.");
     } else {
-      const config = antiNukeService.getConfig(guild.id);
+      const config = antiNukeService.getConfig(guildId);
       const detectorDetails = ANTI_NUKE_DETECTORS.map((name) => {
         const detector = config.detectors[name];
         return `${name}: ${detector.enabled ? "on" : "off"} · ${detector.limit}/${detector.windowSeconds}s · ${detector.responseMode ?? "default"}`;
@@ -347,21 +358,23 @@ export async function execute(
 
   if (group === "judgement-role") {
     if (sub === "view") {
-      const roleId = antiNukeService.getConfig(guild.id).judgementRoleId;
+      const roleId = antiNukeService.getConfig(guildId).judgementRoleId;
       await interaction.editReply(
         roleId ? `Configured quarantine role: <@&${roleId}> (\`${roleId}\`)` : "No quarantine role is configured.",
       );
       return;
     }
+    const actionGuild = await requireGuild();
+    if (!actionGuild) return;
     const selectedRole = interaction.options.getRole("role", true);
-    const role = await guild.roles.fetch(selectedRole.id).catch(() => null);
+    const role = await actionGuild.roles.fetch(selectedRole.id).catch(() => null);
     if (!role) {
       await interaction.editReply("That role is no longer available in this server.");
       return;
     }
-    const bot = guild.members.me;
+    const bot = actionGuild.members.me;
     if (
-      role.id === guild.roles.everyone.id ||
+      role.id === actionGuild.roles.everyone.id ||
       role.managed ||
       !bot?.permissions.has(PermissionFlagsBits.ManageRoles) ||
       !role.editable
@@ -370,30 +383,30 @@ export async function execute(
       return;
     }
     const { securityManager } = await import("../lib/registry.js");
-    await securityManager.updateModuleConfig(guild.id, "godsJudgment", {
+    await securityManager.updateModuleConfig(guildId, "godsJudgment", {
       judgmentRoleId: role.id,
     });
-    await antiNukeService.updateConfig(guild.id, (current) => ({
+    await antiNukeService.updateConfig(guildId, (current) => ({
       ...current,
       judgementRoleId: role.id,
     }));
-    await auditConfigChange(interaction, "judgement-role-set", role.id);
+    await auditConfigChange(interaction, guildId, actionGuild, "judgement-role-set", role.id);
     await interaction.editReply(`God's Judgment quarantine role set to <@&${role.id}>.`);
     return;
   }
 
   if (group === "logs") {
     if (sub === "recent") {
-      await showIncidents(interaction, {});
+      await showIncidents(interaction, guildId, {});
     } else if (sub === "user") {
       const targetId = parseSnowflake(interaction.options.getString("target", true));
       if (!targetId) {
         await interaction.editReply("Enter a numeric Discord user or bot ID.");
         return;
       }
-      await showIncidents(interaction, { targetId });
+      await showIncidents(interaction, guildId, { targetId });
     } else {
-      await showIncidents(interaction, {
+      await showIncidents(interaction, guildId, {
         detector: interaction.options.getString("name", true),
       });
     }
@@ -401,19 +414,19 @@ export async function execute(
   }
 
   if (group === "detectors") {
-    await updateDetector(interaction, sub as AntiNukeDetector);
+    await updateDetector(interaction, guild, guildId, sub as AntiNukeDetector);
     return;
   }
 
   if (group === "lockdown") {
-    const config = antiNukeService.getConfig(guild.id);
+    const config = antiNukeService.getConfig(guildId);
     if (sub === "enabled") {
       const enabled = interaction.options.getBoolean("enabled", true);
-      await antiNukeService.updateConfig(guild.id, (current) => ({
+      await antiNukeService.updateConfig(guildId, (current) => ({
         ...current,
         lockdown: { ...current.lockdown, enabled },
       }));
-      await auditConfigChange(interaction, "lockdown-enabled", undefined, { enabled });
+      await auditConfigChange(interaction, guildId, guild, "lockdown-enabled", undefined, { enabled });
       await interaction.editReply(`Automatic targeted lockdown ${enabled ? "enabled" : "disabled"}.`);
     } else if (sub === "status") {
       await interaction.editReply(
@@ -424,34 +437,40 @@ export async function execute(
         }\nSaved restore snapshots: ${config.lockdown.snapshots.length}`,
       );
     } else if (sub === "restore") {
-      const result = await antiNukeService.restoreLockdown(guild);
-      await auditConfigChange(interaction, "lockdown-restore", undefined, result);
+      const actionGuild = await requireGuild();
+      if (!actionGuild) return;
+      const result = await antiNukeService.restoreLockdown(actionGuild);
+      await auditConfigChange(interaction, guildId, actionGuild, "lockdown-restore", undefined, result);
       await interaction.editReply(result.message);
     } else {
       const channel = interaction.options.getChannel("channel", true);
-      if (!("permissionOverwrites" in channel)) {
+      if (
+        !("permissionOverwrites" in channel) ||
+        !("guildId" in channel) ||
+        channel.guildId !== guildId
+      ) {
         await interaction.editReply("Choose a server channel with permission overwrites.");
         return;
       }
       if (sub === "target-add") {
-        await antiNukeService.updateConfig(guild.id, (current) => ({
+        await antiNukeService.updateConfig(guildId, (current) => ({
           ...current,
           lockdown: {
             ...current.lockdown,
             targets: [...new Set([...current.lockdown.targets, channel.id])],
           },
         }));
-        await auditConfigChange(interaction, "lockdown-target-add", channel.id);
+        await auditConfigChange(interaction, guildId, guild, "lockdown-target-add", channel.id);
         await interaction.editReply(`Configured <#${channel.id}> as a lockdown target.`);
       } else {
-        await antiNukeService.updateConfig(guild.id, (current) => ({
+        await antiNukeService.updateConfig(guildId, (current) => ({
           ...current,
           lockdown: {
             ...current.lockdown,
             targets: current.lockdown.targets.filter((id) => id !== channel.id),
           },
         }));
-        await auditConfigChange(interaction, "lockdown-target-remove", channel.id);
+        await auditConfigChange(interaction, guildId, guild, "lockdown-target-remove", channel.id);
         await interaction.editReply(`Removed <#${channel.id}> from lockdown targets.`);
       }
     }
@@ -459,7 +478,7 @@ export async function execute(
   }
 
   if (sub === "status") {
-    const config = antiNukeService.getConfig(guild.id);
+    const config = antiNukeService.getConfig(guildId);
     const required = ["channel-delete", "channel-create", "member-kick", "member-ban"] as const;
     await interaction.editReply(
       [
@@ -475,24 +494,24 @@ export async function execute(
   }
   if (sub === "enable" || sub === "disable") {
     const enabled = sub === "enable";
-    await antiNukeService.updateConfig(guild.id, (current) => ({ ...current, enabled }));
-    await auditConfigChange(interaction, `antinuke-${sub}`);
+    await antiNukeService.updateConfig(guildId, (current) => ({ ...current, enabled }));
+    await auditConfigChange(interaction, guildId, guild, `antinuke-${sub}`);
     await interaction.editReply(`Anti-Nuke ${enabled ? "enabled" : "disabled"}. Event logging continues.`);
     return;
   }
   if (sub === "dry-run") {
     const enabled = interaction.options.getBoolean("enabled", true);
-    await antiNukeService.updateConfig(guild.id, (current) => ({
+    await antiNukeService.updateConfig(guildId, (current) => ({
       ...current,
       dryRun: enabled,
     }));
-    await auditConfigChange(interaction, "dry-run", undefined, { enabled });
+    await auditConfigChange(interaction, guildId, guild, "dry-run", undefined, { enabled });
     await interaction.editReply(`Dry-run ${enabled ? "enabled" : "disabled"}.`);
     return;
   }
   if (sub === "incident") {
     const incident = await antiNukeService.getIncident(
-      guild.id,
+      guildId,
       interaction.options.getString("id", true),
     );
     await interaction.editReply(incident ? formatIncident(incident) : "Incident not found in this server.");
@@ -515,7 +534,7 @@ export async function execute(
     const alertsEnabled = interaction.options.getBoolean("alerts-enabled");
     const mentionOwner = interaction.options.getBoolean("mention-owner");
     if (!selectedChannel && alertsEnabled === null && mentionOwner === null) {
-      const config = antiNukeService.getConfig(guild.id).logs;
+      const config = antiNukeService.getConfig(guildId).logs;
       await interaction.editReply(
         `Channel: ${config.channelId ? `<#${config.channelId}>` : "not configured"} · alerts: ${
           config.alertsEnabled ? "on" : "off"
@@ -533,7 +552,7 @@ export async function execute(
       channel = fetched;
     }
     if (channel) {
-      const current = antiNukeService.getConfig(guild.id).logs;
+      const current = antiNukeService.getConfig(guildId).logs;
       const everyoneCanView = channel.permissionsFor(guild.roles.everyone)?.has(
         PermissionFlagsBits.ViewChannel,
       );
@@ -544,7 +563,7 @@ export async function execute(
         return;
       }
     }
-    await antiNukeService.updateConfig(guild.id, (current) => ({
+    await antiNukeService.updateConfig(guildId, (current) => ({
       ...current,
       logs: {
         ...current.logs,
@@ -553,7 +572,7 @@ export async function execute(
         ...(mentionOwner !== null ? { mentionOwner } : {}),
       },
     }));
-    await auditConfigChange(interaction, "logs-config", channel?.id ?? undefined, {
+    await auditConfigChange(interaction, guildId, guild, "logs-config", channel?.id ?? undefined, {
       alertsEnabled,
       mentionOwner,
     });
@@ -588,12 +607,12 @@ export async function execute(
         await interaction.editReply("Lockdown is not a valid join response; choose log, judgement, or kick.");
         return;
       }
-      await antiNukeService.updateConfig(guild.id, (current) => ({
+      await antiNukeService.updateConfig(guildId, (current) => ({
         ...current,
         blacklistedHumanJoinResponse: mode,
       }));
     } else if (isAntiNukeDetector(action)) {
-      await antiNukeService.updateConfig(guild.id, (current) => ({
+      await antiNukeService.updateConfig(guildId, (current) => ({
         ...current,
         detectors: {
           ...current.detectors,
@@ -604,7 +623,7 @@ export async function execute(
       await interaction.editReply("Unknown detector.");
       return;
     }
-    await auditConfigChange(interaction, "response-policy", undefined, { action, mode });
+    await auditConfigChange(interaction, guildId, guild, "response-policy", undefined, { action, mode });
     await interaction.editReply(`Response policy for ${action} set to ${mode}.`);
     return;
   }
@@ -612,15 +631,16 @@ export async function execute(
       sub === "channel-update" || sub === "member-kick" || sub === "member-ban" ||
       sub === "role-create" || sub === "role-delete" || sub === "role-update" ||
       sub === "role-permissions" || sub === "mass-role-add" || sub === "mass-role-remove") {
-    await updateDetector(interaction, sub as AntiNukeDetector);
+    await updateDetector(interaction, guild, guildId, sub as AntiNukeDetector);
   }
 }
 
 async function updateDetector(
   interaction: ChatInputCommandInteraction,
+  guild: Guild,
+  guildId: string,
   detector: AntiNukeDetector,
 ): Promise<void> {
-  const guild = interaction.guild!;
   const enabled = interaction.options.getBoolean("enabled", true);
   const limit = interaction.options.getInteger("limit");
   const window = interaction.options.getInteger("window");
@@ -632,7 +652,7 @@ async function updateDetector(
     await interaction.editReply("This burst detector requires both limit and window.");
     return;
   }
-  await antiNukeService.updateConfig(guild.id, (current) => ({
+  await antiNukeService.updateConfig(guildId, (current) => ({
     ...current,
     detectors: {
       ...current.detectors,
@@ -652,7 +672,7 @@ async function updateDetector(
     outcome: `Detector ${enabled ? "enabled" : "disabled"}.`,
     details: { detector, enabled, limit, windowSeconds: window },
   });
-  const setting = antiNukeService.getConfig(guild.id).detectors[detector];
+  const setting = antiNukeService.getConfig(guildId).detectors[detector];
   await interaction.editReply(
     `${detector} ${enabled ? "enabled" : "disabled"} · threshold ${setting.limit} event(s) in ${setting.windowSeconds}s.`,
   );
@@ -660,10 +680,11 @@ async function updateDetector(
 
 async function showIncidents(
   interaction: ChatInputCommandInteraction,
+  guildId: string,
   filters: { targetId?: string; detector?: string },
 ): Promise<void> {
   const incidents = await antiNukeService.listIncidents(
-    interaction.guild!.id,
+    guildId,
     filters.targetId ? { targetId: filters.targetId } : filters,
     10,
   );
@@ -695,13 +716,13 @@ function formatIncident(incident: {
 
 async function auditConfigChange(
   interaction: ChatInputCommandInteraction,
+  guild: Guild,
   action: string,
   targetId?: string,
   details: Record<string, unknown> = {},
 ): Promise<void> {
-  if (!interaction.guild) return;
   await antiNukeService.recordSystemIncident({
-    guild: interaction.guild,
+    guild,
     action,
     executorId: interaction.user.id,
     targetId,

@@ -100,6 +100,9 @@ export class AntiNukeService {
     if (!config) {
       config = createDefaultAntiNukeConfig();
       this.configs.set(guildId, config);
+      logger.info(
+        `AntiNukeService: initialized default configuration for guild ${guildId}`,
+      );
     }
     return config;
   }
@@ -153,7 +156,8 @@ export class AntiNukeService {
   }
 
   async recordSystemIncident(options: {
-    guild: Guild;
+    guild?: Guild;
+    guildId?: string;
     action: string;
     executorId?: string | null;
     targetId?: string | null;
@@ -162,9 +166,13 @@ export class AntiNukeService {
     details?: Record<string, unknown>;
     eventKey?: string | null;
   }): Promise<AntiNukeIncident | null> {
+    const guildId = options.guild?.id ?? options.guildId;
+    if (!guildId) {
+      throw new Error("Anti-Nuke system incidents require a guild ID.");
+    }
     const incident: AntiNukeIncident = {
       id: randomUUID(),
-      guildId: options.guild.id,
+      guildId,
       eventKey: options.eventKey ?? null,
       detector: "system",
       executorId: options.executorId ?? null,
@@ -823,7 +831,7 @@ export class AntiNukeService {
 
   private async persistIncident(
     incident: AntiNukeIncident,
-    guild: Guild,
+    guild?: Guild,
   ): Promise<AntiNukeIncident | null> {
     this.assertReady();
     if (incident.eventKey && !this.claimEvent(incident.eventKey)) return null;
@@ -838,7 +846,14 @@ export class AntiNukeService {
       logger.error("AntiNuke: system incident persistence failed", error);
       return null;
     }
-    const logSent = await this.sendIncident(guild, incident, false);
+    const logSent = guild
+      ? await this.sendIncident(guild, incident, false)
+      : false;
+    if (!guild) {
+      logger.warn(
+        `AntiNuke: saved incident for guild ${incident.guildId}; Discord log delivery skipped because guild resources were unavailable.`,
+      );
+    }
     if (incident.action === "logs-test") {
       incident.details = { ...incident.details, logSent };
       await this.database!

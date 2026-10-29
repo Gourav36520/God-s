@@ -65,6 +65,22 @@ test("fetches a guild and bot member when interaction guild is uncached", async 
   assert.equal(getFetchMeCalls(), 1);
 });
 
+test("keeps guild context when the best-effort bot-member fetch fails", async () => {
+  const { guild } = makeGuild("guild-6", false);
+  guild.members.fetchMe = async () => {
+    throw Object.assign(new Error("member lookup failed"), {
+      code: 50001,
+      status: 403,
+    });
+  };
+  const interaction = makeInteraction("guild-6", null, async () => guild);
+
+  const context = await resolveInteractionGuild(interaction);
+
+  assert.equal(context.kind, "guild");
+  if (context.kind === "guild") assert.strictEqual(context.guild, guild);
+});
+
 test("keeps genuine DM interactions out of guild context", async () => {
   let fetchGuildCalls = 0;
   const interaction = makeInteraction(null, null, async () => {
