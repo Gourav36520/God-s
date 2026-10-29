@@ -1,3 +1,4 @@
 - [Discord command structure](discord-command-structure.md) — root commands cannot mix direct subcommands with subcommand groups.
+- [Discord guild context](discord-guild-context.md) — `interaction.guild` is cache-backed; use `guildId` to resolve guild commands and distinguish DMs.
 - [Discord bot scope](discord-bot-scope.md) — keep this project a Discord bot; preserve existing structure and avoid mobile/web app work.
 - [Git metadata safety gate](git-metadata-safety.md) — Replit may require explicit authorization for Git remote or branch changes; inspect state first and preserve existing refs.

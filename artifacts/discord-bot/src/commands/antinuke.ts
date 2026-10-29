@@ -9,6 +9,7 @@ import type {
   TextChannel,
 } from "discord.js";
 import { antiNukeService } from "../lib/registry.js";
+import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
 import { ANTI_NUKE_DETECTORS } from "../security/antinuke/types.js";
 import type { AntiNukeDetector, AntiNukeResponse } from "../security/antinuke/types.js";
 import { isAntiNukeDetector } from "../security/antinuke/policy.js";
@@ -289,19 +290,32 @@ function detectorSubcommand(
 export async function execute(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const guild = interaction.guild;
-  if (!guild) {
+  if (!interaction.guildId) {
     await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
+
+  await interaction.deferReply({ ephemeral: true });
+  const context = await resolveInteractionGuild(interaction);
+  if (context.kind === "dm") {
+    await interaction.editReply("Use this command in a server.");
+    return;
+  }
+  if (context.kind === "unavailable") {
+    await interaction.editReply(
+      "I couldn't load this server context. Please try again.",
+    );
+    return;
+  }
+  const { guild } = context;
+
   if (
     interaction.user.id !== guild.ownerId &&
     !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
   ) {
-    await interaction.reply({ content: "Administrator permission is required.", ephemeral: true });
+    await interaction.editReply("Administrator permission is required.");
     return;
   }
-  await interaction.deferReply({ ephemeral: true });
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
 
