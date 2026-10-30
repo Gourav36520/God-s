@@ -65,6 +65,26 @@ test("fetches a guild and bot member when interaction guild is uncached", async 
   assert.equal(getFetchMeCalls(), 1);
 });
 
+test("uses the interaction guild ID when another guild is cached", async () => {
+  const cachedGuild = makeGuild("cached-guild", true).guild;
+  const requestedGuild = makeGuild("requested-guild", true).guild;
+  const fetchedIds: string[] = [];
+  const interaction = makeInteraction(
+    "requested-guild",
+    cachedGuild,
+    async (id) => {
+      fetchedIds.push(id);
+      return requestedGuild;
+    },
+  );
+
+  const context = await resolveInteractionGuild(interaction);
+
+  assert.equal(context.kind, "guild");
+  if (context.kind === "guild") assert.strictEqual(context.guild, requestedGuild);
+  assert.deepEqual(fetchedIds, ["requested-guild"]);
+});
+
 test("keeps guild context when the best-effort bot-member fetch fails", async () => {
   const { guild } = makeGuild("guild-6", false);
   guild.members.fetchMe = async () => {

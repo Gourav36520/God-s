@@ -24,14 +24,14 @@ export async function resolveInteractionGuild(
       guild = await interaction.client.guilds.fetch(guildId);
     } catch (error) {
       logger.warn(
-        `AntiNuke: could not fetch interaction guild ${guildId} (${summarizeDiscordError(error)}).`,
+        `AntiNuke: guild context resolution failed reason=discord_guild_fetch_failed guild=${guildId} (${summarizeDiscordError(error)}).`,
       );
       return { kind: "unavailable" };
     }
   }
   if (guild.id !== guildId) {
     logger.warn(
-      `AntiNuke: guild context ID mismatch for interaction ${guildId}; fetched ${guild.id}.`,
+      `AntiNuke: guild context resolution failed reason=guild_id_mismatch interactionGuild=${guildId} resolvedGuild=${guild.id}.`,
     );
     return { kind: "unavailable" };
   }
@@ -43,7 +43,7 @@ export async function resolveInteractionGuild(
       // A missing bot-member cache must not block guild-ID-scoped configuration
       // reads/writes. Operations that need bot permissions still fail closed.
       logger.warn(
-        `AntiNuke: bot member could not be loaded for guild ${guildId} (${summarizeDiscordError(error)}); continuing with guild context.`,
+        `AntiNuke: bot member lookup failed reason=bot_member_fetch_failed guild=${guildId} (${summarizeDiscordError(error)}); continuing with guild context.`,
       );
     }
   }

@@ -327,6 +327,7 @@ export async function execute(
       return;
     }
   }
+  await antiNukeService.ensureConfig(guildId);
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
 
@@ -518,9 +519,12 @@ export async function execute(
     return;
   }
   if (sub === "logs-setup") {
-    const result = await antiNukeService.setupLogs(guild);
+    const actionGuild = await requireGuild();
+    if (!actionGuild) return;
+    const result = await antiNukeService.setupLogs(actionGuild);
     await antiNukeService.recordSystemIncident({
-      guild,
+      guild: actionGuild,
+      guildId,
       action: "logs-setup",
       executorId: interaction.user.id,
       outcome: result.message,
@@ -543,8 +547,10 @@ export async function execute(
       return;
     }
     let channel: TextChannel | null = null;
+    const actionGuild = selectedChannel ? await requireGuild() : null;
+    if (selectedChannel && !actionGuild) return;
     if (selectedChannel) {
-      const fetched = await guild.channels.fetch(selectedChannel.id).catch(() => null);
+      const fetched = await actionGuild!.channels.fetch(selectedChannel.id).catch(() => null);
       if (!fetched || fetched.type !== ChannelType.GuildText) {
         await interaction.editReply("The Anti-Nuke log channel must be a server text channel.");
         return;
@@ -553,7 +559,7 @@ export async function execute(
     }
     if (channel) {
       const current = antiNukeService.getConfig(guildId).logs;
-      const everyoneCanView = channel.permissionsFor(guild.roles.everyone)?.has(
+      const everyoneCanView = channel.permissionsFor(actionGuild!.roles.everyone)?.has(
         PermissionFlagsBits.ViewChannel,
       );
       if (!current.categoryId || channel.parentId !== current.categoryId || everyoneCanView) {
@@ -581,7 +587,8 @@ export async function execute(
   }
   if (sub === "logs-test") {
     const incident = await antiNukeService.recordSystemIncident({
-      guild,
+      guild: (await resolveGuild()) ?? undefined,
+      guildId,
       action: "logs-test",
       executorId: interaction.user.id,
       outcome: "Test entry recorded.",
@@ -637,7 +644,7 @@ export async function execute(
 
 async function updateDetector(
   interaction: ChatInputCommandInteraction,
-  guild: Guild,
+  guild: Guild | null,
   guildId: string,
   detector: AntiNukeDetector,
 ): Promise<void> {
@@ -665,7 +672,8 @@ async function updateDetector(
     },
   }));
   await antiNukeService.recordSystemIncident({
-    guild,
+    guild: guild ?? undefined,
+    guildId,
     action: "detector-config",
     executorId: interaction.user.id,
     targetId: detector,
@@ -716,13 +724,15 @@ function formatIncident(incident: {
 
 async function auditConfigChange(
   interaction: ChatInputCommandInteraction,
-  guild: Guild,
+  guildId: string,
+  guild: Guild | null,
   action: string,
   targetId?: string,
   details: Record<string, unknown> = {},
 ): Promise<void> {
   await antiNukeService.recordSystemIncident({
-    guild,
+    guild: guild ?? undefined,
+    guildId,
     action,
     executorId: interaction.user.id,
     targetId,

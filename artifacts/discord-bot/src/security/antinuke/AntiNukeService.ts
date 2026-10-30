@@ -57,6 +57,11 @@ export class AntiNukeService {
   private client: Client | null = null;
   private database: DatabaseApi | null = null;
   private readonly configs = new Map<string, AntiNukeConfig>();
+  private readonly persistedConfigGuilds = new Set<string>();
+  private readonly configInitializations = new Map<
+    string,
+    Promise<AntiNukeConfig>
+  >();
   private readonly counter = new RollingThresholdCounter();
   private readonly eventDeduplicator = new EventDeduplicator(EVENT_DEDUPE_TTL_MS);
   private readonly punishmentGate = new PunishmentGate();
@@ -66,11 +71,44 @@ export class AntiNukeService {
 
   async init(client: Client): Promise<void> {
     this.client = client;
-    this.database = await import("@workspace/db");
-    const rows = await this.database.loadAntiNukeConfigRows();
-    for (const row of rows) {
-      this.configs.set(row.guildId, normalizeAntiNukeConfig(row.config));
+    let rows: Awaited<ReturnType<DatabaseApi["loadAntiNukeConfigRows"]>>;
+    try {
+      this.database = await import("@workspace/db");
+      rows = await this.database.loadAntiNukeConfigRows();
+    } catch (error) {
+      logger.error(
+        `AntiNukeService: initialization failed reason=database_config_load_failed code=${errorCode(error)}`,
+      );
+      throw error;
     }
+    for (const row of rows) {
+      try {
+        this.configs.set(row.guildId, normalizeAntiNukeConfig(row.config));
+        this.persistedConfigGuilds.add(row.guildId);
+      } catch (error) {
+        logger.warn(
+          `AntiNukeService: ignored invalid configuration row reason=config_row_invalid guild=${row.guildId} code=${errorCode(error)}`,
+        );
+      }
+    }
+    client.on(Events.GuildCreate, (guild) => {
+      void this.ensureConfig(guild.id).catch((error: unknown) => {
+        logger.error(
+          `AntiNukeService: new guild initialization failed reason=default_config_persist_failed guild=${guild.id} code=${errorCode(error)}`,
+        );
+      });
+    });
+    await Promise.all(
+      [...client.guilds.cache.keys()].map(async (guildId) => {
+        try {
+          await this.ensureConfig(guildId);
+        } catch (error) {
+          logger.error(
+            `AntiNukeService: default configuration persistence failed reason=default_config_persist_failed guild=${guildId} code=${errorCode(error)}`,
+          );
+        }
+      }),
+    );
     logger.info(
       `AntiNukeService: loaded ${rows.length} guild configuration(s) from PostgreSQL`,
     );
@@ -107,32 +145,83 @@ export class AntiNukeService {
     return config;
   }
 
+  async ensureConfig(guildId: string): Promise<AntiNukeConfig> {
+    this.assertReady();
+    const config = this.getConfig(guildId);
+    if (this.persistedConfigGuilds.has(guildId)) return config;
+
+    const pending = this.configInitializations.get(guildId);
+    if (pending) return pending;
+
+    const initialization = (async () => {
+      try {
+        await this.database!.saveAntiNukeConfigRow(
+          guildId,
+          config as unknown as Record<string, unknown>,
+        );
+      } catch (error) {
+        logger.error(
+          `AntiNukeService: default configuration write failed reason=default_config_persist_failed guild=${guildId} code=${errorCode(error)}`,
+        );
+        throw error;
+      }
+      this.persistedConfigGuilds.add(guildId);
+      return config;
+    })();
+    this.configInitializations.set(guildId, initialization);
+    try {
+      return await initialization;
+    } finally {
+      if (this.configInitializations.get(guildId) === initialization) {
+        this.configInitializations.delete(guildId);
+      }
+    }
+  }
+
   async updateConfig(
     guildId: string,
     updater: (current: AntiNukeConfig) => AntiNukeConfig,
   ): Promise<AntiNukeConfig> {
     this.assertReady();
+    await this.ensureConfig(guildId);
     const next = normalizeAntiNukeConfig(
       updater(structuredClone(this.getConfig(guildId))),
     );
     this.configs.set(guildId, next);
-    await this.database!.saveAntiNukeConfigRow(
-      guildId,
-      next as unknown as Record<string, unknown>,
-    );
+    try {
+      await this.database!.saveAntiNukeConfigRow(
+        guildId,
+        next as unknown as Record<string, unknown>,
+      );
+    } catch (error) {
+      logger.error(
+        `AntiNukeService: configuration write failed reason=config_save_failed guild=${guildId} code=${errorCode(error)}`,
+      );
+      throw error;
+    }
+    this.persistedConfigGuilds.add(guildId);
     return next;
   }
 
   async resetConfig(guildId: string): Promise<AntiNukeConfig> {
     this.assertReady();
+    await this.ensureConfig(guildId);
     const next = createDefaultAntiNukeConfig();
     next.judgementRoleId =
       this.security.getConfig(guildId).godsJudgment.judgmentRoleId;
     this.configs.set(guildId, next);
-    await this.database!.saveAntiNukeConfigRow(
-      guildId,
-      next as unknown as Record<string, unknown>,
-    );
+    try {
+      await this.database!.saveAntiNukeConfigRow(
+        guildId,
+        next as unknown as Record<string, unknown>,
+      );
+    } catch (error) {
+      logger.error(
+        `AntiNukeService: configuration reset failed reason=config_reset_failed guild=${guildId} code=${errorCode(error)}`,
+      );
+      throw error;
+    }
+    this.persistedConfigGuilds.add(guildId);
     return next;
   }
 
@@ -843,7 +932,9 @@ export class AntiNukeService {
       );
       if (!inserted) return null;
     } catch (error) {
-      logger.error("AntiNuke: system incident persistence failed", error);
+      logger.error(
+        `AntiNuke: incident persistence failed reason=incident_persist_failed guild=${incident.guildId} code=${errorCode(error)}`,
+      );
       return null;
     }
     const logSent = guild
@@ -864,7 +955,9 @@ export class AntiNukeService {
           incident.details,
         )
         .catch((error: unknown) =>
-          logger.error(`AntiNuke: could not store log-test delivery result ${incident.id}`, error),
+          logger.error(
+            `AntiNuke: could not store log-test delivery result reason=incident_outcome_update_failed guild=${incident.guildId} code=${errorCode(error)}`,
+          ),
         );
     }
     return incident;
@@ -1085,6 +1178,19 @@ function formatAuditChanges(entry: GuildAuditLogsEntry): string[] {
 
 function shortError(error: unknown): string {
   return truncate(error instanceof Error ? error.message : String(error), 300);
+}
+
+function errorCode(error: unknown): string {
+  if (!error || typeof error !== "object") return `type_${typeof error}`;
+  const value = error as { code?: unknown; status?: unknown; name?: unknown };
+  if (typeof value.code === "string" || typeof value.code === "number") {
+    return String(value.code).replace(/[^a-zA-Z0-9_-]/gu, "").slice(0, 40) || "unknown";
+  }
+  if (typeof value.status === "number") return `http_${value.status}`;
+  if (typeof value.name === "string") {
+    return value.name.replace(/[^a-zA-Z0-9_-]/gu, "").slice(0, 40) || "unknown";
+  }
+  return "unknown";
 }
 
 function truncate(value: string, max: number): string {

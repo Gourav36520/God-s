@@ -1,6 +1,7 @@
 import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import type { ChatInputCommandInteraction, SharedSlashCommand } from "discord.js";
 import { antiNukeService } from "../lib/registry.js";
+import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
 import type { TrustEntry } from "../security/antinuke/types.js";
 import { resolveTrust } from "../security/antinuke/policy.js";
 
@@ -61,21 +62,22 @@ async function executeTrust(
   interaction: ChatInputCommandInteraction,
   listName: "whitelist" | "blacklist",
 ): Promise<void> {
-  const guild = interaction.guild;
-  if (!guild) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
     await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
-  if (
-    interaction.user.id !== guild.ownerId &&
-    !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-  ) {
-    await interaction.reply({ content: "Administrator permission is required.", ephemeral: true });
-    return;
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    const context = await resolveInteractionGuild(interaction);
+    if (context.kind !== "guild" || interaction.user.id !== context.guild.ownerId) {
+      await interaction.reply({ content: "Administrator permission is required.", ephemeral: true });
+      return;
+    }
   }
   await interaction.deferReply({ ephemeral: true });
+  await antiNukeService.ensureConfig(guildId);
 
-  const config = antiNukeService.getConfig(guild.id);
+  const config = antiNukeService.getConfig(guildId);
   const sub = interaction.options.getSubcommand();
   if (sub === "list") {
     const entries = Object.values(config[listName]).sort((a, b) =>
@@ -100,7 +102,7 @@ async function executeTrust(
   }
 
   if (sub === "check") {
-    const current = antiNukeService.getConfig(guild.id);
+    const current = antiNukeService.getConfig(guildId);
     const state = resolveTrust(current, id);
     const whitelistEntry = current.whitelist[id];
     const blacklistEntry = current.blacklist[id];
@@ -116,19 +118,20 @@ async function executeTrust(
   }
 
   if (sub === "add") {
-    const user = await guild.client.users.fetch(id).catch(() => null);
+    const user = await interaction.client.users.fetch(id).catch(() => null);
     const entry: TrustEntry = {
       id,
       kind: user ? (user.bot ? "bot" : "human") : "unknown",
       addedBy: interaction.user.id,
       addedAt: new Date().toISOString(),
     };
-    await antiNukeService.updateConfig(guild.id, (current) => ({
+    await antiNukeService.updateConfig(guildId, (current) => ({
       ...current,
       [listName]: { ...current[listName], [id]: entry },
     }));
     await antiNukeService.recordSystemIncident({
-      guild,
+      guild: interaction.guild?.id === guildId ? interaction.guild : undefined,
+      guildId,
       action: `${listName}-add`,
       executorId: interaction.user.id,
       targetId: id,
@@ -150,13 +153,14 @@ async function executeTrust(
     await interaction.editReply(`\`${id}\` is not in the ${listName}.`);
     return;
   }
-  await antiNukeService.updateConfig(guild.id, (current) => {
+  await antiNukeService.updateConfig(guildId, (current) => {
     const next = { ...current[listName] };
     delete next[id];
     return { ...current, [listName]: next };
   });
   await antiNukeService.recordSystemIncident({
-    guild,
+    guild: interaction.guild?.id === guildId ? interaction.guild : undefined,
+    guildId,
     action: `${listName}-remove`,
     executorId: interaction.user.id,
     targetId: id,
