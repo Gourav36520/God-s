@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  EmbedBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
@@ -43,6 +44,62 @@ const requiredThresholds = new Set<AntiNukeDetector>([
   "role-delete",
 ]);
 
+const ANTI_NUKE_EMOJI = "<:Anti_nuke:1565312687322439730>";
+const ANIMATED_ARROW = "<a:arrow_arrow_1:1554486982439079966>";
+
+const coreCommands = [
+  helpCommand("help", "Show this guide."),
+  helpCommand("status", "Show state and thresholds."),
+  helpCommand("enable", "Enable protection."),
+  helpCommand("disable", "Disable automatic responses."),
+  helpCommand("config view", "View this server's config."),
+  helpCommand("config reset", "Reset config; retain incidents."),
+  helpCommand("dry-run enabled:<bool>", "Toggle dry-run mode."),
+  helpCommand("incident id:<id>", "View this server's incident."),
+];
+const directDetectorCommands = [
+  helpCommand("channel-create enabled:true limit:3 window:3", "Channel creation; default threshold is 3 in 3s."),
+  helpCommand("channel-delete enabled:true limit:3 window:3", "Channel deletion; default threshold is 3 in 3s."),
+  helpCommand("channel-update enabled:<bool>", "Channel updates."),
+  helpCommand("member-kick enabled:true limit:3 window:5", "Member kicks; default threshold is 3 in 5s."),
+  helpCommand("member-ban enabled:true limit:3 window:5", "Member bans; default threshold is 3 in 5s."),
+  helpCommand("role-create enabled:<bool> limit:<n> window:<s>", "Role creation."),
+  helpCommand("role-delete enabled:<bool> limit:<n> window:<s>", "Role deletion."),
+  helpCommand("role-update enabled:<bool>", "Role updates."),
+  helpCommand("role-permissions enabled:<bool>", "Role permission changes."),
+  helpCommand("mass-role-add enabled:<bool> [limit] [window]", "Mass role additions."),
+  helpCommand("mass-role-remove enabled:<bool> [limit] [window]", "Mass role removals."),
+];
+const additionalDetectorCommands = [
+  helpCommand("detectors webhook-create enabled:<bool> [limit] [window]", "Webhook creation."),
+  helpCommand("detectors webhook-delete enabled:<bool> [limit] [window]", "Webhook deletion."),
+  helpCommand("detectors webhook-update enabled:<bool> [limit] [window]", "Webhook updates."),
+  helpCommand("detectors integration-change enabled:<bool> [limit] [window]", "Integration changes."),
+  helpCommand("detectors bot-add enabled:<bool> [limit] [window]", "Bot additions."),
+  helpCommand("detectors guild-update enabled:<bool>", "Server updates."),
+  helpCommand("detectors emoji-sticker-change enabled:<bool> [limit] [window]", "Emoji and sticker changes."),
+  helpCommand("detectors invite-create enabled:<bool> [limit] [window]", "Invite creation."),
+  helpCommand("detectors invite-delete enabled:<bool> [limit] [window]", "Invite deletion."),
+];
+const responseAndLogCommands = [
+  helpCommand("response action:<detector> mode:<mode>", "Modes: log, judgement, kick, lockdown; blacklisted-human-join has no lockdown."),
+  helpCommand("logs setup", "Create or reuse private Anti-Nuke logs."),
+  helpCommand("logs-config [channel] [alerts-enabled] [mention-owner]", "View or update log settings."),
+  helpCommand("logs recent", "Show recent server incidents."),
+  helpCommand("logs user target:<user-id>", "Show incidents for a user or bot."),
+  helpCommand("logs detector name:<detector|system>", "Show detector or system incidents."),
+  helpCommand("logs-test", "Save a test incident and try log delivery."),
+];
+const judgementAndLockdownCommands = [
+  helpCommand("judgement-role view", "View the God's Judgment quarantine role."),
+  helpCommand("judgement-role set role:<role>", "Set the existing quarantine role."),
+  helpCommand("lockdown enabled enabled:<bool>", "Toggle targeted automatic lockdown."),
+  helpCommand("lockdown status", "View targets and saved snapshots."),
+  helpCommand("lockdown restore", "Restore unchanged targets."),
+  helpCommand("lockdown target-add channel:<channel>", "Add a lockdown target."),
+  helpCommand("lockdown target-remove channel:<channel>", "Remove a lockdown target."),
+];
+
 export const data = buildCommand();
 
 function buildCommand() {
@@ -50,6 +107,9 @@ function buildCommand() {
     .setName("antinuke")
     .setDescription("Configure and inspect Anti-Nuke protection")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand((sub) =>
+      sub.setName("help").setDescription("Show Anti-Nuke commands and permissions"),
+    )
     .addSubcommand((sub) =>
       sub.setName("status").setDescription("Show Anti-Nuke status"),
     )
@@ -135,9 +195,6 @@ function buildCommand() {
         ),
     )
     .addSubcommand((sub) =>
-      sub.setName("logs-setup").setDescription("Create or reuse private Anti-Nuke Logs"),
-    )
-    .addSubcommand((sub) =>
       sub
         .setName("logs-config")
         .setDescription("Set the Anti-Nuke log channel and alert settings")
@@ -183,6 +240,9 @@ function buildCommand() {
                   { name: "system", value: "system" },
                 ),
             ),
+        )
+        .addSubcommand((sub) =>
+          sub.setName("setup").setDescription("Create or reuse private Anti-Nuke Logs"),
         ),
     )
     .addSubcommand((sub) =>
@@ -254,6 +314,65 @@ function buildCommand() {
   return command;
 }
 
+function helpCommand(usage: string, description: string): string {
+  return `${ANIMATED_ARROW} \`/antinuke ${usage}\` — ${description}`;
+}
+
+function buildAntiNukeHelpEmbeds(): EmbedBuilder[] {
+  const detectorDetails =
+    "All detectors require enabled. Burst detectors accept limit (1–100) and window (1–3600 seconds); both are required for channel create/delete, member kick/ban, and role create/delete. Other burst thresholds are optional.";
+  const permissionDetails = [
+    "**Who can use these commands:** Administrator permission is required.",
+    "**Bot permissions depend on configuration:** View Audit Log for audit-based detection; Kick Members, Ban Members, or Manage Roles for matching responses; Manage Channels for lockdown; Manage Roles for quarantine actions.",
+    "Log delivery needs View Channel, Send Messages, and Embed Links. The bot role must be high enough to manage selected roles.",
+  ].join("\n\n");
+
+  return [
+    antiNukeHelpEmbed(
+      "Core and detector settings",
+      [
+        "**Core and configuration**",
+        ...coreCommands,
+        "",
+        "**Direct detector controls**",
+        ...directDetectorCommands,
+        "",
+        detectorDetails,
+      ].join("\n"),
+    ),
+    antiNukeHelpEmbed(
+      "More detectors, responses, and logs",
+      [
+        "**Additional detector controls**",
+        ...additionalDetectorCommands,
+        "",
+        "**Responses and incident logs**",
+        ...responseAndLogCommands,
+      ].join("\n"),
+    ),
+    antiNukeHelpEmbed(
+      "God's Judgment and lockdown",
+      [
+        "**God's Judgment integration**",
+        ...judgementAndLockdownCommands.slice(0, 2),
+        "",
+        "**Targeted lockdown**",
+        ...judgementAndLockdownCommands.slice(2),
+        "",
+        permissionDetails,
+      ].join("\n"),
+    ),
+  ];
+}
+
+function antiNukeHelpEmbed(section: string, description: string): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle(`${ANTI_NUKE_EMOJI} Anti-Nuke Help · ${section}`)
+    .setColor(0xd4af37)
+    .setDescription(description)
+    .setFooter({ text: "Gods Bot • Your Server's Guardian" });
+}
+
 function detectorSubcommand(
   sub: SlashCommandSubcommandBuilder,
   detector: AntiNukeDetector,
@@ -297,6 +416,8 @@ export async function execute(
     return;
   }
 
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub = interaction.options.getSubcommand();
   await interaction.deferReply({ ephemeral: true });
   let guild: Guild | null = null;
   let guildLookupAttempted = false;
@@ -327,9 +448,13 @@ export async function execute(
       return;
     }
   }
+
+  if (sub === "help") {
+    await interaction.editReply({ embeds: buildAntiNukeHelpEmbeds() });
+    return;
+  }
+
   await antiNukeService.ensureConfig(guildId);
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
 
   if (group === "config") {
     if (sub === "reset") {
@@ -397,7 +522,20 @@ export async function execute(
   }
 
   if (group === "logs") {
-    if (sub === "recent") {
+    if (sub === "setup") {
+      const actionGuild = await requireGuild();
+      if (!actionGuild) return;
+      const result = await antiNukeService.setupLogs(actionGuild);
+      await antiNukeService.recordSystemIncident({
+        guild: actionGuild,
+        guildId,
+        action: "logs-setup",
+        executorId: interaction.user.id,
+        outcome: result.message,
+        details: result,
+      });
+      await interaction.editReply(result.message);
+    } else if (sub === "recent") {
       await showIncidents(interaction, guildId, {});
     } else if (sub === "user") {
       const targetId = parseSnowflake(interaction.options.getString("target", true));
@@ -516,21 +654,6 @@ export async function execute(
       interaction.options.getString("id", true),
     );
     await interaction.editReply(incident ? formatIncident(incident) : "Incident not found in this server.");
-    return;
-  }
-  if (sub === "logs-setup") {
-    const actionGuild = await requireGuild();
-    if (!actionGuild) return;
-    const result = await antiNukeService.setupLogs(actionGuild);
-    await antiNukeService.recordSystemIncident({
-      guild: actionGuild,
-      guildId,
-      action: "logs-setup",
-      executorId: interaction.user.id,
-      outcome: result.message,
-      details: result,
-    });
-    await interaction.editReply(result.message);
     return;
   }
   if (sub === "logs-config") {
