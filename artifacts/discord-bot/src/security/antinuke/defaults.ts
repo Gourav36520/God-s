@@ -53,7 +53,6 @@ export function createDefaultAntiNukeConfig(): AntiNukeConfig {
 
   return {
     enabled: true,
-    dryRun: false,
     detectors,
     whitelist: {},
     blacklist: {},
@@ -78,7 +77,8 @@ export function normalizeAntiNukeConfig(raw: unknown): AntiNukeConfig {
   const defaults = createDefaultAntiNukeConfig();
   if (!raw || typeof raw !== "object") return defaults;
 
-  const value = raw as Partial<AntiNukeConfig>;
+  const value = raw as Partial<AntiNukeConfig> & { dryRun?: unknown };
+  const legacyDryRunEnabled = value.dryRun === true;
   const rawDetectors = value.detectors as
     | Partial<Record<AntiNukeDetector, Partial<DetectorConfig>>>
     | undefined;
@@ -113,8 +113,11 @@ export function normalizeAntiNukeConfig(raw: unknown): AntiNukeConfig {
   ) as Record<AntiNukeDetector, DetectorConfig>;
 
   return {
-    enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
-    dryRun: typeof value.dryRun === "boolean" ? value.dryRun : defaults.dryRun,
+    enabled: legacyDryRunEnabled
+      ? false
+      : typeof value.enabled === "boolean"
+        ? value.enabled
+        : defaults.enabled,
     detectors,
     whitelist: trustMap(value.whitelist),
     blacklist: trustMap(value.blacklist),
@@ -156,6 +159,14 @@ export function normalizeAntiNukeConfig(raw: unknown): AntiNukeConfig {
         : [],
     },
   };
+}
+
+export function hasLegacyDryRunSetting(raw: unknown): boolean {
+  return (
+    raw !== null &&
+    typeof raw === "object" &&
+    Object.prototype.hasOwnProperty.call(raw, "dryRun")
+  );
 }
 
 function trustMap(value: unknown): Record<string, TrustEntry> {

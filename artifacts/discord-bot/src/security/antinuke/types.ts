@@ -52,7 +52,6 @@ export interface LockdownSnapshot {
 
 export interface AntiNukeConfig {
   enabled: boolean;
-  dryRun: boolean;
   detectors: Record<AntiNukeDetector, DetectorConfig>;
   whitelist: Record<string, TrustEntry>;
   blacklist: Record<string, TrustEntry>;

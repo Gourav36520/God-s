@@ -17,7 +17,11 @@ import type {
 } from "discord.js";
 import { logger } from "../../lib/logger.js";
 import type { SecurityManager } from "../SecurityManager.js";
-import { createDefaultAntiNukeConfig, normalizeAntiNukeConfig } from "./defaults.js";
+import {
+  createDefaultAntiNukeConfig,
+  hasLegacyDryRunSetting,
+  normalizeAntiNukeConfig,
+} from "./defaults.js";
 import {
   EventDeduplicator,
   resolveDefaultResponse,
@@ -83,8 +87,25 @@ export class AntiNukeService {
     }
     for (const row of rows) {
       try {
-        this.configs.set(row.guildId, normalizeAntiNukeConfig(row.config));
+        const migrated = hasLegacyDryRunSetting(row.config);
+        const config = normalizeAntiNukeConfig(row.config);
+        this.configs.set(row.guildId, config);
         this.persistedConfigGuilds.add(row.guildId);
+        if (migrated) {
+          try {
+            await this.database.saveAntiNukeConfigRow(
+              row.guildId,
+              config as unknown as Record<string, unknown>,
+            );
+            logger.info(
+              `AntiNukeService: migrated legacy dry-run config reason=protection_paused_for_review guild=${row.guildId}`,
+            );
+          } catch (error) {
+            logger.error(
+              `AntiNukeService: legacy dry-run migration write failed reason=protection_paused_for_review guild=${row.guildId} code=${errorCode(error)}`,
+            );
+          }
+        }
       } catch (error) {
         logger.warn(
           `AntiNukeService: ignored invalid configuration row reason=config_row_invalid guild=${row.guildId} code=${errorCode(error)}`,
@@ -299,18 +320,14 @@ export class AntiNukeService {
 
     if (kickBot) {
       response = "kick";
-      outcome = config.dryRun
-        ? "DRY RUN: would kick the blacklisted or unapproved bot."
-        : await this.kickMember(member, "Anti-Nuke bot admission policy");
+      outcome = await this.kickMember(member, "Anti-Nuke bot admission policy");
     } else if (humanMode && humanMode !== "log") {
       response = humanMode;
-      outcome = config.dryRun
-        ? `DRY RUN: would apply ${humanMode} to the blacklisted member.`
-        : await this.applyMemberResponse(
-            member,
-            humanMode,
-            "Anti-Nuke blacklisted member join",
-          );
+      outcome = await this.applyMemberResponse(
+        member,
+        humanMode,
+        "Anti-Nuke blacklisted member join",
+      );
     }
 
     // The kick is attempted before audit-log retries so a blacklisted bot is
@@ -819,8 +836,6 @@ export class AntiNukeService {
       outcome = "Threshold reached; duplicate punishment suppressed for this rolling window.";
     } else if (!shouldRespond) {
       outcome = "Threshold reached; no response was scheduled.";
-    } else if (config.dryRun) {
-      outcome = `DRY RUN: would apply ${response} to executor ${activity.executorId}.`;
     } else {
       outcome = await this.applyResponse(
         activity.guild,
