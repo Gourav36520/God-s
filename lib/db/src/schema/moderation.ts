@@ -38,5 +38,33 @@ export const moderationCases = pgTable(
   ],
 );
 
+export const moderationBanExpirations = pgTable(
+  "moderation_ban_expirations",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id").notNull(),
+    targetId: text("target_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    retryAt: timestamp("retry_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("moderation_ban_expirations_due_idx").on(
+      table.resolvedAt,
+      table.expiresAt,
+      table.retryAt,
+    ),
+    index("moderation_ban_expirations_guild_target_idx").on(
+      table.guildId,
+      table.targetId,
+      table.resolvedAt,
+    ),
+  ],
+);
+
 export type ModerationCase = typeof moderationCases.$inferSelect;
 export type NewModerationCase = typeof moderationCases.$inferInsert;
+export type ModerationBanExpiration =
+  typeof moderationBanExpirations.$inferSelect;
+export type NewModerationBanExpiration =
+  typeof moderationBanExpirations.$inferInsert;

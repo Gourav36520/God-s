@@ -24,6 +24,7 @@ import { AttachmentDetector } from "./security/modules/AttachmentDetector.js";
 import { BadWordProtection } from "./security/modules/BadWordProtection.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
 import { voiceTracker } from "./trackers/voice-tracker.js";
+import { startBanExpirationProcessor } from "./moderation/ban-expiration.js";
 
 function envBool(key: string): boolean {
   return ["true", "1", "yes"].includes(
@@ -397,7 +398,9 @@ async function main(): Promise<void> {
     wantMessageContent,
     wantGuildMembers
   );
+  const stopBanExpirationProcessor = startBanExpirationProcessor(client);
   const shutdown = (exitCode: number): void => {
+    stopBanExpirationProcessor();
     voiceTracker.shutdown();
     client.destroy();
     process.exit(exitCode);

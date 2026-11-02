@@ -16,10 +16,12 @@ import {
   type TextChannel,
 } from "discord.js";
 import {
+  createModerationBanExpiration,
   createModerationCase,
   listModerationCases,
   listModerationWarnings,
   resolveAllModerationWarnings,
+  resolveModerationBanExpirationsForTarget,
   resolveModerationWarning,
 } from "@workspace/db";
 import type { ModerationCase } from "@workspace/db";
@@ -60,6 +62,15 @@ const banData = new SlashCommandBuilder()
   .setDescription("Ban a member from this server")
   .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
   .addUserOption(memberOption())
+  .addStringOption((option) =>
+    option
+      .setName("duration")
+      .setDescription(
+        "Optional duration such as 15m, 2h, or 7d; maximum 68 years",
+      )
+      .setMinLength(2)
+      .setMaxLength(8),
+  )
   .addStringOption(optionalReason());
 
 const unbanData = new SlashCommandBuilder()
@@ -302,6 +313,7 @@ const CANCEL_PREFIX = "moderation-cancel:";
 const CONFIRMATION_LIFETIME_MS = 60_000;
 const SNOWFLAKE_PATTERN = /^\d{16,20}$/;
 const TIMEOUT_MAX_MS = 28 * 24 * 60 * 60 * 1000;
+const BAN_MAX_DURATION_SECONDS = 2_147_483_647;
 const MESSAGE_BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000 - 60_000;
 type ConfirmationRequest =
   | Omit<Extract<Confirmation, { kind: "purge" }>, "expiresAt">
@@ -899,34 +911,99 @@ async function executeBan(
   const target = await memberTarget(interaction, context);
   if (!target) return;
   const reason = reasonFor(interaction);
+  const durationInput = interaction.options.getString("duration");
+  const durationMs = durationInput ? parseDuration(durationInput) : null;
+  if (
+    durationInput &&
+    (!durationMs ||
+      durationMs < 60_000 ||
+      Math.floor(durationMs / 1_000) > BAN_MAX_DURATION_SECONDS)
+  ) {
+    await replyPrivate(
+      interaction,
+      "Invalid Duration",
+      "Use a duration from 1m through 68 years, such as 15m, 2h, or 7d.",
+    );
+    return;
+  }
+
+  try {
+    // A new ban must not inherit an older expiry for the same user.
+    await resolveModerationBanExpirationsForTarget(
+      context.guild.id,
+      target.id,
+    );
+  } catch (error) {
+    logger.warn(
+      `Ban expiry preflight failed in guild=${context.guild.id}:`,
+      error instanceof Error ? error.name : "unknown error",
+    );
+    await replyPrivate(
+      interaction,
+      "Ban Not Applied",
+      "The ban could not be applied because its expiry schedule could not be updated safely.",
+    );
+    return;
+  }
+
+  const expiresAt = durationMs ? new Date(Date.now() + durationMs) : null;
+  if (expiresAt) {
+    try {
+      await createModerationBanExpiration({
+        guildId: context.guild.id,
+        targetId: target.id,
+        expiresAt,
+      });
+    } catch (error) {
+      logger.warn(
+        `Ban expiry could not be persisted in guild=${context.guild.id}:`,
+        error instanceof Error ? error.name : "unknown error",
+      );
+      await replyPrivate(
+        interaction,
+        "Ban Not Applied",
+        "The temporary ban could not be applied because its expiry could not be saved.",
+      );
+      return;
+    }
+  }
 
   try {
     await context.guild.members.ban(target.id, { reason });
-    const caseId = await saveCase({
-      guildId: context.guild.id,
-      targetId: target.id,
-      moderatorId: context.moderator.id,
-      action: "ban",
-      reason,
-    });
-    await replyEmbed(
-      interaction,
-      actionEmbed({
-        title: "Member Banned",
-        targetId: target.id,
-        targetLabel: targetDisplay(target),
-        moderatorId: context.moderator.id,
-        reason,
-        caseId,
-        note: caseId
-          ? "The member was banned and the action was recorded."
-          : "The member was banned, but the case could not be saved.",
-      }),
-    );
   } catch (error) {
+    // Keep the persisted schedule: the request may have succeeded remotely even
+    // if Discord's response was lost. At expiry, an absent ban is completed safely.
     logger.warn(`Ban failed in guild=${context.guild.id}:`, error instanceof Error ? error.name : "unknown error");
     await replyPrivate(interaction, "Ban Failed", "Discord could not ban that member. Check the bot's permissions and role position.");
+    return;
   }
+
+  const caseId = await saveCase({
+    guildId: context.guild.id,
+    targetId: target.id,
+    moderatorId: context.moderator.id,
+    action: "ban",
+    reason,
+    durationSeconds: durationMs ? Math.floor(durationMs / 1_000) : null,
+  });
+  const expiryNote = expiresAt
+    ? ` The ban is scheduled to expire <t:${Math.floor(expiresAt.getTime() / 1_000)}:R>.`
+    : "";
+  await replyEmbed(
+    interaction,
+    actionEmbed({
+      title: "Member Banned",
+      targetId: target.id,
+      targetLabel: targetDisplay(target),
+      moderatorId: context.moderator.id,
+      reason,
+      duration: durationMs ? formatDuration(durationMs) : undefined,
+      caseId,
+      note: caseId
+        ? `The member was banned and the action was recorded.${expiryNote}`
+        : `The member was banned, but the case could not be saved.${expiryNote}`,
+    }),
+  );
 }
 
 async function executeUnban(
@@ -955,6 +1032,17 @@ async function executeUnban(
 
   try {
     await context.guild.bans.remove(targetId, reason);
+    try {
+      await resolveModerationBanExpirationsForTarget(
+        context.guild.id,
+        targetId,
+      );
+    } catch (error) {
+      logger.warn(
+        `Ban expiry cleanup failed after unban in guild=${context.guild.id}:`,
+        error instanceof Error ? error.name : "unknown error",
+      );
+    }
     const caseId = await saveCase({
       guildId: context.guild.id,
       targetId,

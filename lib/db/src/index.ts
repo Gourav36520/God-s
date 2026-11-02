@@ -1,8 +1,11 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "./schema/index.js";
-import { moderationCases } from "./schema/moderation.js";
+import {
+  moderationBanExpirations,
+  moderationCases,
+} from "./schema/moderation.js";
 
 const { Pool } = pg;
 
@@ -29,6 +32,95 @@ export async function createModerationCase(
     throw new Error("The moderation case was not saved.");
   }
   return created.id;
+}
+
+export async function createModerationBanExpiration(
+  values: schema.NewModerationBanExpiration,
+): Promise<number> {
+  const [created] = await db
+    .insert(moderationBanExpirations)
+    .values(values)
+    .returning({ id: moderationBanExpirations.id });
+
+  if (!created) {
+    throw new Error("The temporary ban expiry was not saved.");
+  }
+  return created.id;
+}
+
+export async function listDueModerationBanExpirations(
+  now = new Date(),
+  limit = 25,
+): Promise<schema.ModerationBanExpiration[]> {
+  return db
+    .select()
+    .from(moderationBanExpirations)
+    .where(
+      and(
+        lte(moderationBanExpirations.expiresAt, now),
+        isNull(moderationBanExpirations.resolvedAt),
+        or(
+          isNull(moderationBanExpirations.retryAt),
+          lte(moderationBanExpirations.retryAt, now),
+        ),
+      ),
+    )
+    .orderBy(asc(moderationBanExpirations.expiresAt))
+    .limit(limit);
+}
+
+export async function resolveModerationBanExpiration(
+  id: number,
+): Promise<boolean> {
+  const [updated] = await db
+    .update(moderationBanExpirations)
+    .set({ resolvedAt: new Date() })
+    .where(
+      and(
+        eq(moderationBanExpirations.id, id),
+        isNull(moderationBanExpirations.resolvedAt),
+      ),
+    )
+    .returning({ id: moderationBanExpirations.id });
+
+  return Boolean(updated);
+}
+
+export async function deferModerationBanExpiration(
+  id: number,
+  retryAt: Date,
+): Promise<boolean> {
+  const [updated] = await db
+    .update(moderationBanExpirations)
+    .set({ retryAt })
+    .where(
+      and(
+        eq(moderationBanExpirations.id, id),
+        isNull(moderationBanExpirations.resolvedAt),
+      ),
+    )
+    .returning({ id: moderationBanExpirations.id });
+
+  return Boolean(updated);
+}
+
+export async function resolveModerationBanExpirationsForTarget(
+  guildId: string,
+  targetId: string,
+): Promise<number> {
+  const updated = await db
+    .update(moderationBanExpirations)
+    .set({ resolvedAt: new Date() })
+    .where(
+      and(
+        eq(moderationBanExpirations.guildId, guildId),
+        eq(moderationBanExpirations.targetId, targetId),
+        isNull(moderationBanExpirations.resolvedAt),
+      ),
+    )
+    .returning({ id: moderationBanExpirations.id });
+
+  return updated.length;
 }
 
 export async function listModerationWarnings(
