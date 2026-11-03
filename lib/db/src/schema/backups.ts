@@ -188,6 +188,11 @@ export const kickedMemberRecoveries = pgTable(
       .defaultNow(),
   },
   (table) => [
+    uniqueIndex("bot_kicked_recoveries_guild_member_kicked_unique_idx").on(
+      table.guildId,
+      table.memberId,
+      table.kickedAt,
+    ),
     index("bot_kicked_recoveries_guild_kicked_idx").on(
       table.guildId,
       table.kickedAt,
@@ -196,6 +201,35 @@ export const kickedMemberRecoveries = pgTable(
       table.guildId,
       table.memberId,
       table.kickedAt,
+    ),
+  ],
+);
+
+export const memberRemovalEvents = pgTable(
+  "bot_member_removal_events",
+  {
+    id: serial("id").primaryKey(),
+    guildId: text("guild_id").notNull(),
+    memberId: text("member_id").notNull(),
+    username: text("username").notNull(),
+    removedAt: timestamp("removed_at", { withTimezone: true }).notNull(),
+    classification: text("classification").notNull(),
+    executorId: text("executor_id"),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bot_member_removal_events_unique_idx").on(
+      table.guildId,
+      table.memberId,
+      table.removedAt,
+      table.classification,
+    ),
+    index("bot_member_removal_events_guild_removed_idx").on(
+      table.guildId,
+      table.removedAt,
     ),
   ],
 );

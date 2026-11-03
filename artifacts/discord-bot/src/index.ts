@@ -177,6 +177,9 @@ async function loadCommands(): Promise<void> {
   const configure = await import("./commands/configure.js");
   const judgement = await import("./commands/judgement.js");
   const moderation = await import("./commands/moderation.js");
+  const backup = await import("./commands/backup.js");
+  const autobackup = await import("./commands/autobackup.js");
+  const recover = await import("./commands/recover.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -275,6 +278,12 @@ async function loadCommands(): Promise<void> {
   for (const command of moderation.moderationCommands) {
     commands.set(command.data.name, command);
   }
+  commands.set(backup.data.name, { data: backup.data, execute: backup.execute });
+  commands.set(autobackup.data.name, {
+    data: autobackup.data,
+    execute: autobackup.execute,
+  });
+  commands.set(recover.data.name, { data: recover.data, execute: recover.execute });
 
   logger.info(`Loaded ${commands.size} command(s): ${[...commands.keys()].join(", ")}`);
 }
@@ -301,7 +310,9 @@ async function loadEvents(client: Client): Promise<void> {
   client.on(voiceStateUpdate.name, (oldState, newState) =>
     voiceStateUpdate.execute(oldState, newState),
   );
-  logger.info(`Registered ${mods.length + 1} core event listener(s)`);
+  const { registerBackupEvents } = await import("./backups/events.js");
+  registerBackupEvents(client);
+  logger.info(`Registered ${mods.length + 1} core event listener(s) and backup listeners`);
 }
 
 async function loadWelcomeGoodbyeEvents(client: Client): Promise<void> {

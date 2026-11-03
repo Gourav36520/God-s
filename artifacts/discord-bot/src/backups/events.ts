@@ -3,12 +3,14 @@ import {
   Events,
   PermissionFlagsBits,
   type Client,
+  type GuildAuditLogsEntry,
   type GuildMember,
   type Message,
   type PartialMessage,
 } from "discord.js";
 import {
   getArchivedMessage,
+  insertMemberRemovalEvent,
   insertKickedMemberRecovery,
   markArchivedMessageDeleted,
   markKickedMemberRejoined,
@@ -74,7 +76,8 @@ async function onMessageDelete(
   const channel = message.channel;
   const guild = message.client.guilds.cache.get(message.guildId);
   if (!guild) return;
-  const channelName = "name" in channel ? channel.name : channel.id;
+  const channelName =
+    ("name" in channel ? channel.name : null) || channel.id;
   await upsertArchivedMessage(
     {
       guildId: message.guildId,
@@ -103,64 +106,153 @@ async function onMessageDelete(
 }
 
 function isRecentAuditEntry(
-  entry: { target?: { id?: string } | null; createdTimestamp: number },
+  entry: { target?: unknown; createdTimestamp: number },
   memberId: string,
   now: number,
 ): boolean {
+  const target = entry.target;
+  const targetId =
+    target && typeof target === "object" && "id" in target
+      ? (target as { id?: unknown }).id
+      : null;
   return (
-    entry.target?.id === memberId &&
-    Math.abs(now - entry.createdTimestamp) <= AUDIT_CORRELATION_WINDOW_MS
+    targetId === memberId &&
+    now >= entry.createdTimestamp &&
+    now - entry.createdTimestamp <= AUDIT_CORRELATION_WINDOW_MS
   );
 }
 
-async function recentAuditEntry(
+export type MemberRemovalClassification = "kick" | "ban" | "leave" | "unknown";
+
+export function classifyMemberRemoval(
+  banMatches: number,
+  kickMatches: number,
+): MemberRemovalClassification {
+  if (banMatches === 1 && kickMatches === 0) return "ban";
+  if (kickMatches === 1 && banMatches === 0) return "kick";
+  if (kickMatches === 0 && banMatches === 0) return "leave";
+  return "unknown";
+}
+
+async function recentAuditMatches(
   member: GuildMember,
   type: AuditLogEvent,
-): Promise<Awaited<ReturnType<typeof member.guild.fetchAuditLogs>>["entries"] extends never ? never : any> {
+): Promise<GuildAuditLogsEntry[]> {
   const result = await member.guild.fetchAuditLogs({ type, limit: 10 });
-  return [...result.entries.values()].find((entry) =>
+  return [...result.entries.values()].filter((entry) =>
     isRecentAuditEntry(entry, member.id, Date.now()),
-  ) ?? null;
+  );
 }
 
 async function onMemberRemove(member: GuildMember): Promise<void> {
   const config = await getBackupConfig(member.guild.id).catch(() => null);
   if (!config?.kickTrackingOn) return;
 
+  const observedAt = new Date();
   await new Promise<void>((resolve) => setTimeout(resolve, 1_200));
   const botMember =
     member.guild.members.me ??
     (await member.guild.members.fetchMe().catch(() => null));
   if (!botMember?.permissions.has(PermissionFlagsBits.ViewAuditLog)) {
-    logger.warn(
-      `[BACKUP] Kick tracking skipped for guild ${member.guild.id}: View Audit Log permission is missing.`,
+    await insertMemberRemovalEvent({
+      guildId: member.guild.id,
+      memberId: member.id,
+      username: member.user.username,
+      removedAt: observedAt,
+      classification: "unknown",
+      executorId: null,
+      evidence: {
+        classification: "unknown",
+        auditLookupAvailable: false,
+        reason: "The bot lacks View Audit Log permission.",
+      },
+    }).catch((error: unknown) =>
+      logFailure(`could not store removal event for ${member.id}`, error),
     );
     return;
   }
 
   try {
-    const [banEntry, kickEntry] = await Promise.all([
-      recentAuditEntry(member, AuditLogEvent.MemberBanAdd),
-      recentAuditEntry(member, AuditLogEvent.MemberKick),
+    const [banEntries, kickEntries] = await Promise.all([
+      recentAuditMatches(member, AuditLogEvent.MemberBanAdd),
+      recentAuditMatches(member, AuditLogEvent.MemberKick),
     ]);
-    if (banEntry || !kickEntry) return;
+    const classification = classifyMemberRemoval(
+      banEntries.length,
+      kickEntries.length,
+    );
+    const matchedEntry =
+      classification === "ban"
+        ? banEntries[0]
+        : classification === "kick"
+          ? kickEntries[0]
+          : null;
+    const executorId = matchedEntry?.executor?.id ?? null;
+    const removedAt = matchedEntry
+      ? new Date(matchedEntry.createdTimestamp)
+      : observedAt;
+    const evidence = {
+      classification,
+      auditLookupAvailable: true,
+      matchingBanAuditEntryIds: banEntries.map((entry) => entry.id),
+      matchingKickAuditEntryIds: kickEntries.map((entry) => entry.id),
+      executorKnown: executorId !== null,
+      note:
+        classification === "leave"
+          ? "No matching ban or kick audit entry was found for this removal."
+          : classification === "unknown"
+            ? "Audit evidence was ambiguous; no action or executor was inferred."
+            : null,
+    };
+    await insertMemberRemovalEvent({
+      guildId: member.guild.id,
+      memberId: member.id,
+      username: member.user.username,
+      removedAt,
+      classification,
+      executorId:
+        classification === "kick" || classification === "ban"
+          ? executorId
+          : null,
+      evidence,
+    }).catch((error: unknown) =>
+      logFailure(`could not store removal event for ${member.id}`, error),
+    );
 
-    const executorId = kickEntry.executor?.id ?? null;
+    if (classification !== "kick" || !matchedEntry) return;
     await insertKickedMemberRecovery({
       guildId: member.guild.id,
       memberId: member.id,
       username: member.user.username,
-      kickedAt: new Date(kickEntry.createdTimestamp),
+      kickedAt: removedAt,
       executorId,
       evidence: {
-        auditEntryId: kickEntry.id,
+        ...evidence,
+        auditEntryId: matchedEntry.id,
         action: "member_kick",
         targetId: member.id,
-        executorKnown: executorId !== null,
       },
     });
   } catch (error) {
     logFailure(`could not correlate member removal for ${member.id}`, error);
+    await insertMemberRemovalEvent({
+      guildId: member.guild.id,
+      memberId: member.id,
+      username: member.user.username,
+      removedAt: observedAt,
+      classification: "unknown",
+      executorId: null,
+      evidence: {
+        classification: "unknown",
+        auditLookupAvailable: true,
+        reason:
+          error instanceof Error
+            ? error.message.slice(0, 250)
+            : "Audit-log lookup failed.",
+      },
+    }).catch((storeError: unknown) =>
+      logFailure(`could not store unknown removal event for ${member.id}`, storeError),
+    );
   }
 }
 
@@ -176,6 +268,10 @@ export function registerBackupEvents(client: Client): void {
     void onMessageUpdate(oldMessage, newMessage),
   );
   client.on(Events.MessageDelete, (message) => void onMessageDelete(message));
-  client.on(Events.GuildMemberRemove, (member) => void onMemberRemove(member));
-  client.on(Events.GuildMemberAdd, (member) => void onMemberAdd(member));
+  client.on(Events.GuildMemberRemove, (member) =>
+    void onMemberRemove(member as unknown as GuildMember),
+  );
+  client.on(Events.GuildMemberAdd, (member) =>
+    void onMemberAdd(member as unknown as GuildMember),
+  );
 }

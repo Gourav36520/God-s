@@ -1,45 +1,67 @@
-# [Project name]
+# God's Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+God's Bot is a multi-guild Discord bot with moderation, server utilities, and verified PostgreSQL-backed server backups and recovery.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/discord-bot run start` — run the Discord bot
+- `pnpm --filter @workspace/discord-bot run deploy-commands` — register slash commands
+- `pnpm --filter @workspace/discord-bot run typecheck` — typecheck the bot package
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `bash scripts/database-backup.sh` — export and verify a PostgreSQL backup
+- `bash scripts/source-backup.sh` — archive current files and Git refs without secrets or build output
+- Required env: `DATABASE_URL`, `DISCORD_BOT_TOKEN`
+- Command registration also requires `DISCORD_CLIENT_ID` or `CLIENT_ID`
+- Message-content archiving requires `INTENT_MESSAGE_CONTENT=true` and the Discord privileged intent enabled
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
 - DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Discord: discord.js 14
+- Runtime: TypeScript via `tsx`
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/discord-bot/src/commands/` — slash commands and command handlers
+- `artifacts/discord-bot/src/backups/` — snapshot, message archive, restore, scheduler, and interaction flows
+- `artifacts/discord-bot/src/events/` — Discord event handlers
+- `lib/db/src/schema/` — Drizzle schema source of truth
+- `lib/db/src/backup-store.ts` — guild-scoped PostgreSQL backup and archive operations
+- `docs/database-backup.md` — database export and non-destructive restore procedure
+- `scripts/database-backup.sh` and `scripts/database-restore.sh` — checked database backup tooling
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Backups are stored in PostgreSQL, including binary attachments; Discord message IDs/timestamps are preserved as metadata only.
+- Continuous message archiving is per-guild and retains the latest 100 observed messages per supported text channel.
+- Member removals are recorded as kick, ban, leave, or unknown from audit-log evidence; only confirmed kicks are eligible for invite recovery.
+- Every restore requires a fresh administrator confirmation; restore operations do not delete server channels or roles.
+- Database archives are separate from Git and are written to ignored `generated-artifacts/`.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- `/backup create`, `/backup list`, and `/backup load` create, list, preview, and restore server backups.
+- `/autobackup settings`, `/autobackup configure`, `/autobackup run`, and `/autobackup status` manage persistent schedule, archive, and kick-tracking controls.
+- `/recover` guides administrators through backup, archived-message, and kicked-member recovery.
+- Existing Anti-Nuke and moderation code is outside the backup feature scope and must not be changed as part of backup work.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Never modify Anti-Nuke or existing moderation functionality as part of backup changes.
+- Do not force-push or overwrite GitHub branches.
+- Never expose secrets or print database connection strings.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Enable Discord Server Members intent for member removal/rejoin tracking and View Audit Log for kick correlation.
+- Enable Message Content intent for message content archival; unavailable intents can leave archived message content empty.
+- Discord role hierarchy, channel permissions, emoji limits, and rate limits may cause individual restore items to be skipped or fail; review the final report.
+- Kick recovery never unbans users. If a member remains banned, an administrator must handle that separately.
+- This repository has no separate Drizzle migrations directory; schema changes are represented in `lib/db/src/schema/`.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See `docs/database-backup.md` for database export and restoration instructions.

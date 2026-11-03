@@ -17,6 +17,15 @@ out-tsc
 # dependencies
 node_modules
 
+# secrets and local environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+secrets/
+
 # IDEs and editors
 /.idea
 .project
@@ -37,6 +46,10 @@ node_modules
 /.sass-cache
 /connect.lock
 /coverage
+/generated-artifacts/
+/database-backups/
+*.dump
+*.sql.gz
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log

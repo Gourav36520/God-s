@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   ChannelType,
+  GatewayIntentBits,
   PermissionFlagsBits,
   type Guild,
   type Message,
@@ -8,6 +9,7 @@ import {
 } from "discord.js";
 import {
   completeBackupRecord,
+  deleteBackupAssets,
   ensureAutobackupConfig,
   failBackupRecord,
   getBackupRecord,
@@ -20,6 +22,7 @@ import {
   listAllArchivedMessageAssets,
   listArchivedMessages,
   listKickedMemberRecoveries,
+  listMemberRemovalEvents,
   pruneBackups,
   updateAutobackupConfig,
   upsertArchivedMessage,
@@ -218,10 +221,11 @@ function toBackupMessage(
 function messageChannelInfo(message: Message) {
   const channel = message.channel;
   return {
-    channelName: "name" in channel ? channel.name : channel.id,
+    channelName:
+      ("name" in channel ? channel.name : null) || channel.id,
     channelType: String(channel.type),
     parentId: "parentId" in channel ? channel.parentId : null,
-    parentName:
+      parentName:
       "parent" in channel && channel.parent && "name" in channel.parent
         ? channel.parent.name
         : null,
@@ -487,9 +491,8 @@ export async function createServerBackup(
       warnings.push(`${unsupportedCount} unsupported channel(s) were omitted.`);
     }
     const channels = supportedChannels
-      .sort((left, right) => left.position - right.position)
-      .sort((left, right) => left.position - right.position)
-      .map((channel) => snapshotChannel(channel));
+      .map((channel) => snapshotChannel(channel))
+      .sort((left, right) => left.position - right.position);
 
     const archivedRows = await listArchivedMessages(guild.id);
     const archivedAssetRows = await listAllArchivedMessageAssets(guild.id);
@@ -508,6 +511,13 @@ export async function createServerBackup(
     }
 
     const messages: BackupMessage[] = [];
+    if (
+      !guild.client.options.intents.has(GatewayIntentBits.MessageContent)
+    ) {
+      warnings.push(
+        "Message Content intent is not active; Discord may return empty message content.",
+      );
+    }
     const currentStorageBytes = await getStorageBytes(guild.id);
     const backupAttachmentLimit = Math.min(
       MAX_BACKUP_ATTACHMENT_BYTES,
@@ -573,8 +583,6 @@ export async function createServerBackup(
           const prior = item.archived;
           if (prior) {
             const existingHistory = prior.editHistory ?? [];
-            const lastContent =
-              existingHistory.at(-1)?.content ?? prior.content;
             const current = captured.message.content;
             if (prior.content !== current && !existingHistory.some((edit) => edit.content === prior.content)) {
               captured.message.editHistory = [
@@ -584,7 +592,6 @@ export async function createServerBackup(
             } else {
               captured.message.editHistory = existingHistory.slice(-10);
             }
-            void lastContent;
           }
           continue;
         }
@@ -704,6 +711,19 @@ export async function createServerBackup(
       deliveryStatus: kick.deliveryStatus,
       rejoinedAt: kick.rejoinedAt?.toISOString() ?? null,
     }));
+    const removalRows = await listMemberRemovalEvents(guild.id, 1000);
+    const memberRemovals = removalRows.map((event) => ({
+      memberId: event.memberId,
+      username: event.username,
+      removedAt: event.removedAt.toISOString(),
+      classification: event.classification as
+        | "kick"
+        | "ban"
+        | "leave"
+        | "unknown",
+      executorId: event.executorId,
+      evidence: event.evidence,
+    }));
 
     const snapshot: BackupSnapshot = {
       formatVersion: BACKUP_FORMAT_VERSION,
@@ -715,6 +735,7 @@ export async function createServerBackup(
       emojis,
       messages,
       kickedMembers,
+      memberRemovals,
       warnings,
     };
     const summary: BackupSummary = {
@@ -724,6 +745,7 @@ export async function createServerBackup(
       messages: messages.length,
       attachments: assets.filter((asset) => asset.resourceType === "message_attachment").length,
       kickedMembers: kickedMembers.length,
+      memberRemovals: memberRemovals.length,
       unavailableAttachments: messages.reduce(
         (count, message) => count + message.attachments.filter((attachment) => !attachment.archived).length,
         0,
@@ -733,7 +755,7 @@ export async function createServerBackup(
 
     await insertBackupAssets(assets);
     const checksum = backupChecksum(snapshot, assets);
-    await completeBackupRecord(guild.id, backupId, {
+    await completeBackupRecord(backupId, guild.id, {
       snapshot: snapshot as unknown as Record<string, unknown>,
       checksum,
       warningCount: warnings.length,
@@ -741,7 +763,7 @@ export async function createServerBackup(
     });
     const verified = await verifyServerBackup(guild.id, backupId);
     if (!verified.ok) {
-      await failBackupRecord(guild.id, backupId, `Integrity verification failed: ${verified.reason}`);
+      await failBackupRecord(backupId, guild.id, `Integrity verification failed: ${verified.reason}`);
       throw new Error(`Backup integrity verification failed: ${verified.reason}`);
     }
 
@@ -752,7 +774,9 @@ export async function createServerBackup(
     return { backupId, checksum, summary };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown backup error.";
-    await failBackupRecord(guild.id, backupId, reason).catch(() => undefined);
+    await failBackupRecord(backupId, guild.id, reason).catch(() => undefined);
+    await deleteBackupAssets(guild.id, backupId).catch(() => undefined);
+    storageCache.delete(guild.id);
     throw error;
   }
 }

@@ -103,6 +103,15 @@ export interface BackupKick {
   rejoinedAt: string | null;
 }
 
+export interface BackupMemberRemoval {
+  memberId: string;
+  username: string;
+  removedAt: string;
+  classification: "kick" | "ban" | "leave" | "unknown";
+  executorId: string | null;
+  evidence: Record<string, unknown>;
+}
+
 export interface BackupSnapshot {
   formatVersion: typeof BACKUP_FORMAT_VERSION;
   guildId: string;
@@ -113,6 +122,7 @@ export interface BackupSnapshot {
   emojis: BackupEmoji[];
   messages: BackupMessage[];
   kickedMembers: BackupKick[];
+  memberRemovals?: BackupMemberRemoval[];
   warnings: string[];
 }
 
@@ -136,6 +146,7 @@ export interface BackupSummary {
   messages: number;
   attachments: number;
   kickedMembers: number;
+  memberRemovals: number;
   unavailableAttachments: number;
   warnings: string[];
 }

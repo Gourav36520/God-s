@@ -37,6 +37,9 @@ async function main(): Promise<void> {
   const configure = await import("./commands/configure.js");
   const judgement = await import("./commands/judgement.js");
   const moderation = await import("./commands/moderation.js");
+  const backup = await import("./commands/backup.js");
+  const autobackup = await import("./commands/autobackup.js");
+  const recover = await import("./commands/recover.js");
 
   const commandData = [
     ping.data,
@@ -68,6 +71,9 @@ async function main(): Promise<void> {
     configure.data,
     judgement.data,
     ...moderation.moderationCommands.map((command) => command.data),
+    backup.data,
+    autobackup.data,
+    recover.data,
   ].map((d) => d.toJSON());
 
   const rest = new REST().setToken(token);

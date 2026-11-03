@@ -18,6 +18,7 @@ import {
   backupInteractionSessions,
   botBackups,
   kickedMemberRecoveries,
+  memberRemovalEvents,
   type AutobackupConfig,
   type BackupInteractionSession,
   type BotBackup,
@@ -85,6 +86,20 @@ export async function insertBackupAssets(
   for (let offset = 0; offset < assets.length; offset += 100) {
     await db.insert(backupAssets).values(assets.slice(offset, offset + 100));
   }
+}
+
+export async function deleteBackupAssets(
+  guildId: string,
+  backupId: string,
+): Promise<void> {
+  await db
+    .delete(backupAssets)
+    .where(
+      and(
+        eq(backupAssets.guildId, guildId),
+        eq(backupAssets.backupId, backupId),
+      ),
+    );
 }
 
 export async function completeBackupRecord(
@@ -240,6 +255,10 @@ export async function getBackupStorageStatus(
     })
     .from(archivedMessageAssets)
     .where(eq(archivedMessageAssets.guildId, guildId));
+  const [archivedMessageStats] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(archivedMessages)
+    .where(eq(archivedMessages.guildId, guildId));
   const [backupCount] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(botBackups)
@@ -248,7 +267,7 @@ export async function getBackupStorageStatus(
     );
   return {
     backupCount: backupCount?.count ?? 0,
-    archiveCount: archiveStats?.count ?? 0,
+    archiveCount: archivedMessageStats?.count ?? 0,
     bytes: (backupStats?.bytes ?? 0) + (archiveStats?.bytes ?? 0),
   };
 }
@@ -441,7 +460,85 @@ export async function insertKickedMemberRecovery(input: {
   executorId: string | null;
   evidence: Record<string, unknown>;
 }): Promise<void> {
-  await db.insert(kickedMemberRecoveries).values(input);
+  await db
+    .insert(kickedMemberRecoveries)
+    .values(input)
+    .onConflictDoNothing();
+}
+
+export async function insertRestoredKickedMemberRecovery(input: {
+  guildId: string;
+  memberId: string;
+  username: string;
+  kickedAt: Date;
+  executorId: string | null;
+  evidence: Record<string, unknown>;
+  deliveryStatus?: string;
+  rejoinedAt?: Date | null;
+}): Promise<void> {
+  await db
+    .insert(kickedMemberRecoveries)
+    .values(input)
+    .onConflictDoNothing();
+}
+
+export async function insertMemberRemovalEvent(input: {
+  guildId: string;
+  memberId: string;
+  username: string;
+  removedAt: Date;
+  classification: "kick" | "ban" | "leave" | "unknown";
+  executorId: string | null;
+  evidence: Record<string, unknown>;
+}): Promise<void> {
+  await db
+    .insert(memberRemovalEvents)
+    .values(input)
+    .onConflictDoNothing();
+}
+
+export async function listMemberRemovalEvents(
+  guildId: string,
+  limit = 1000,
+): Promise<(typeof memberRemovalEvents.$inferSelect)[]> {
+  return db
+    .select()
+    .from(memberRemovalEvents)
+    .where(eq(memberRemovalEvents.guildId, guildId))
+    .orderBy(desc(memberRemovalEvents.removedAt))
+    .limit(Math.max(1, Math.min(5000, limit)));
+}
+
+export async function insertRestoredMemberRemovalEvent(input: {
+  guildId: string;
+  memberId: string;
+  username: string;
+  removedAt: Date;
+  classification: string;
+  executorId: string | null;
+  evidence: Record<string, unknown>;
+}): Promise<void> {
+  await db
+    .insert(memberRemovalEvents)
+    .values(input)
+    .onConflictDoNothing();
+}
+
+export async function getKickedMemberRecovery(
+  guildId: string,
+  id: number,
+): Promise<(typeof kickedMemberRecoveries.$inferSelect) | null> {
+  const [record] = await db
+    .select()
+    .from(kickedMemberRecoveries)
+    .where(
+      and(
+        eq(kickedMemberRecoveries.guildId, guildId),
+        eq(kickedMemberRecoveries.id, id),
+      ),
+    )
+    .limit(1);
+  return record ?? null;
 }
 
 export async function listKickedMemberRecoveries(
@@ -456,6 +553,22 @@ export async function listKickedMemberRecoveries(
     .orderBy(desc(kickedMemberRecoveries.kickedAt))
     .limit(Math.max(1, Math.min(1000, limit)))
     .offset(Math.max(0, offset));
+}
+
+export async function setKickedMemberRecoveryStatus(
+  guildId: string,
+  id: number,
+  deliveryStatus: string,
+): Promise<void> {
+  await db
+    .update(kickedMemberRecoveries)
+    .set({ deliveryStatus })
+    .where(
+      and(
+        eq(kickedMemberRecoveries.guildId, guildId),
+        eq(kickedMemberRecoveries.id, id),
+      ),
+    );
 }
 
 export async function setKickedMemberInvite(
@@ -556,6 +669,29 @@ export async function updateBackupInteractionSession(
     );
 }
 
+export async function claimBackupInteractionSession(
+  guildId: string,
+  id: string,
+  userId: string,
+  expectedStep: string,
+  nextState: Record<string, unknown>,
+): Promise<boolean> {
+  const claimed = await db
+    .update(backupInteractionSessions)
+    .set({ state: nextState, updatedAt: new Date() })
+    .where(
+      and(
+        eq(backupInteractionSessions.guildId, guildId),
+        eq(backupInteractionSessions.id, id),
+        eq(backupInteractionSessions.userId, userId),
+        gt(backupInteractionSessions.expiresAt, new Date()),
+        sql`${backupInteractionSessions.state}->>'step' = ${expectedStep}`,
+      ),
+    )
+    .returning({ id: backupInteractionSessions.id });
+  return claimed.length > 0;
+}
+
 export async function deleteExpiredBackupSessions(
   now = new Date(),
 ): Promise<void> {
@@ -579,6 +715,54 @@ export async function getDueAutobackupConfigs(
     )
     .orderBy(asc(autobackupConfigs.nextRunAt))
     .limit(Math.max(1, Math.min(50, limit)));
+}
+
+export async function claimDueAutobackupConfig(
+  config: AutobackupConfig,
+  claimUntil: Date,
+): Promise<boolean> {
+  if (!config.nextRunAt) return false;
+  const claimed = await db
+    .update(autobackupConfigs)
+    .set({ nextRunAt: claimUntil, updatedAt: new Date() })
+    .where(
+      and(
+        eq(autobackupConfigs.guildId, config.guildId),
+        eq(autobackupConfigs.autoBackupOn, true),
+        eq(autobackupConfigs.nextRunAt, config.nextRunAt),
+        lte(autobackupConfigs.nextRunAt, new Date()),
+      ),
+    )
+    .returning({ guildId: autobackupConfigs.guildId });
+  return claimed.length > 0;
+}
+
+export async function listArchivedMessageChannels(
+  guildId: string,
+): Promise<
+  {
+    channelId: string;
+    channelName: string;
+    channelType: string;
+    messageCount: number;
+  }[]
+> {
+  return db
+    .select({
+      channelId: archivedMessages.channelId,
+      channelName: archivedMessages.channelName,
+      channelType: archivedMessages.channelType,
+      messageCount: sql<number>`count(*)::int`,
+    })
+    .from(archivedMessages)
+    .where(eq(archivedMessages.guildId, guildId))
+    .groupBy(
+      archivedMessages.channelId,
+      archivedMessages.channelName,
+      archivedMessages.channelType,
+    )
+    .orderBy(asc(archivedMessages.channelName))
+    .limit(25);
 }
 
 export async function getBackupCount(guildId: string): Promise<number> {

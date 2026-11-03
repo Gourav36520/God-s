@@ -18,13 +18,19 @@ import {
   handleVerificationButton,
   isVerificationButton,
 } from "../verification/interaction.js";
+import {
+  handleBackupComponent,
+  isBackupComponent,
+} from "../backups/interactions.js";
 
 export const name = Events.InteractionCreate;
 export const once = false;
 
 export async function execute(interaction: Interaction): Promise<void> {
   if (interaction.isButton()) {
-    if (isModerationConfirmation(interaction.customId)) {
+    if (isBackupComponent(interaction.customId)) {
+      await handleBackupComponent(interaction);
+    } else if (isModerationConfirmation(interaction.customId)) {
       await handleModerationConfirmation(interaction);
     } else if (isVerificationButton(interaction.customId)) {
       await handleVerificationButton(interaction);
@@ -37,7 +43,9 @@ export async function execute(interaction: Interaction): Promise<void> {
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (isHelpComponent(interaction.customId)) {
+    if (isBackupComponent(interaction.customId)) {
+      await handleBackupComponent(interaction);
+    } else if (isHelpComponent(interaction.customId)) {
       await handleHelpInteraction(interaction);
     }
     return;
