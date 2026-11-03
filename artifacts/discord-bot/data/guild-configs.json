@@ -1,7 +1,7 @@
 {
   "1519269173937836084": {
     "guildId": "1519269173937836084",
-    "prefix": "God",
+    "prefix": "G",
     "logChannelId": "1560711884997664968",
     "inviteChannelId": null,
     "muteRoleId": null,
@@ -94,7 +94,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-10-16T18:08:44.082Z",
+    "updatedAt": "2026-11-03T09:48:38.408Z",
     "heatEngine": {
       "enabled": true
     },
@@ -135,5 +135,81 @@
         }
       ]
     }
+  },
+  "1565321329757126778": {
+    "guildId": "1565321329757126778",
+    "prefix": "!",
+    "logChannelId": null,
+    "inviteChannelId": null,
+    "muteRoleId": null,
+    "autoRoleRoleId": null,
+    "reactionRolePanels": [],
+    "reactionRoleAssignments": {},
+    "exemptRoles": [],
+    "exemptChannels": [],
+    "antiSpam": {
+      "enabled": false,
+      "maxMessages": 3,
+      "timeWindowMs": 5000,
+      "action": "warn",
+      "timeoutDurationMs": 300000,
+      "warnThreshold": 3,
+      "bypassRoles": [],
+      "bypassUsers": []
+    },
+    "antiMention": {
+      "enabled": true
+    },
+    "antiLink": {
+      "enabled": false,
+      "allowedDomains": [],
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiInvite": {
+      "enabled": false,
+      "bypassRoles": [],
+      "action": "delete"
+    },
+    "antiRaid": {
+      "enabled": false,
+      "joinThreshold": 10,
+      "joinWindowMs": 10000,
+      "action": "kick",
+      "lockdownDurationMs": 300000
+    },
+    "badWord": {
+      "words": [],
+      "exceptionRoles": []
+    },
+    "godsJudgment": {
+      "enabled": false,
+      "logChannelId": null,
+      "dmOnAction": true,
+      "judgmentRoleId": null,
+      "judgmentChannelId": null,
+      "activeJudgments": {}
+    },
+    "ticket": {
+      "enabled": false,
+      "staffRoleId": null,
+      "categoryId": null,
+      "transcriptChannelId": null,
+      "panelChannelId": null,
+      "panelEmbedId": null
+    },
+    "logging": {
+      "channelId": null,
+      "channelIds": {},
+      "categories": {
+        "moderation": false,
+        "messages": false,
+        "members": false,
+        "channels": false,
+        "roles": false,
+        "security": false
+      }
+    },
+    "updatedAt": "2026-11-03T09:39:30.513Z"
   }
 }
