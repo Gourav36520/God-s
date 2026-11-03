@@ -32,6 +32,16 @@ function envBool(key: string): boolean {
   );
 }
 
+function safeStartupError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/\b[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}\b/g, "[redacted token]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(?:postgres(?:ql)?|mysql):\/\/\S+/gi, "[redacted database URL]")
+    .replace(/((?:token|password|secret|authorization)\s*[:=]\s*)\S+/gi, "$1[redacted]")
+    .slice(0, 400);
+}
+
 async function loginWithFallback(
   token: string,
   wantMessageContent: boolean,
@@ -448,8 +458,6 @@ async function main(): Promise<void> {
 
   await loadEvents(client);
   await securityManager.init(client);
-  await antiNukeService.init(client);
-  antiNukeService.register(client);
   await loadWelcomeGoodbyeEvents(client);
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
@@ -483,6 +491,16 @@ async function main(): Promise<void> {
   const antiSpam = new AntiSpam(securityManager);
   securityManager.registerModule(antiSpam);
   antiSpam.register(client);
+
+  try {
+    await antiNukeService.init(client);
+    antiNukeService.register(client);
+    logger.info("[STARTUP] Anti-Nuke initialized and registered.");
+  } catch (error) {
+    logger.error(
+      `[STARTUP] Anti-Nuke initialization failed; continuing startup. ${safeStartupError(error)}`,
+    );
+  }
 
   // ── Startup validation: audit + repair all guild channels once ready ───────
   if (envBool("SKIP_GODS_JUDGMENT_STARTUP_REPAIR")) {
