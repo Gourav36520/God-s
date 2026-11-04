@@ -134,12 +134,34 @@ async function downloadDiscordFile(
   if (!isDiscordCdnUrl(url) || advertisedBytes > maxBytes || advertisedBytes <= 0) {
     return null;
   }
-  const response = await fetch(url, { redirect: "error" }).catch(() => null);
+  const response = await fetch(url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+  }).catch(() => null);
   if (!response?.ok) return null;
   const headerSize = Number(response.headers.get("content-length") ?? 0);
   if (headerSize > maxBytes) return null;
-  const data = Buffer.from(await response.arrayBuffer());
-  if (!data.length || data.length > maxBytes) return null;
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let byteSize = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteSize += value.byteLength;
+      if (byteSize > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!byteSize) return null;
+  const data = Buffer.concat(chunks, byteSize);
   void fileName;
   void contentType;
   return data;

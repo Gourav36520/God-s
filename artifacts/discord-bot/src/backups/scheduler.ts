@@ -1,5 +1,6 @@
 import {
   claimDueAutobackupConfig,
+  failStaleBackupRecords,
   getDueAutobackupConfigs,
   updateAutobackupConfig,
 } from "@workspace/db";
@@ -10,6 +11,7 @@ import { logger } from "../lib/logger.js";
 const POLL_INTERVAL_MS = 30_000;
 const RETRY_DELAY_MS = 15 * 60_000;
 const CLAIM_TIMEOUT_MS = 30 * 60_000;
+const STALE_BACKUP_AFTER_MS = 24 * 60 * 60_000;
 const activeSchedulers = new WeakMap<Client, () => void>();
 
 function shortFailure(error: unknown): string {
@@ -51,6 +53,14 @@ export function startAutobackupScheduler(client: Client): () => void {
     if (stopped || polling) return;
     polling = true;
     try {
+      const interrupted = await failStaleBackupRecords(
+        new Date(Date.now() - STALE_BACKUP_AFTER_MS),
+      );
+      if (interrupted.length) {
+        logger.warn(
+          `[BACKUP] Marked ${interrupted.length} abandoned backup(s) as failed and removed their partial files.`,
+        );
+      }
       const due = await getDueAutobackupConfigs(new Date(), 10);
       for (const config of due) {
         if (stopped) break;

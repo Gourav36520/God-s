@@ -32,6 +32,28 @@ export interface BackupPreview {
   unavailableAttachments: number;
 }
 
+type MessageRecoveryAsset = Pick<
+  Awaited<ReturnType<typeof listBackupAssets>>[number],
+  "resourceType" | "sourceId" | "partIndex" | "fileName" | "data"
+>;
+
+export function normalizeArchivedMessageAssets(
+  assets: {
+    messageId: string;
+    partIndex: number;
+    fileName: string;
+    data: Buffer;
+  }[],
+): MessageRecoveryAsset[] {
+  return assets.map((asset) => ({
+    resourceType: "message_attachment",
+    sourceId: asset.messageId,
+    partIndex: asset.partIndex,
+    fileName: asset.fileName,
+    data: asset.data,
+  }));
+}
+
 function makeReport(): RestoreReport {
   return { restored: [], skipped: [], failed: [], warnings: [] };
 }
@@ -306,7 +328,7 @@ async function restoreSettings(
 async function repostMessage(
   channel: GuildBasedChannel,
   item: BackupMessage,
-  assets: Awaited<ReturnType<typeof listBackupAssets>>,
+  assets: readonly MessageRecoveryAsset[],
   report: RestoreReport,
 ): Promise<void> {
   if (!channel.isTextBased() || !("send" in channel)) {
@@ -391,7 +413,7 @@ async function restoreMessages(
   guild: Guild,
   snapshot: BackupSnapshot,
   channelIds: Map<string, string>,
-  assets: Awaited<ReturnType<typeof listBackupAssets>>,
+  assets: readonly MessageRecoveryAsset[],
   report: RestoreReport,
 ): Promise<void> {
   for (const item of snapshot.messages) {
@@ -578,12 +600,7 @@ export async function restoreArchivedChannelMessages(
       editHistory: row.editHistory,
     };
     try {
-      await repostMessage(
-        channel,
-        item,
-        assets as unknown as Awaited<ReturnType<typeof listBackupAssets>>,
-        report,
-      );
+      await repostMessage(channel, item, normalizeArchivedMessageAssets(assets), report);
     } catch (error) {
       report.failed.push(`Message ${row.messageId}: ${shortError(error)}`);
     }

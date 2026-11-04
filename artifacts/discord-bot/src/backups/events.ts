@@ -244,7 +244,7 @@ async function onMemberRemove(member: GuildMember): Promise<void> {
       executorId: null,
       evidence: {
         classification: "unknown",
-        auditLookupAvailable: true,
+          auditLookupAvailable: false,
         reason:
           error instanceof Error
             ? error.message.slice(0, 250)

@@ -6,6 +6,7 @@ import {
   gt,
   inArray,
   isNull,
+  lt,
   lte,
   sql,
 } from "drizzle-orm";
@@ -148,6 +149,58 @@ export async function failBackupRecord(
         inArray(botBackups.status, ["building", "complete"]),
       ),
     );
+}
+
+export async function failStaleBackupRecords(
+  staleBefore: Date,
+  limit = 100,
+): Promise<Array<{ id: string; guildId: string }>> {
+  return db.transaction(async (tx) => {
+    const staleRows = await tx
+      .select({ id: botBackups.id, guildId: botBackups.guildId })
+      .from(botBackups)
+      .where(
+        and(
+          eq(botBackups.status, "building"),
+          lt(botBackups.createdAt, staleBefore),
+        ),
+      )
+      .orderBy(asc(botBackups.createdAt))
+      .limit(Math.max(1, Math.min(500, Math.floor(limit))));
+    const failed: Array<{ id: string; guildId: string }> = [];
+
+    for (const row of staleRows) {
+      const updated = await tx
+        .update(botBackups)
+        .set({
+          status: "failed",
+          summary: {
+            failure: "Interrupted backup: process stopped before final verification.",
+          },
+        })
+        .where(
+          and(
+            eq(botBackups.id, row.id),
+            eq(botBackups.guildId, row.guildId),
+            eq(botBackups.status, "building"),
+            lt(botBackups.createdAt, staleBefore),
+          ),
+        )
+        .returning({ id: botBackups.id });
+      if (!updated.length) continue;
+
+      await tx
+        .delete(backupAssets)
+        .where(
+          and(
+            eq(backupAssets.guildId, row.guildId),
+            eq(backupAssets.backupId, row.id),
+          ),
+        );
+      failed.push(row);
+    }
+    return failed;
+  });
 }
 
 export async function getBackupRecord(
@@ -304,18 +357,28 @@ export async function upsertArchivedMessage(
         },
       });
 
-    await tx
-      .delete(archivedMessageAssets)
-      .where(
-        and(
-          eq(archivedMessageAssets.guildId, message.guildId),
-          eq(archivedMessageAssets.channelId, message.channelId),
-          eq(archivedMessageAssets.messageId, message.messageId),
-        ),
-      );
     for (let offset = 0; offset < assets.length; offset += 100) {
       const batch = assets.slice(offset, offset + 100);
-      if (batch.length) await tx.insert(archivedMessageAssets).values(batch);
+      if (batch.length) {
+        await tx
+          .insert(archivedMessageAssets)
+          .values(batch)
+          .onConflictDoUpdate({
+            target: [
+              archivedMessageAssets.guildId,
+              archivedMessageAssets.channelId,
+              archivedMessageAssets.messageId,
+              archivedMessageAssets.partIndex,
+            ],
+            set: {
+              fileName: sql`excluded.file_name`,
+              contentType: sql`excluded.content_type`,
+              byteSize: sql`excluded.byte_size`,
+              checksum: sql`excluded.checksum`,
+              data: sql`excluded.data`,
+            },
+          });
+      }
     }
 
     const oldRows = await tx

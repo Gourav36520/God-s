@@ -10,80 +10,44 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const ping = await import("./commands/ping.js");
-  const help = await import("./commands/help.js");
-  const info = await import("./commands/info.js");
-  const security = await import("./commands/security.js");
-  const judgment = await import("./commands/judgment.js");
-  const logging = await import("./commands/logging.js");
-  const heat = await import("./commands/heat.js");
-  const autorole = await import("./commands/autorole.js");
-  const reactionrole = await import("./commands/reactionrole.js");
-  const set = await import("./commands/set.js");
-  const remove = await import("./commands/remove.js");
-  const welcome = await import("./commands/welcome.js");
-  const goodbye = await import("./commands/goodbye.js");
-  const create = await import("./commands/create.js");
-  const embed = await import("./commands/embed.js");
-  const add = await import("./commands/add.js");
-  const ticket = await import("./commands/ticket.js");
-  const message = await import("./commands/message.js");
-  const voice = await import("./commands/voice.js");
-  const invite = await import("./commands/invite.js");
-  const invited = await import("./commands/invited.js");
-  const verification = await import("./commands/verification.js");
-  const antiNuke = await import("./commands/antinuke.js");
-  const trust = await import("./commands/trust.js");
-  const configure = await import("./commands/configure.js");
-  const judgement = await import("./commands/judgement.js");
-  const moderation = await import("./commands/moderation.js");
   const backup = await import("./commands/backup.js");
   const autobackup = await import("./commands/autobackup.js");
   const recover = await import("./commands/recover.js");
-
   const commandData = [
-    ping.data,
-    help.data,
-    info.data,
-    security.data,
-    judgment.data,
-    judgment.releaseData,
-    logging.data,
-    heat.data,
-    autorole.data,
-    reactionrole.data,
-    set.data,
-    remove.data,
-    welcome.data,
-    goodbye.data,
-    create.data,
-    embed.data,
-    add.data,
-    ticket.data,
-    message.data,
-    voice.data,
-    invite.data,
-    invited.data,
-    verification.data,
-    antiNuke.data,
-    trust.whitelistData,
-    trust.blacklistData,
-    configure.data,
-    judgement.data,
-    ...moderation.moderationCommands.map((command) => command.data),
     backup.data,
     autobackup.data,
     recover.data,
   ].map((d) => d.toJSON());
-
   const rest = new REST().setToken(token);
+  const current = (await rest.get(
+    Routes.applicationCommands(clientId),
+  )) as { id: string; name: string; type?: number }[];
+  let added = 0;
 
-  logger.info(`Registering ${commandData.length} slash command(s) globally...`);
-  await rest.put(Routes.applicationCommands(clientId), { body: commandData });
-  logger.info("Successfully registered all commands.");
+  for (const command of commandData) {
+    const alreadyRegistered = current.some(
+      (item) =>
+        item.name === command.name &&
+        (item.type ?? 1) === (command.type ?? 1),
+    );
+    if (alreadyRegistered) {
+      logger.info(`Keeping existing /${command.name} command unchanged.`);
+      continue;
+    }
+    await rest.post(Routes.applicationCommands(clientId), { body: command });
+    logger.info(`Added missing /${command.name} command.`);
+    added++;
+  }
+  logger.info(
+    `Backup command registration finished; added ${added} command(s) without replacing existing commands.`,
+  );
 }
 
 main().catch((err) => {
-  logger.error("Failed to register commands:", err);
+  const status =
+    err && typeof err === "object" && "status" in err
+      ? String((err as { status: unknown }).status)
+      : "unknown";
+  logger.error(`Failed to add missing backup commands (status ${status}).`);
   process.exit(1);
 });

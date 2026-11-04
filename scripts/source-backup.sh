@@ -18,6 +18,10 @@ tar \
   --exclude=generated-artifacts \
   --exclude=.cache \
   --exclude=.turbo \
+  --exclude=.local/share/pnpm \
+  --exclude='*/.local/share/pnpm' \
+  --exclude=.local/state/replit/durableptc \
+  --exclude='*/.local/state/replit/durableptc' \
   --exclude=coverage \
   --exclude=dist \
   --exclude=build \
