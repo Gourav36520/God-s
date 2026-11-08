@@ -57,6 +57,77 @@ function truncateField(value: string, maxLength = 1_024): string {
   return value.length > maxLength ? value.slice(0, maxLength - 1) + "…" : value;
 }
 
+function formatAttachmentSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return "";
+
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1_024 && unitIndex < units.length - 1) {
+    value /= 1_024;
+    unitIndex += 1;
+  }
+
+  const formatted =
+    unitIndex === 0 || value >= 10 ? Math.round(value).toString() : value.toFixed(1);
+  return `${formatted} ${units[unitIndex]}`;
+}
+
+function getAttachmentDetails(message: Message | PartialMessage): {
+  key: string;
+  line: string;
+}[] {
+  return Array.from(message.attachments.values()).map((attachment, index) => {
+    const name = (attachment.name?.trim() || `Attachment ${index + 1}`).replace(
+      /[\r\n]+/g,
+      " ",
+    );
+    const url = attachment.url?.trim() ?? "";
+    const metadata = [
+      attachment.contentType?.trim(),
+      formatAttachmentSize(attachment.size),
+    ].filter(Boolean);
+    const detail = [name, url, ...metadata].filter(Boolean).join(" — ");
+
+    return {
+      key: [
+        attachment.id,
+        name,
+        url,
+        attachment.contentType ?? "",
+        attachment.size,
+      ].join("\u0000"),
+      line: `• ${detail}`,
+    };
+  });
+}
+
+function attachmentSignature(message: Message | PartialMessage): string {
+  return getAttachmentDetails(message)
+    .map((attachment) => attachment.key)
+    .sort()
+    .join("\n");
+}
+
+function attachmentField(
+  message: Message | PartialMessage,
+  name = "Attachments",
+): ActionDetail | null {
+  const details = getAttachmentDetails(message);
+  if (details.length === 0) return null;
+  return {
+    name,
+    value: truncateField(details.map((attachment) => attachment.line).join("\n")),
+    inline: false,
+  };
+}
+
+function messageTextSnapshot(message: Message | PartialMessage): string | undefined {
+  const text = message.content?.trim() ?? "";
+  if (text) return text;
+  return message.partial ? undefined : "";
+}
+
 function severityFromDetails(details: ActionDetail[] | undefined): LogSeverity | null {
   for (const detail of details ?? []) {
     if (!/severity|heat/i.test(detail.name)) continue;
@@ -568,31 +639,69 @@ export class LoggingService {
 
   // ─── Messages ──────────────────────────────────────────────────────────────
 
+  async logMessageCreate(message: Message): Promise<void> {
+    if (!message.guildId || message.author.bot || message.system) return;
+
+    const content = message.content?.trim() ?? "";
+    const attachments = attachmentField(message);
+    if (!content && !attachments) return;
+
+    const fields: ActionDetail[] = [
+      {
+        name: "Author",
+        value: `${message.author.tag}\n<@${message.author.id}>`,
+        inline: true,
+      },
+      { name: "Channel", value: `<#${message.channelId}>`, inline: true },
+    ];
+    if (content) {
+      fields.push({
+        name: "Content",
+        value: truncateField(content),
+        inline: false,
+      });
+    }
+    if (attachments) fields.push(attachments);
+
+    const embed = createLogEmbed("Message Created", 0x57f287)
+      .setURL(message.url)
+      .addFields(fields)
+      .setFooter({ text: `Gods Bot • Message ID: ${message.id}` })
+      .setThumbnail(message.author.displayAvatarURL({ size: 256 }));
+
+    await this.send(message.guildId, "messages", embed);
+  }
+
   async logMessageDelete(message: Message | PartialMessage): Promise<void> {
     if (!message.guildId) return;
 
-    const content = message.partial
-      ? "*Message content unavailable (not cached)*"
-      : message.content || "No text content (possibly an attachment-only message)";
+    const fields: ActionDetail[] = [
+      {
+        name: "Author",
+        value: message.author
+          ? `${message.author.tag}\n<@${message.author.id}>`
+          : "Unknown",
+        inline: true,
+      },
+      { name: "Channel", value: `<#${message.channelId}>`, inline: true },
+    ];
+    const content = message.content?.trim() ?? "";
+    if (content) {
+      fields.push({
+        name: "Deleted Content",
+        value: truncateField(content),
+        inline: false,
+      });
+    }
+    const attachments = attachmentField(message);
+    if (attachments) fields.push(attachments);
 
     const embed = createLogEmbed("Message Deleted", 0xed4245)
-      .addFields(
-        { name: "Author", value: message.author ? `${message.author.tag}\n<@${message.author.id}>` : "Unknown", inline: true },
-        { name: "Channel", value: `<#${message.channelId}>`, inline: true },
-        { name: "Deleted Content", value: truncateField(content), inline: false }
-      )
+      .addFields(fields)
       .setFooter({ text: `Gods Bot • Message ID: ${message.id}` });
 
     if (message.author) {
       embed.setThumbnail(message.author.displayAvatarURL({ size: 256 }));
-    }
-
-    if (message.attachments?.size) {
-      embed.addFields({
-        name: "Attachments",
-        value: message.attachments.map((a) => a.url).join("\n"),
-        inline: false,
-      });
     }
 
     await this.send(message.guildId, "messages", embed);
@@ -602,30 +711,71 @@ export class LoggingService {
     if (!newMessage.guildId) return;
     if (newMessage.author?.bot) return;
 
-    const oldContent = oldMessage.partial
-      ? "*Previous content unavailable (not cached)*"
-      : oldMessage.content || "No text content (possibly an attachment-only message)";
+    const oldContent = messageTextSnapshot(oldMessage);
+    const newContent = messageTextSnapshot(newMessage);
+    const contentChanged =
+      oldContent !== undefined && newContent !== undefined
+        ? oldContent !== newContent
+        : oldContent === undefined &&
+          newContent !== undefined &&
+          newContent.length > 0;
+    const attachmentsChanged =
+      attachmentSignature(oldMessage) !== attachmentSignature(newMessage);
+    if (!contentChanged && !attachmentsChanged) return;
 
-    const newContent = newMessage.content
-      ? newMessage.content
-      : "No text content (possibly an attachment-only message)";
+    const fields: ActionDetail[] = [
+      {
+        name: "Author",
+        value: newMessage.author
+          ? `${newMessage.author.tag}\n<@${newMessage.author.id}>`
+          : "Unknown",
+        inline: true,
+      },
+      { name: "Channel", value: `<#${newMessage.channelId}>`, inline: true },
+    ];
 
-    if (oldContent === newContent) return;
+    if (contentChanged) {
+      fields.push(
+        {
+          name: "Previous Content",
+          value: truncateField(
+            oldContent === undefined ? "Unavailable (not cached)" : oldContent || "No text content",
+          ),
+          inline: false,
+        },
+        {
+          name: "Updated Content",
+          value: truncateField(
+            newContent === undefined ? "Unavailable (not cached)" : newContent || "No text content",
+          ),
+          inline: false,
+        },
+      );
+    }
+
+    if (attachmentsChanged) {
+      const previousAttachments = attachmentField(oldMessage, "Previous Attachments");
+      const updatedAttachments = attachmentField(newMessage, "Updated Attachments");
+      fields.push(
+        previousAttachments ?? {
+          name: "Previous Attachments",
+          value: "None",
+          inline: false,
+        },
+        updatedAttachments ?? {
+          name: "Updated Attachments",
+          value: "None",
+          inline: false,
+        },
+      );
+    } else {
+      const attachments = attachmentField(newMessage);
+      if (attachments) fields.push(attachments);
+    }
 
     const embed = createLogEmbed("Message Edited", 0x5865f2)
       .setURL(newMessage.url)
-      .addFields(
-        {
-          name: "Author",
-          value: newMessage.author
-            ? `${newMessage.author.tag}\n<@${newMessage.author.id}>`
-            : "Unknown",
-          inline: true,
-        },
-        { name: "Channel", value: `<#${newMessage.channelId}>`, inline: true },
-        { name: "Previous Content", value: truncateField(oldContent), inline: false },
-        { name: "Updated Content", value: truncateField(newContent), inline: false },
-      )
+      .addFields(fields)
       .setFooter({ text: `Gods Bot • Message ID: ${newMessage.id}` });
 
     const author = newMessage.author ?? oldMessage.author;

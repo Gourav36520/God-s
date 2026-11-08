@@ -19,6 +19,13 @@ import { logger } from "../lib/logger.js";
 export function registerLoggingHandlers(client: Client): void {
   // ─── Messages ─────────────────────────────────────────────────────────────
 
+  client.on(Events.MessageCreate, async (message: Message) => {
+    if (!message.guildId || message.author.bot || message.system) return;
+    await loggingService.logMessageCreate(message).catch((err) =>
+      logger.warn("Log error [messageCreate]:", err)
+    );
+  });
+
   client.on(Events.MessageDelete, async (message: Message | PartialMessage) => {
     if (!message.guildId) return;
     if (message.author?.bot) return;
