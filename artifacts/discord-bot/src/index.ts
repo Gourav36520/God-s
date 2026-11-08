@@ -75,6 +75,11 @@ async function loginWithFallback(
       ],
     });
 
+    // Install listeners before connecting so READY and interactions cannot race
+    // ahead of command, backup, or recovery handler registration.
+    await loadEvents(client);
+    await loadWelcomeGoodbyeEvents(client);
+
     // Confirm the ACTUAL bitfield discord.js constructed from the intent array
     const actualBitfield = (client.options.intents as IntentsBitField).bitfield;
     const gmBit = GatewayIntentBits.GuildMembers; // 2
@@ -467,9 +472,7 @@ async function main(): Promise<void> {
     );
   }
 
-  await loadEvents(client);
   await securityManager.init(client);
-  await loadWelcomeGoodbyeEvents(client);
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
 

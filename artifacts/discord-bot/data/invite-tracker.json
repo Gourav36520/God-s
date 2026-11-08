@@ -12,7 +12,7 @@
           "inviterId": "1502665998254342246"
         },
         "Uf59QABxZ": {
-          "uses": 1,
+          "uses": 2,
           "inviterId": "1563848865432473636"
         },
         "VKxED7KqU": {
@@ -25,6 +25,10 @@
         },
         "uWhuhYaJ5": {
           "uses": 1,
+          "inviterId": "1563848865432473636"
+        },
+        "wSQjXGjffy": {
+          "uses": 0,
           "inviterId": "1563848865432473636"
         }
       },
@@ -47,7 +51,16 @@
       }
     },
     "1565321329757126778": {
-      "invites": {},
+      "invites": {
+        "2YX6Ey7Yhy": {
+          "uses": 0,
+          "inviterId": "1550935197241966762"
+        },
+        "R2aa8MNrk": {
+          "uses": 1,
+          "inviterId": "1563848865432473636"
+        }
+      },
       "inviters": {},
       "joins": {}
     }

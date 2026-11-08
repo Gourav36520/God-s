@@ -14,8 +14,6 @@ import {
   deleteExpiredBackupSessions,
   getBackupInteractionSession,
   getKickedMemberRecovery,
-  listArchivedMessageChannels,
-  listArchivedMessages,
   listBackupRecords,
   listKickedMemberRecoveries,
   setKickedMemberInvite,
@@ -24,8 +22,13 @@ import {
 } from "@workspace/db";
 import { getBackupConfig, setBackupConfig } from "./backup-service.js";
 import {
+  listAuditRecoveryCandidates,
+  restoreAuditLogResources,
+  validAuditRecoveryCandidates,
+} from "./audit-recovery.js";
+import { createAndDeliverKickInvite } from "./kick-recovery.js";
+import {
   previewBackup,
-  restoreArchivedChannelMessages,
   restoreServerBackup,
   type RestoreScope,
 } from "./restore-service.js";
@@ -34,12 +37,19 @@ import { logger } from "../lib/logger.js";
 
 type ComponentInteraction = ButtonInteraction | StringSelectMenuInteraction;
 
-const ALL_SCOPES: RestoreScope[] = [
+const BACKUP_LOAD_SCOPES: RestoreScope[] = [
   "settings",
   "roles",
   "channels",
   "emojis",
   "messages",
+  "kicked-members",
+];
+export const RECOVERY_BACKUP_SCOPES: RestoreScope[] = [
+  "settings",
+  "roles",
+  "channels",
+  "emojis",
   "kicked-members",
 ];
 const activeManualRestores = new Set<string>();
@@ -96,7 +106,6 @@ function scopesMenu(sessionId: string, selected: string[]) {
     ["roles", "Roles"],
     ["channels", "Channels and permissions"],
     ["emojis", "Emojis"],
-    ["messages", "Archived messages"],
     ["kicked-members", "Kicked-member records"],
   ] as const;
   const menu = new StringSelectMenuBuilder()
@@ -197,38 +206,50 @@ async function handleTargetSelect(
     return;
   }
 
-  if (target === "archive") {
-    let channels;
-    try {
-      channels = await listArchivedMessageChannels(interaction.guild.id);
-    } catch {
+  if (target === "audit") {
+    const result = await listAuditRecoveryCandidates(interaction.guild);
+    if (!result.ok) {
       await interaction.update({
-        content: "Could not read the message archive. Check the database connection and try again.",
+        content: result.reason,
         components: [],
       });
       return;
     }
-    if (!channels.length) {
+    if (!result.candidates.length) {
       await interaction.update({
-        content: "There are no archived messages available for this server.",
+        content: [
+          "No recoverable deleted channels or roles were found in the available audit logs.",
+          ...result.warnings,
+        ].join("\n"),
         components: [],
       });
       return;
     }
     await updateBackupInteractionSession(interaction.guild.id, sessionId, {
-      step: "archive-channel",
+      step: "audit-list",
+      auditWarnings: result.warnings,
     });
     const menu = new StringSelectMenuBuilder()
-      .setCustomId(`gods:recover:archive:${sessionId}`)
-      .setPlaceholder("Choose a channel archive")
+      .setCustomId(`gods:recover:audit:${sessionId}`)
+      .setPlaceholder("Select deleted channels or roles")
+      .setMinValues(1)
+      .setMaxValues(result.candidates.length)
       .addOptions(
-        channels.map((channel) => ({
-          label: channel.channelName.slice(0, 100),
-          value: channel.channelId,
-          description: `${channel.messageCount} archived message(s)`,
+        result.candidates.map((candidate) => ({
+          label: `${candidate.data.kind === "role" ? "Role" : "Channel"} · ${candidate.data.name}`.slice(0, 100),
+          value: candidate.auditEntryId,
+          description: `Deleted ${candidate.deletedAt.slice(0, 16)} UTC${candidate.executorId ? ` · executor ${candidate.executorId}` : " · executor unavailable"}`.slice(0, 100),
         })),
       );
-    await interaction.update(rows("Select the channel whose saved messages you want to recover.", menu));
+    await interaction.update(
+      rows(
+        [
+          "Select audit-log entries to preview. This recovery does not require a saved backup.",
+          ...result.warnings,
+        ].join("\n"),
+        menu,
+      ),
+    );
     return;
   }
 
@@ -282,7 +303,7 @@ async function handleBackupSelect(
   await updateBackupInteractionSession(interaction.guild.id, sessionId, {
     step: "scopes",
     backupId,
-    scopes: ALL_SCOPES,
+    scopes: RECOVERY_BACKUP_SCOPES,
   });
   const snapshot = preview.preview.snapshot;
   await interaction.update({
@@ -293,7 +314,77 @@ async function handleBackupSelect(
       `${preview.preview.unavailableAttachments} attachment(s) have no stored file.`,
       "Select one or more data types, then preview the changes before confirming.",
     ].join("\n"),
-    components: scopesMenu(sessionId, ALL_SCOPES),
+    components: scopesMenu(sessionId, RECOVERY_BACKUP_SCOPES),
+  });
+}
+
+async function handleAuditSelect(
+  interaction: StringSelectMenuInteraction,
+  sessionId: string,
+): Promise<void> {
+  const session = await authorizedSession(interaction, sessionId);
+  if (!session || !interaction.guild) return;
+  const result = await listAuditRecoveryCandidates(interaction.guild);
+  if (!result.ok) {
+    await interaction.update({ content: result.reason, components: [] });
+    return;
+  }
+  const selectedIds = new Set(interaction.values);
+  const selected = result.candidates.filter((candidate) =>
+    selectedIds.has(candidate.auditEntryId),
+  );
+  if (!selected.length || selected.length !== selectedIds.size) {
+    await interaction.update({
+      content: "One or more audit entries are no longer available. Run `/recover` again.",
+      components: [],
+    });
+    return;
+  }
+  await updateBackupInteractionSession(interaction.guild.id, sessionId, {
+    step: "audit-preview",
+    auditCandidates: selected,
+    auditWarnings: result.warnings,
+  });
+
+  const roleCount = selected.filter((candidate) => candidate.data.kind === "role").length;
+  const channelCount = selected.length - roleCount;
+  const details = selected.map((candidate) => {
+    const kind = candidate.data.kind === "role" ? "Role" : "Channel";
+    const executor = candidate.executorId
+      ? `executor ID \`${candidate.executorId}\``
+      : "executor not recorded";
+    const unavailable =
+      candidate.data.warnings.length > 0
+        ? `; ${candidate.data.warnings.join("; ")}`
+        : "";
+    return `• ${kind} **${candidate.data.name}** · deleted <t:${Math.floor(new Date(candidate.deletedAt).getTime() / 1000)}:f> · ${executor}${unavailable}`;
+  });
+  const embed = new EmbedBuilder()
+    .setTitle("Audit-log recovery preview")
+    .setDescription(
+      [
+        `${roleCount} role(s) · ${channelCount} channel(s) selected.`,
+        ...details,
+        ...result.warnings.map((warning) => `Note: ${warning}`),
+        "Only new resources will be created. Existing roles and channels will not be changed or deleted.",
+        "Discord may not retain every original setting. Review the report after confirmation.",
+      ]
+        .join("\n")
+        .slice(0, 4000),
+    );
+  await interaction.update({
+    content: "",
+    embeds: [embed],
+    components: recoveryButtons([
+      new ButtonBuilder()
+        .setCustomId(`gods:recover:confirm-audit:${sessionId}`)
+        .setLabel("Confirm recovery")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`gods:recover:cancel:${sessionId}`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ]),
   });
 }
 
@@ -304,7 +395,7 @@ async function handleScopeSelect(
   const session = await authorizedSession(interaction, sessionId);
   if (!session || !interaction.guild) return;
   const valid = interaction.values.filter((value): value is RestoreScope =>
-    ALL_SCOPES.includes(value as RestoreScope),
+    RECOVERY_BACKUP_SCOPES.includes(value as RestoreScope),
   );
   if (!valid.length) {
     await deny(interaction, "Select at least one recovery item.");
@@ -330,7 +421,7 @@ async function showRestorePreview(
   const backupId = String(session.state.backupId ?? "");
   const scopes = Array.isArray(session.state.scopes)
     ? session.state.scopes.filter((value): value is RestoreScope =>
-        ALL_SCOPES.includes(value as RestoreScope),
+        RECOVERY_BACKUP_SCOPES.includes(value as RestoreScope),
       )
     : [];
   if (!backupId || !scopes.length) {
@@ -368,49 +459,6 @@ async function showRestorePreview(
       new ButtonBuilder()
         .setCustomId(`gods:recover:confirm-backup:${sessionId}`)
         .setLabel("Confirm recovery")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`gods:recover:cancel:${sessionId}`)
-        .setLabel("Cancel")
-        .setStyle(ButtonStyle.Secondary),
-    ]),
-  });
-}
-
-async function handleArchiveSelect(
-  interaction: StringSelectMenuInteraction,
-  sessionId: string,
-): Promise<void> {
-  const session = await authorizedSession(interaction, sessionId);
-  if (!session || !interaction.guild) return;
-  const channelId = interaction.values[0];
-  const messages = await listArchivedMessages(interaction.guild.id, channelId);
-  if (!messages.length) {
-    await interaction.update({ content: "That channel no longer has archived messages.", components: [] });
-    return;
-  }
-  const channelName = messages[0]?.channelName ?? channelId;
-  await updateBackupInteractionSession(interaction.guild.id, sessionId, {
-    step: "confirm-archive",
-    channelId,
-  });
-  const embed = new EmbedBuilder()
-    .setTitle("Archived message recovery preview")
-    .setDescription(
-      [
-        `Channel: **#${channelName}**`,
-        `Messages available: **${messages.length}**`,
-        `Deleted messages observed: ${messages.filter((message) => message.deletedAt).length}`,
-        "Recovered messages will be reposted with original author/time as metadata; original Discord IDs, timestamps, and reply links cannot be recreated.",
-      ].join("\n"),
-    );
-  await interaction.update({
-    content: "",
-    embeds: [embed],
-    components: recoveryButtons([
-      new ButtonBuilder()
-        .setCustomId(`gods:recover:confirm-archive:${sessionId}`)
-        .setLabel("Confirm message recovery")
         .setStyle(ButtonStyle.Danger),
       new ButtonBuilder()
         .setCustomId(`gods:recover:cancel:${sessionId}`)
@@ -483,7 +531,7 @@ async function completeBackupRestore(
   const backupId = String(session.state.backupId ?? "");
   const scopes = Array.isArray(session.state.scopes)
     ? session.state.scopes.filter((value): value is RestoreScope =>
-        ALL_SCOPES.includes(value as RestoreScope),
+        RECOVERY_BACKUP_SCOPES.includes(value as RestoreScope),
       )
     : [];
   const claimed = await claimBackupInteractionSession(
@@ -514,22 +562,26 @@ async function completeBackupRestore(
   });
 }
 
-async function completeArchiveRestore(
+async function completeAuditRecovery(
   interaction: ButtonInteraction,
   sessionId: string,
 ): Promise<void> {
   const session = await authorizedSession(interaction, sessionId);
   if (!session || !interaction.guild) return;
-  if (session.state.step !== "confirm-archive") {
+  if (session.state.step !== "audit-preview") {
     await deny(interaction, "This confirmation is no longer active.");
     return;
   }
-  const channelId = String(session.state.channelId ?? "");
+  const candidates = validAuditRecoveryCandidates(session.state.auditCandidates);
+  if (!candidates.length) {
+    await deny(interaction, "The audit recovery selection is empty. Run `/recover` again.");
+    return;
+  }
   const claimed = await claimBackupInteractionSession(
     interaction.guild.id,
     sessionId,
     interaction.user.id,
-    "confirm-archive",
+    "audit-preview",
     { ...session.state, step: "processing" },
   );
   if (!claimed) {
@@ -537,13 +589,13 @@ async function completeArchiveRestore(
     return;
   }
   await interaction.deferUpdate();
-  const report = await restoreArchivedChannelMessages(interaction.guild, channelId);
+  const report = await restoreAuditLogResources(interaction.guild, candidates);
   await updateBackupInteractionSession(interaction.guild.id, sessionId, {
     ...session.state,
     step: "complete",
   }).catch(() => undefined);
   await interaction.editReply({
-    content: `Archived-message recovery report\n${reportText(report)}`,
+    content: `Audit-log recovery report\n${reportText(report)}`,
     embeds: [],
     components: [],
   });
@@ -556,6 +608,7 @@ async function completeKickRecovery(
 ): Promise<void> {
   const session = await authorizedSession(interaction, sessionId);
   if (!session || !interaction.guild) return;
+  const guildName = interaction.guild.name;
   if (session.state.step !== "kick-preview") {
     await deny(interaction, "This confirmation is no longer active.");
     return;
@@ -613,60 +666,58 @@ async function completeKickRecovery(
               ?.has(PermissionFlagsBits.ViewChannel) &&
             channel
               .permissionsFor(botMember)
-              ?.has(PermissionFlagsBits.CreateInstantInvite),
+              ?.has([
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.CreateInstantInvite,
+              ]),
         )
       : null;
     if (!inviteChannel || !("createInvite" in inviteChannel)) {
-      throw new Error("The bot needs Create Instant Invite in a text channel.");
+      throw new Error(
+        "The bot needs View Channel and Create Instant Invite in a channel visible to server members.",
+      );
     }
-    const invite = await (inviteChannel as never as {
-      createInvite: (options: Record<string, unknown>) => Promise<{ code: string }>;
-    }).createInvite({
-      maxAge: 7 * 24 * 60 * 60,
-      maxUses: 1,
-      unique: true,
-      reason: "Administrator-confirmed kicked-member recovery",
-    });
-    inviteCode = invite.code;
-    await setKickedMemberInvite(
-      interaction.guild.id,
-      kick.id,
-      invite.code,
-      "created",
-      false,
-    );
-    let status = "provided_to_admin";
-    let deliveredToMember = false;
-    if (delivery === "dm") {
-      try {
+    const invitation = await createAndDeliverKickInvite({
+      delivery,
+      createInvite: async () => {
+        const invite = await (inviteChannel as never as {
+          createInvite: (options: Record<string, unknown>) => Promise<{ code: string }>;
+        }).createInvite({
+          maxAge: 7 * 24 * 60 * 60,
+          maxUses: 1,
+          unique: true,
+          reason: "Administrator-confirmed kicked-member recovery",
+        });
+        inviteCode = invite.code;
+        return invite;
+      },
+      sendDirectMessage: async (inviteUrl) => {
         const user = await interaction.client.users.fetch(kick.memberId);
         await user.send(
-          `You have a one-use invitation to rejoin ${interaction.guild.name}: https://discord.gg/${invite.code}\n` +
+          `You have a one-use invitation to rejoin ${guildName}: ${inviteUrl}\n` +
             "This invitation does not remove any existing server ban.",
         );
-        status = "dm_delivered";
-        deliveredToMember = true;
-      } catch {
-        status = "dm_failed";
-      }
-    }
-    await setKickedMemberInvite(
-      interaction.guild.id,
-      kick.id,
-      invite.code,
-      status,
-      deliveredToMember,
-    );
+      },
+      saveInvite: (code, status, delivered) =>
+        setKickedMemberInvite(
+          interaction.guild!.id,
+          kick.id,
+          code,
+          status,
+          delivered,
+        ),
+    });
+    inviteCode = invitation.code;
     await updateBackupInteractionSession(interaction.guild.id, sessionId, {
       ...session.state,
       step: "complete",
     }).catch(() => undefined);
     const result =
       delivery === "admin"
-        ? `Use this one-use invite after confirming it is appropriate: https://discord.gg/${invite.code}`
-        : deliveredToMember
+        ? `Use this one-use invite after confirming it is appropriate: https://discord.gg/${invitation.code}`
+        : invitation.deliveredToMember
           ? "The invite was sent by DM."
-          : `DM delivery failed. Use this one-use invite after confirming it is appropriate: https://discord.gg/${invite.code}`;
+          : `DM delivery failed. Use this one-use invite after confirming it is appropriate: https://discord.gg/${invitation.code}`;
     await interaction.editReply({
       content:
         `${result}\n` +
@@ -758,11 +809,11 @@ async function handleBackupLoadConfirmation(
     }
     const scopes =
       scope === "full"
-        ? ALL_SCOPES
+        ? BACKUP_LOAD_SCOPES
         : scope === "structure"
           ? (["settings", "roles", "channels", "emojis"] as RestoreScope[])
           : [scope as RestoreScope];
-    if (!scopes.every((value) => ALL_SCOPES.includes(value))) {
+    if (!scopes.every((value) => BACKUP_LOAD_SCOPES.includes(value))) {
       await deny(interaction, "The selected restore scope is invalid.");
       return;
     }
@@ -801,8 +852,8 @@ async function handleRecoveryButton(
   if (action === "confirm-backup") {
     return completeBackupRestore(interaction, sessionId);
   }
-  if (action === "confirm-archive") {
-    return completeArchiveRestore(interaction, sessionId);
+  if (action === "confirm-audit") {
+    return completeAuditRecovery(interaction, sessionId);
   }
   if (action === "kick-dm") {
     return completeKickRecovery(interaction, sessionId, "dm");
@@ -855,10 +906,10 @@ export async function handleBackupComponent(
         await handleTargetSelect(interaction, sessionId);
       } else if (action === "backup") {
         await handleBackupSelect(interaction, sessionId);
+      } else if (action === "audit") {
+        await handleAuditSelect(interaction, sessionId);
       } else if (action === "scopes") {
         await handleScopeSelect(interaction, sessionId);
-      } else if (action === "archive") {
-        await handleArchiveSelect(interaction, sessionId);
       } else if (action === "kick") {
         await handleKickSelect(interaction, sessionId);
       } else {

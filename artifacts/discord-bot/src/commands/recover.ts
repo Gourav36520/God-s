@@ -11,8 +11,26 @@ import type { Command } from "../lib/registry.js";
 
 export const data = new SlashCommandBuilder()
   .setName("recover")
-  .setDescription("Open the guided server, message, or kicked-member recovery flow.")
+  .setDescription("Open saved-backup, audit-log, or kicked-member recovery.")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+export const recoveryTargets = [
+  {
+    label: "Restore a saved server backup",
+    value: "backup",
+    description: "Preview and selectively restore saved server data.",
+  },
+  {
+    label: "Recover deleted channels or roles",
+    value: "audit",
+    description: "Use available Discord audit-log details without a saved backup.",
+  },
+  {
+    label: "Recover a kicked member",
+    value: "kicks",
+    description: "Review kick evidence and provide an invite after confirmation.",
+  },
+] as const;
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
@@ -44,21 +62,11 @@ export async function execute(
     .setCustomId(`gods:recover:target:${id}`)
     .setPlaceholder("Choose what to recover")
     .addOptions(
-      {
-        label: "Restore a saved server backup",
-        value: "backup",
-        description: "Preview and selectively restore saved data.",
-      },
-      {
-        label: "Recover archived messages",
-        value: "archive",
-        description: "Repost messages saved by the continuous archive.",
-      },
-      {
-        label: "Recover a kicked member",
-        value: "kicks",
-        description: "Review evidence and provide an invite after confirmation.",
-      },
+      recoveryTargets.map(({ label, value, description }) => ({
+        label,
+        value,
+        description,
+      })),
     );
   await interaction.reply({
     content:

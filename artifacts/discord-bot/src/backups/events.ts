@@ -19,7 +19,9 @@ import {
 import { logger } from "../lib/logger.js";
 import { archiveDeletedMessage, archiveDiscordMessage, getBackupConfig } from "./backup-service.js";
 
-const AUDIT_CORRELATION_WINDOW_MS = 20_000;
+const AUDIT_LOOKBACK_MS = 15_000;
+const AUDIT_FUTURE_SKEW_MS = 5_000;
+const AUDIT_LOOKUP_DELAYS_MS = [1_000, 1_250, 1_500] as const;
 
 function logFailure(label: string, error: unknown): void {
   logger.warn(
@@ -105,20 +107,19 @@ async function onMessageDelete(
   );
 }
 
-function isRecentAuditEntry(
-  entry: { target?: unknown; createdTimestamp: number },
+export function isRecentRemovalAuditMatch(
+  entry: { targetId: string | null; createdTimestamp: number },
   memberId: string,
+  observedAt: number,
   now: number,
 ): boolean {
-  const target = entry.target;
-  const targetId =
-    target && typeof target === "object" && "id" in target
-      ? (target as { id?: unknown }).id
-      : null;
   return (
-    targetId === memberId &&
-    now >= entry.createdTimestamp &&
-    now - entry.createdTimestamp <= AUDIT_CORRELATION_WINDOW_MS
+    entry.targetId === memberId &&
+    entry.createdTimestamp >= observedAt - AUDIT_LOOKBACK_MS &&
+    entry.createdTimestamp <= Math.min(
+      observedAt + AUDIT_FUTURE_SKEW_MS,
+      now + AUDIT_FUTURE_SKEW_MS,
+    )
   );
 }
 
@@ -137,11 +138,76 @@ export function classifyMemberRemoval(
 async function recentAuditMatches(
   member: GuildMember,
   type: AuditLogEvent,
+  observedAt: number,
 ): Promise<GuildAuditLogsEntry[]> {
   const result = await member.guild.fetchAuditLogs({ type, limit: 10 });
   return [...result.entries.values()].filter((entry) =>
-    isRecentAuditEntry(entry, member.id, Date.now()),
+    isRecentRemovalAuditMatch(
+      entry,
+      member.id,
+      observedAt,
+      Date.now(),
+    ),
   );
+}
+
+async function correlateMemberRemoval(
+  member: GuildMember,
+  observedAt: Date,
+): Promise<{
+  classification: MemberRemovalClassification;
+  matchedEntry: GuildAuditLogsEntry | null;
+  banEntries: GuildAuditLogsEntry[];
+  kickEntries: GuildAuditLogsEntry[];
+  auditLookupAvailable: boolean;
+  attempts: number;
+  lookupFailure: string | null;
+}> {
+  const bans = new Map<string, GuildAuditLogsEntry>();
+  const kicks = new Map<string, GuildAuditLogsEntry>();
+  let auditLookupAvailable = true;
+  let lookupFailure: string | null = null;
+  let attempts = 0;
+
+  for (const delayMs of AUDIT_LOOKUP_DELAYS_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    attempts += 1;
+    try {
+      const [banEntries, kickEntries] = await Promise.all([
+        recentAuditMatches(member, AuditLogEvent.MemberBanAdd, observedAt.getTime()),
+        recentAuditMatches(member, AuditLogEvent.MemberKick, observedAt.getTime()),
+      ]);
+      for (const entry of banEntries) bans.set(entry.id, entry);
+      for (const entry of kickEntries) kicks.set(entry.id, entry);
+    } catch (error) {
+      auditLookupAvailable = false;
+      lookupFailure =
+        error instanceof Error
+          ? error.message.slice(0, 220)
+          : "Audit-log lookup failed.";
+    }
+  }
+
+  const banEntries = [...bans.values()];
+  const kickEntries = [...kicks.values()];
+  const classification = auditLookupAvailable
+    ? classifyMemberRemoval(banEntries.length, kickEntries.length)
+    : "unknown";
+  const matchedEntry =
+    classification === "ban"
+      ? banEntries[0] ?? null
+      : classification === "kick"
+        ? kickEntries[0] ?? null
+        : null;
+  return {
+    classification,
+    matchedEntry,
+    banEntries,
+    kickEntries,
+    auditLookupAvailable,
+    attempts,
+    lookupFailure,
+  };
 }
 
 async function onMemberRemove(member: GuildMember): Promise<void> {
@@ -149,7 +215,6 @@ async function onMemberRemove(member: GuildMember): Promise<void> {
   if (!config?.kickTrackingOn) return;
 
   const observedAt = new Date();
-  await new Promise<void>((resolve) => setTimeout(resolve, 1_200));
   const botMember =
     member.guild.members.me ??
     (await member.guild.members.fetchMe().catch(() => null));
@@ -173,35 +238,34 @@ async function onMemberRemove(member: GuildMember): Promise<void> {
   }
 
   try {
-    const [banEntries, kickEntries] = await Promise.all([
-      recentAuditMatches(member, AuditLogEvent.MemberBanAdd),
-      recentAuditMatches(member, AuditLogEvent.MemberKick),
-    ]);
-    const classification = classifyMemberRemoval(
-      banEntries.length,
-      kickEntries.length,
-    );
-    const matchedEntry =
-      classification === "ban"
-        ? banEntries[0]
-        : classification === "kick"
-          ? kickEntries[0]
-          : null;
-    const executorId = matchedEntry?.executor?.id ?? null;
+    const correlation = await correlateMemberRemoval(member, observedAt);
+    const {
+      classification,
+      matchedEntry,
+      banEntries,
+      kickEntries,
+      auditLookupAvailable,
+      attempts,
+      lookupFailure,
+    } = correlation;
+    const executorId = matchedEntry?.executorId ?? matchedEntry?.executor?.id ?? null;
     const removedAt = matchedEntry
       ? new Date(matchedEntry.createdTimestamp)
       : observedAt;
     const evidence = {
       classification,
-      auditLookupAvailable: true,
+      auditLookupAvailable,
+      auditLookupAttempts: attempts,
       matchingBanAuditEntryIds: banEntries.map((entry) => entry.id),
       matchingKickAuditEntryIds: kickEntries.map((entry) => entry.id),
       executorKnown: executorId !== null,
       note:
         classification === "leave"
-          ? "No matching ban or kick audit entry was found for this removal."
+          ? "No matching ban or kick audit entry was found after repeated audit-log checks."
           : classification === "unknown"
-            ? "Audit evidence was ambiguous; no action or executor was inferred."
+            ? lookupFailure
+              ? `Audit logs were not consistently available: ${lookupFailure}`
+              : "Audit evidence was ambiguous; no action or executor was inferred."
             : null,
     };
     await insertMemberRemovalEvent({
@@ -244,7 +308,7 @@ async function onMemberRemove(member: GuildMember): Promise<void> {
       executorId: null,
       evidence: {
         classification: "unknown",
-          auditLookupAvailable: false,
+        auditLookupAvailable: false,
         reason:
           error instanceof Error
             ? error.message.slice(0, 250)
