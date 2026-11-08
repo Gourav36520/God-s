@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AuditLogEvent,
   Collection,
   EmbedBuilder,
 } from "discord.js";
 import type {
   Channel,
   Client,
+  GuildAuditLogsEntry,
   GuildMember,
   Message,
   User,
@@ -165,6 +167,45 @@ test("moderation cards use heat severity and retain target, moderator, reason, a
   assert.equal(card.fields?.find((field) => field.name === "Case ID")?.value, "42");
   assert.match(card.fields?.find((field) => field.name === "Reason")?.value ?? "", /Repeated spam/);
   assert.match(card.fields?.find((field) => field.name === "Moderator")?.value ?? "", /moderator-1/);
+});
+
+test("server mute and deafen audit changes produce the four expected actions", async () => {
+  const { service, sent, users } = createHarness();
+  const target = makeUser("voice-target", "nova", "Nova", "avatar");
+  users.set(target.id, target);
+  const transitions = [
+    { key: "mute", old: false, new: true, action: "Server Mute" },
+    { key: "mute", old: true, new: false, action: "Server Unmute" },
+    { key: "deaf", old: false, new: true, action: "Server Deafen" },
+    { key: "deaf", old: true, new: false, action: "Server Undeafen" },
+  ];
+
+  for (const transition of transitions) {
+    const entry = {
+      action: AuditLogEvent.MemberUpdate,
+      executor: { id: "moderator-1", tag: "moderator#0001" },
+      target,
+      targetId: target.id,
+      reason: "Voice moderation",
+      changes: [{
+        key: transition.key,
+        old: transition.old,
+        new: transition.new,
+      }],
+    } as unknown as GuildAuditLogsEntry;
+
+    await service.logAuditAction("guild-1", entry);
+  }
+
+  assert.equal(sent.length, transitions.length);
+  assert.deepEqual(
+    sent.map(
+      ({ embed }) =>
+        embed.toJSON().fields?.find((field) => field.name === "Action")?.value,
+    ),
+    transitions.map(({ action }) => action),
+  );
+  assert.ok(sent.every(({ embed }) => embed.toJSON().color === 0xfee75c));
 });
 
 test("a moderation case enriches an earlier duplicate security action card", async () => {
