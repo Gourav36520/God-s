@@ -12,12 +12,136 @@ import {
   Role,
   TextChannel,
   User,
+  VoiceState,
 } from "discord.js";
 import type { Client } from "discord.js";
 import type { SecurityManager } from "../security/SecurityManager.js";
 import type { LogCategory } from "./types.js";
 import { logger } from "../lib/logger.js";
 import { createGodsEmbed } from "../commands/ui.js";
+import {
+  actionCardColor,
+  moderationActionKeys,
+  normalizeSeverity,
+  type LogSeverity,
+} from "./presentation.js";
+
+type ActionDetail = { name: string; value: string; inline?: boolean };
+
+type ActionLogSource = "audit" | "moderation" | "security";
+
+interface RecentActionLog {
+  source: ActionLogSource;
+  expiresAt: number;
+  pending: boolean;
+  message?: Message;
+  replacement?: EmbedBuilder;
+}
+
+interface ActionCardOptions {
+  title: string;
+  targetId: string;
+  targetLabel: string;
+  targetKind?: "user" | "other";
+  targetAvatarUrl?: string | null;
+  moderatorId?: string | null;
+  moderatorLabel?: string | null;
+  action: string;
+  reason?: string | null;
+  severity?: unknown;
+  details?: ActionDetail[];
+  caseId?: number | string | null;
+}
+
+function truncateField(value: string, maxLength = 1_024): string {
+  return value.length > maxLength ? value.slice(0, maxLength - 1) + "…" : value;
+}
+
+function severityFromDetails(details: ActionDetail[] | undefined): LogSeverity | null {
+  for (const detail of details ?? []) {
+    if (!/severity|heat/i.test(detail.name)) continue;
+    const match = detail.value.match(/\b(low|medium|high|critical)\b/i);
+    const severity = normalizeSeverity(match?.[1]);
+    if (severity) return severity;
+  }
+  return null;
+}
+
+function createLogEmbed(title: string, color: number): EmbedBuilder {
+  return createGodsEmbed({ title, description: " ", tone: "info" })
+    .setDescription(null)
+    .setColor(color);
+}
+
+function createActionCard(options: ActionCardOptions): EmbedBuilder {
+  const severity = normalizeSeverity(options.severity);
+  const isUser = options.targetKind !== "other";
+  const targetName = isUser ? "User" : "Target";
+  const targetMention =
+    isUser && options.targetId !== "Unknown" ? `<@${options.targetId}>` : null;
+  const targetLabel =
+    options.targetLabel && !options.targetLabel.includes(targetMention ?? "\0")
+      ? `${options.targetLabel}${targetMention ? `\n${targetMention}` : ""}`
+      : options.targetLabel || targetMention || "Unknown";
+  const fields = [
+    { name: targetName, value: targetLabel, inline: true },
+    {
+      name: isUser ? "User ID" : "Target ID",
+      value: options.targetId || "Unknown",
+      inline: true,
+    },
+    { name: "Action", value: truncateField(options.action || "Unknown action"), inline: true },
+    ...(options.moderatorId
+      ? [{
+          name: "Moderator",
+          value: options.moderatorLabel
+            ? `${options.moderatorLabel}\n<@${options.moderatorId}>`
+            : `<@${options.moderatorId}>`,
+          inline: true,
+        }]
+      : []),
+    ...(severity
+      ? [{ name: "Severity", value: severity.toUpperCase(), inline: true }]
+      : []),
+    {
+      name: "Reason",
+      value: truncateField(options.reason?.trim() || "No reason provided"),
+      inline: false,
+    },
+    ...(options.details ?? [])
+      .filter((field) => field.name.trim() && field.value.trim())
+      .map((field) => ({ ...field, value: truncateField(field.value) })),
+    ...(options.caseId !== null && options.caseId !== undefined
+      ? [{ name: "Case ID", value: String(options.caseId), inline: true }]
+      : []),
+  ];
+  const embed = createLogEmbed(options.title, actionCardColor(severity))
+    .addFields(fields);
+
+  if (options.targetAvatarUrl) embed.setThumbnail(options.targetAvatarUrl);
+  return embed;
+}
+
+function createProfileCard(
+  title: string,
+  user: User,
+  changes: ActionDetail | ActionDetail[],
+  beforeImageUrl?: string,
+): EmbedBuilder {
+  const profileChanges = Array.isArray(changes) ? changes : [changes];
+  const embed = createLogEmbed(title, 0x5865f2)
+    .setThumbnail(user.displayAvatarURL({ size: 256 }))
+    .addFields(
+      { name: "User", value: `${user.tag}\n<@${user.id}>`, inline: true },
+      { name: "User ID", value: user.id, inline: true },
+      ...profileChanges.map((change) => ({
+        ...change,
+        value: truncateField(change.value),
+      })),
+    );
+  if (beforeImageUrl) embed.setImage(beforeImageUrl);
+  return embed;
+}
 
 function formatPermissions(perms: string[]): string {
   if (perms.length === 0) return "None";
@@ -29,6 +153,7 @@ function formatPermissions(perms: string[]): string {
 export class LoggingService {
   private client: Client | null = null;
   private manager: SecurityManager | null = null;
+  private readonly recentActionLogs = new Map<string, RecentActionLog>();
 
   init(client: Client, manager: SecurityManager): void {
     this.client = client;
@@ -57,25 +182,134 @@ export class LoggingService {
     );
   }
 
-  private async send(guildId: string, category: LogCategory, embed: EmbedBuilder): Promise<void> {
-    if (!this.client) return;
-    if (!this.isEnabled(guildId, category)) return;
+  private async send(
+    guildId: string,
+    category: LogCategory,
+    embed: EmbedBuilder,
+  ): Promise<Message | null> {
+    if (!this.client) return null;
+    if (!this.isEnabled(guildId, category)) return null;
 
     const channelId = this.getChannelId(guildId, category);
     if (!channelId) {
       logger.warn(
         `LoggingService: no channel configured for category "${category}" in guild ${guildId} — skipping log`
       );
-      return;
+      return null;
     }
 
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (channel?.isTextBased()) {
-        await (channel as TextChannel).send({ embeds: [embed] });
+        return await (channel as TextChannel).send({ embeds: [embed] });
       }
     } catch (err) {
       logger.warn(`LoggingService: failed to send ${category} log to ${channelId}:`, err);
+    }
+    return null;
+  }
+
+  private async sendAction(
+    guildId: string,
+    category: LogCategory,
+    embed: EmbedBuilder,
+    targetId: string,
+    action: string,
+    source: ActionLogSource,
+  ): Promise<void> {
+    const actionKeys = moderationActionKeys(action);
+    if (targetId === "Unknown" || actionKeys.length === 0) {
+      await this.send(guildId, category, embed);
+      return;
+    }
+    const configuredChannelId = this.getChannelId(guildId, category);
+    if (!this.isEnabled(guildId, category) || !configuredChannelId) {
+      await this.send(guildId, category, embed);
+      return;
+    }
+
+    const now = Date.now();
+    for (const [key, record] of this.recentActionLogs) {
+      if (record.expiresAt <= now) this.recentActionLogs.delete(key);
+    }
+
+    const keys = actionKeys.map(
+      (actionKey) =>
+        `${guildId}:${configuredChannelId}:${targetId}:${actionKey}`,
+    );
+    const previous = keys
+      .map((key) => this.recentActionLogs.get(key))
+      .find((record): record is RecentActionLog => Boolean(record));
+
+    if (previous && previous.source !== source) {
+      if (source !== "moderation") return;
+
+      previous.source = source;
+      previous.expiresAt = now + 5_000;
+      previous.replacement = embed;
+      if (previous.message) {
+        try {
+          await previous.message.edit({ embeds: [embed] });
+          previous.replacement = undefined;
+        } catch (err) {
+          logger.warn("LoggingService: failed to update a duplicate action log:", err);
+        }
+        return;
+      }
+      if (previous.pending) return;
+
+      previous.pending = true;
+      const message = await this.send(guildId, category, embed);
+      previous.pending = false;
+      previous.message = message ?? undefined;
+      previous.replacement = undefined;
+      return;
+    }
+
+    const record: RecentActionLog = {
+      source,
+      expiresAt: now + 5_000,
+      pending: true,
+    };
+    for (const key of keys) this.recentActionLogs.set(key, record);
+
+    const message = await this.send(guildId, category, embed);
+    record.pending = false;
+    record.message = message ?? undefined;
+    if (!record.replacement) return;
+
+    if (message) {
+      try {
+        await message.edit({ embeds: [record.replacement] });
+      } catch (err) {
+        logger.warn("LoggingService: failed to update a duplicate action log:", err);
+      }
+    } else {
+      record.message =
+        (await this.send(guildId, category, record.replacement)) ?? undefined;
+    }
+    record.replacement = undefined;
+  }
+
+  private async resolveSeverity(
+    guildId: string,
+    userId: string,
+    suppliedSeverity?: unknown,
+  ): Promise<LogSeverity | null> {
+    const supplied = normalizeSeverity(suppliedSeverity);
+    if (supplied) return supplied;
+    if (!this.manager || userId === "Unknown") return null;
+
+    try {
+      return normalizeSeverity(
+        (await this.manager.getHeatEngine().view(guildId, userId)).severity,
+      );
+    } catch (err) {
+      logger.warn(
+        `LoggingService: failed to resolve heat severity for user ${userId} in guild ${guildId}:`,
+        err,
+      );
+      return null;
     }
   }
 
@@ -88,24 +322,27 @@ export class LoggingService {
     reason: string;
     savedRoles: string[];
   }): Promise<void> {
-    const embed = new EmbedBuilder()
-      .setTitle("⚖️ God's Judgment — User Judged")
-      .setColor(0xfee75c)
-      .setThumbnail(options.target.user.displayAvatarURL())
-      .addFields(
-        { name: "User", value: `${options.target.user.tag}\n<@${options.target.id}>`, inline: true },
-        { name: "Moderator", value: `<@${options.moderatorId}>`, inline: true },
-        { name: "Reason", value: options.reason, inline: false },
-        {
-          name: `Saved Roles (${options.savedRoles.length})`,
-          value: options.savedRoles.length > 0
-            ? options.savedRoles.map((r) => `<@&${r}>`).join(", ")
-            : "None",
-          inline: false,
-        }
-      )
-      .setFooter({ text: `User ID: ${options.target.id}` })
-      .setTimestamp();
+    const severity = await this.resolveSeverity(
+      options.guildId,
+      options.target.id,
+    );
+    const embed = createActionCard({
+      title: "God's Judgment",
+      targetId: options.target.id,
+      targetLabel: options.target.user.tag,
+      targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
+      moderatorId: options.moderatorId,
+      action: "Judgment",
+      reason: options.reason,
+      severity,
+      details: [{
+        name: `Saved Roles (${options.savedRoles.length})`,
+        value: options.savedRoles.length > 0
+          ? options.savedRoles.map((roleId) => `<@&${roleId}>`).join(", ")
+          : "None",
+        inline: false,
+      }],
+    });
 
     await this.send(options.guildId, "moderation", embed);
   }
@@ -118,27 +355,36 @@ export class LoggingService {
     restoredRoles: string[];
     skippedRoles: number;
   }): Promise<void> {
-    const embed = new EmbedBuilder()
-      .setTitle("✅ God's Judgment — User Released")
-      .setColor(0x57f287)
-      .setThumbnail(options.target.user.displayAvatarURL())
-      .addFields(
-        { name: "User", value: `${options.target.user.tag}\n<@${options.target.id}>`, inline: true },
-        { name: "Released By", value: `<@${options.moderatorId}>`, inline: true },
-        { name: "Reason", value: options.reason, inline: false },
+    const severity = await this.resolveSeverity(
+      options.guildId,
+      options.target.id,
+    );
+    const embed = createActionCard({
+      title: "God's Judgment",
+      targetId: options.target.id,
+      targetLabel: options.target.user.tag,
+      targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
+      moderatorId: options.moderatorId,
+      action: "Release",
+      reason: options.reason,
+      severity,
+      details: [
         {
           name: `Roles Restored (${options.restoredRoles.length})`,
           value: options.restoredRoles.length > 0
-            ? options.restoredRoles.map((r) => `<@&${r}>`).join(", ")
+            ? options.restoredRoles.map((roleId) => `<@&${roleId}>`).join(", ")
             : "None",
           inline: false,
         },
         ...(options.skippedRoles > 0
-          ? [{ name: "Skipped", value: `${options.skippedRoles} deleted role(s) could not be restored.`, inline: false }]
-          : [])
-      )
-      .setFooter({ text: `User ID: ${options.target.id}` })
-      .setTimestamp();
+          ? [{
+              name: "Skipped",
+              value: `${options.skippedRoles} deleted role(s) could not be restored.`,
+              inline: false,
+            }]
+          : []),
+      ],
+    });
 
     await this.send(options.guildId, "moderation", embed);
   }
@@ -153,119 +399,154 @@ export class LoggingService {
     duration?: string;
     caseId?: number | null;
   }): Promise<void> {
-    const embed = createGodsEmbed({
-      title: `Moderation · ${options.action}`,
-      description: options.reason,
-      tone: "info",
-    }).addFields(
-      {
-        name: "Target",
-        value: `${options.targetLabel}\n<@${options.targetId}>`,
-        inline: true,
-      },
-      { name: "Moderator", value: `<@${options.moderatorId}>`, inline: true },
-      ...(options.duration
+    const userActions = new Set([
+      "ban",
+      "unban",
+      "kick",
+      "timeout",
+      "untimeout",
+      "softban",
+      "softban-partial",
+      "warn",
+      "warn-remove",
+      "server-mute",
+      "server-unmute",
+      "server-deafen",
+      "server-undeafen",
+    ]);
+    const isUserAction = userActions.has(options.action.trim().toLowerCase());
+    const targetUser = isUserAction && this.client
+      ? this.client.users.cache.get(options.targetId) ??
+        (await this.client.users.fetch(options.targetId).catch(() => null))
+      : null;
+    const severity = isUserAction
+      ? await this.resolveSeverity(options.guildId, options.targetId)
+      : null;
+    const embed = createActionCard({
+      title: "Moderation Action",
+      targetId: options.targetId,
+      targetLabel: options.targetLabel || options.targetId,
+      targetKind: isUserAction ? "user" : "other",
+      targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+      moderatorId: options.moderatorId,
+      action: options.action,
+      reason: options.reason,
+      severity,
+      details: options.duration
         ? [{ name: "Duration", value: options.duration, inline: true }]
-        : []),
-      ...(options.caseId
-        ? [{ name: "Case", value: `#${options.caseId}`, inline: true }]
-        : []),
-    );
+        : [],
+      caseId: options.caseId,
+    });
 
-    await this.send(options.guildId, "moderation", embed);
+    await this.sendAction(
+      options.guildId,
+      "moderation",
+      embed,
+      options.targetId,
+      options.action,
+      "moderation",
+    );
   }
 
   async logAuditAction(guildId: string, entry: GuildAuditLogsEntry): Promise<void> {
-    let embed: EmbedBuilder | null = null;
-
     const executor = entry.executor;
     const target = entry.target as User | GuildMember | null;
     const reason = entry.reason ?? "No reason provided";
-    const targetTag = target instanceof User
-      ? target.tag
-      : target instanceof GuildMember
-        ? target.user.tag
-        : "Unknown";
-    const targetId = target?.id ?? "Unknown";
-    const executorField = executor ? `${executor.tag}\n<@${executor.id}>` : "Unknown";
+    const targetId = entry.targetId ?? target?.id ?? "Unknown";
+    const targetUser = target instanceof GuildMember
+      ? target.user
+      : target instanceof User
+        ? target
+        : targetId !== "Unknown"
+          ? this.client?.users.cache.get(targetId)
+          : undefined;
+    const targetLabel = targetUser?.tag ?? targetId;
+    let action: string | null = null;
+    let details: ActionDetail[] = [];
 
     switch (entry.action) {
       case AuditLogEvent.MemberBanAdd:
-        embed = new EmbedBuilder()
-          .setTitle("🔨 Member Banned")
-          .setColor(0xed4245)
-          .addFields(
-            { name: "User", value: `${targetTag}\n<@${targetId}>`, inline: true },
-            { name: "Moderator", value: executorField, inline: true },
-            { name: "Reason", value: reason, inline: false }
-          )
-          .setFooter({ text: `User ID: ${targetId}` })
-          .setTimestamp();
+        action = "Ban";
         break;
 
       case AuditLogEvent.MemberBanRemove:
-        embed = new EmbedBuilder()
-          .setTitle("✅ Member Unbanned")
-          .setColor(0x57f287)
-          .addFields(
-            { name: "User", value: `${targetTag}\n<@${targetId}>`, inline: true },
-            { name: "Moderator", value: executorField, inline: true },
-            { name: "Reason", value: reason, inline: false }
-          )
-          .setFooter({ text: `User ID: ${targetId}` })
-          .setTimestamp();
+        action = "Unban";
         break;
 
       case AuditLogEvent.MemberKick:
-        embed = new EmbedBuilder()
-          .setTitle("👢 Member Kicked")
-          .setColor(0xe67e22)
-          .addFields(
-            { name: "User", value: `${targetTag}\n<@${targetId}>`, inline: true },
-            { name: "Moderator", value: executorField, inline: true },
-            { name: "Reason", value: reason, inline: false }
-          )
-          .setFooter({ text: `User ID: ${targetId}` })
-          .setTimestamp();
+        action = "Kick";
         break;
 
       case AuditLogEvent.MemberUpdate: {
-        const timeoutChange = entry.changes.find((c) => c.key === "communication_disabled_until");
-        if (!timeoutChange) break;
+        const timeoutChange = entry.changes.find(
+          (change) => change.key === "communication_disabled_until",
+        );
+        const muteChange = entry.changes.find((change) => change.key === "mute");
+        const deafChange = entry.changes.find((change) => change.key === "deaf");
 
-        const wasTimedOut = !timeoutChange.old && timeoutChange.new;
-        const timedOutUntil = timeoutChange.new
-          ? `<t:${Math.floor(new Date(timeoutChange.new as string).getTime() / 1000)}:R>`
-          : null;
-
-        if (wasTimedOut && timedOutUntil) {
-          embed = new EmbedBuilder()
-            .setTitle("⏱️ Member Timed Out")
-            .setColor(0xe67e22)
-            .addFields(
-              { name: "User", value: `${targetTag}\n<@${targetId}>`, inline: true },
-              { name: "Moderator", value: executorField, inline: true },
-              { name: "Expires", value: timedOutUntil, inline: true },
-              { name: "Reason", value: reason, inline: false }
-            )
-            .setFooter({ text: `User ID: ${targetId}` })
-            .setTimestamp();
-        } else if (!wasTimedOut && !timeoutChange.new) {
-          embed = new EmbedBuilder()
-            .setTitle("✅ Timeout Removed")
-            .setColor(0x57f287)
-            .addFields(
-              { name: "User", value: `${targetTag}\n<@${targetId}>`, inline: true },
-              { name: "Moderator", value: executorField, inline: true }
-            )
-            .setFooter({ text: `User ID: ${targetId}` })
-            .setTimestamp();
+        if (timeoutChange) {
+          const oldValue = timeoutChange.old;
+          const newValue = timeoutChange.new;
+          const wasTimedOut = oldValue !== null && oldValue !== undefined && oldValue !== "";
+          const isTimedOut = newValue !== null && newValue !== undefined && newValue !== "";
+          if (isTimedOut) {
+            action = "Timeout";
+            if (typeof newValue === "string") {
+              const expiresAt = Date.parse(newValue);
+              if (Number.isFinite(expiresAt)) {
+                details = [{
+                  name: "Expires",
+                  value: `<t:${Math.floor(expiresAt / 1_000)}:R>`,
+                  inline: true,
+                }];
+              }
+            }
+          } else if (wasTimedOut) {
+            action = "Untimeout";
+          }
+        } else if (muteChange) {
+          const wasMuted = muteChange.old === true;
+          const isMuted = muteChange.new === true;
+          if (wasMuted !== isMuted) {
+            action = isMuted ? "Server Mute" : "Server Unmute";
+          }
+        } else if (deafChange) {
+          const wasDeafened = deafChange.old === true;
+          const isDeafened = deafChange.new === true;
+          if (wasDeafened !== isDeafened) {
+            action = isDeafened ? "Server Deafen" : "Server Undeafen";
+          }
         }
         break;
       }
     }
 
-    if (embed) {
+    if (!action) return;
+
+    const severity = await this.resolveSeverity(guildId, targetId);
+    const embed = createActionCard({
+      title: "Moderation Action",
+      targetId,
+      targetLabel,
+      targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+      moderatorId: executor?.id,
+      moderatorLabel: executor?.tag,
+      action,
+      reason,
+      severity,
+      details,
+    });
+
+    if (executor?.id === this.client?.user?.id) {
+      await this.sendAction(
+        guildId,
+        "moderation",
+        embed,
+        targetId,
+        action,
+        "audit",
+      );
+    } else {
       await this.send(guildId, "moderation", embed);
     }
   }
@@ -275,22 +556,21 @@ export class LoggingService {
   async logMessageDelete(message: Message | PartialMessage): Promise<void> {
     if (!message.guildId) return;
 
-    const content = message.partial || !message.content
+    const content = message.partial
       ? "*Message content unavailable (not cached)*"
-      : message.content.length > 1024
-        ? message.content.slice(0, 1021) + "..."
-        : message.content;
+      : message.content || "No text content (possibly an attachment-only message)";
 
-    const embed = new EmbedBuilder()
-      .setTitle("🗑️ Message Deleted")
-      .setColor(0xed4245)
+    const embed = createLogEmbed("Message Deleted", 0xed4245)
       .addFields(
         { name: "Author", value: message.author ? `${message.author.tag}\n<@${message.author.id}>` : "Unknown", inline: true },
         { name: "Channel", value: `<#${message.channelId}>`, inline: true },
-        { name: "Content", value: content, inline: false }
+        { name: "Deleted Content", value: truncateField(content), inline: false }
       )
-      .setFooter({ text: `Message ID: ${message.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Message ID: ${message.id}` });
+
+    if (message.author) {
+      embed.setThumbnail(message.author.displayAvatarURL({ size: 256 }));
+    }
 
     if (message.attachments?.size) {
       embed.addFields({
@@ -307,46 +587,93 @@ export class LoggingService {
     if (!newMessage.guildId) return;
     if (newMessage.author?.bot) return;
 
-    const oldContent = oldMessage.partial || !oldMessage.content
-      ? "*Content unavailable*"
-      : oldMessage.content.length > 512
-        ? oldMessage.content.slice(0, 509) + "..."
-        : oldMessage.content;
+    const oldContent = oldMessage.partial
+      ? "*Previous content unavailable (not cached)*"
+      : oldMessage.content || "No text content (possibly an attachment-only message)";
 
     const newContent = newMessage.content
-      ? newMessage.content.length > 512
-        ? newMessage.content.slice(0, 509) + "..."
-        : newMessage.content
-      : "*Content unavailable*";
+      ? newMessage.content
+      : "No text content (possibly an attachment-only message)";
 
     if (oldContent === newContent) return;
 
-    const embed = new EmbedBuilder()
-      .setTitle("✏️ Message Edited")
-      .setColor(0x5865f2)
+    const embed = createLogEmbed("Message Edited", 0x5865f2)
       .setURL(newMessage.url)
       .addFields(
-        { name: "Author", value: newMessage.author ? `${newMessage.author.tag}\n<@${newMessage.author.id}>` : "Unknown", inline: true },
+        {
+          name: "Author",
+          value: newMessage.author
+            ? `${newMessage.author.tag}\n<@${newMessage.author.id}>`
+            : "Unknown",
+          inline: true,
+        },
         { name: "Channel", value: `<#${newMessage.channelId}>`, inline: true },
-        { name: "Before", value: oldContent, inline: false },
-        { name: "After", value: newContent, inline: false }
+        { name: "Previous Content", value: truncateField(oldContent), inline: false },
+        { name: "Updated Content", value: truncateField(newContent), inline: false },
       )
-      .setFooter({ text: `Message ID: ${newMessage.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Message ID: ${newMessage.id}` });
+
+    const author = newMessage.author ?? oldMessage.author;
+    if (author) embed.setThumbnail(author.displayAvatarURL({ size: 256 }));
 
     await this.send(newMessage.guildId, "messages", embed);
   }
 
+  async logVoiceStateUpdate(
+    oldState: VoiceState,
+    newState: VoiceState,
+  ): Promise<void> {
+    if (oldState.channelId === newState.channelId) return;
+
+    const member = newState.member ?? oldState.member;
+    const action = !oldState.channelId
+      ? "Joined"
+      : !newState.channelId
+        ? "Left"
+        : "Moved";
+    const details: ActionDetail[] =
+      action === "Moved"
+        ? [
+            {
+              name: "Previous Channel",
+              value: `<#${oldState.channelId}>`,
+              inline: true,
+            },
+            {
+              name: "New Channel",
+              value: `<#${newState.channelId}>`,
+              inline: true,
+            },
+          ]
+        : [{
+            name: "Voice Channel",
+            value: `<#${newState.channelId ?? oldState.channelId}>`,
+            inline: true,
+          }];
+    const embed = createLogEmbed(`Voice Channel ${action}`, 0x5865f2)
+      .addFields(
+        {
+          name: "User",
+          value: member ? `${member.user.tag}\n<@${newState.id}>` : `<@${newState.id}>`,
+          inline: true,
+        },
+        ...details,
+      )
+      .setFooter({ text: `Gods Bot • User ID: ${newState.id}` });
+
+    if (member) {
+      embed.setThumbnail(member.user.displayAvatarURL({ size: 256 }));
+    }
+    await this.send(newState.guild.id, "members", embed);
+  }
+
   async logBulkDelete(messages: Collection<string, Message | PartialMessage>, channel: GuildChannel): Promise<void> {
-    const embed = new EmbedBuilder()
-      .setTitle("🗑️ Bulk Message Delete")
-      .setColor(0xed4245)
+    const embed = createLogEmbed("Bulk Message Delete", 0xed4245)
       .addFields(
         { name: "Channel", value: `<#${channel.id}>`, inline: true },
-        { name: "Messages Deleted", value: messages.size.toString(), inline: true }
+        { name: "Messages Deleted", value: messages.size.toString(), inline: true },
       )
-      .setFooter({ text: `Channel ID: ${channel.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Channel ID: ${channel.id}` });
 
     await this.send(channel.guildId, "messages", embed);
   }
@@ -356,17 +683,14 @@ export class LoggingService {
   async logMemberJoin(member: GuildMember): Promise<void> {
     const accountAge = `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`;
 
-    const embed = new EmbedBuilder()
-      .setTitle("📥 Member Joined")
-      .setColor(0x57f287)
-      .setThumbnail(member.user.displayAvatarURL())
+    const embed = createLogEmbed("Member Joined", 0x57f287)
+      .setThumbnail(member.user.displayAvatarURL({ size: 256 }))
       .addFields(
         { name: "User", value: `${member.user.tag}\n<@${member.id}>`, inline: true },
         { name: "Account Created", value: accountAge, inline: true },
-        { name: "Member Count", value: member.guild.memberCount.toString(), inline: true }
+        { name: "Member Count", value: member.guild.memberCount.toString(), inline: true },
       )
-      .setFooter({ text: `User ID: ${member.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • User ID: ${member.id}` });
 
     await this.send(member.guild.id, "members", embed);
   }
@@ -376,16 +700,13 @@ export class LoggingService {
       .filter((r) => r.id !== member.guild.roles.everyone.id)
       .map((r) => `<@&${r.id}>`);
 
-    const embed = new EmbedBuilder()
-      .setTitle("📤 Member Left")
-      .setColor(0x99aab5)
-      .setThumbnail(member.user?.displayAvatarURL() ?? null)
+    const embed = createLogEmbed("Member Left", 0x99aab5)
+      .setThumbnail(member.user?.displayAvatarURL({ size: 256 }) ?? null)
       .addFields(
         { name: "User", value: `${member.user?.tag ?? "Unknown"}\n<@${member.id}>`, inline: true },
-        { name: "Roles", value: roles.length > 0 ? roles.join(", ") : "None", inline: false }
+        { name: "Roles", value: roles.length > 0 ? roles.join(", ") : "None", inline: false },
       )
-      .setFooter({ text: `User ID: ${member.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • User ID: ${member.id}` });
 
     await this.send(member.guild.id, "members", embed);
   }
@@ -401,17 +722,11 @@ export class LoggingService {
     const oldNick = oldMember.nickname;
     const newNick = newMember.nickname;
     if (oldNick !== newNick) {
-      const embed = new EmbedBuilder()
-        .setTitle("🏷️ Server Nickname Changed")
-        .setColor(0x5865f2)
-        .setThumbnail(newMember.user.displayAvatarURL())
-        .addFields(
-          { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true },
-          { name: "Before", value: oldNick ?? "*None*", inline: true },
-          { name: "After", value: newNick ?? "*Removed*", inline: true }
-        )
-        .setFooter({ text: `User ID: ${newMember.id}` })
-        .setTimestamp();
+      const embed = createProfileCard("Name Changed", newMember.user, {
+        name: "Display Name",
+        value: `**Before:** ${oldNick ?? "*None*"}\n**After:** ${newNick ?? "*Removed*"}`,
+        inline: false,
+      });
 
       await this.send(guildId, "members", embed);
     }
@@ -424,39 +739,37 @@ export class LoggingService {
     const removed = oldRoles.filter((r) => !newRoles.has(r.id) && r.id !== everyoneId);
 
     if (added.size > 0) {
-      const embed = new EmbedBuilder()
-        .setTitle("✅ Member Role Added")
-        .setColor(0x57f287)
-        .setThumbnail(newMember.user.displayAvatarURL())
+      const embed = createLogEmbed("Member Role Added", 0x57f287)
+        .setThumbnail(newMember.user.displayAvatarURL({ size: 256 }))
         .addFields(
           { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true },
           {
             name: `Role${added.size > 1 ? "s" : ""} Added (${added.size})`,
-            value: added.map((r) => `<@&${r.id}> \`${r.name}\``).join("\n"),
+            value: truncateField(
+              added.map((role) => `<@&${role.id}> \`${role.name}\``).join("\n"),
+            ),
             inline: false,
-          }
+          },
         )
-        .setFooter({ text: `User ID: ${newMember.id}` })
-        .setTimestamp();
+        .setFooter({ text: `Gods Bot • User ID: ${newMember.id}` });
 
       await this.send(guildId, "members", embed);
     }
 
     if (removed.size > 0) {
-      const embed = new EmbedBuilder()
-        .setTitle("❌ Member Role Removed")
-        .setColor(0xed4245)
-        .setThumbnail(newMember.user.displayAvatarURL())
+      const embed = createLogEmbed("Member Role Removed", 0xed4245)
+        .setThumbnail(newMember.user.displayAvatarURL({ size: 256 }))
         .addFields(
           { name: "User", value: `${newMember.user.tag}\n<@${newMember.id}>`, inline: true },
           {
             name: `Role${removed.size > 1 ? "s" : ""} Removed (${removed.size})`,
-            value: removed.map((r) => `<@&${r.id}> \`${r.name}\``).join("\n"),
+            value: truncateField(
+              removed.map((role) => `<@&${role.id}> \`${role.name}\``).join("\n"),
+            ),
             inline: false,
-          }
+          },
         )
-        .setFooter({ text: `User ID: ${newMember.id}` })
-        .setTimestamp();
+        .setFooter({ text: `Gods Bot • User ID: ${newMember.id}` });
 
       await this.send(guildId, "members", embed);
     }
@@ -467,66 +780,48 @@ export class LoggingService {
    * Called from the UserUpdate event handler for every guild the user is in.
    */
   async logUserUpdate(guildId: string, oldUser: User, newUser: User): Promise<void> {
-    // Username change (Discord pomelo / unique username system)
+    const nameChanges: ActionDetail[] = [];
     if (oldUser.username !== newUser.username) {
-      const embed = new EmbedBuilder()
-        .setTitle("📝 Username Changed")
-        .setColor(0x5865f2)
-        .setThumbnail(newUser.displayAvatarURL())
-        .addFields(
-          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
-          { name: "Before", value: `\`${oldUser.username}\``, inline: true },
-          { name: "After", value: `\`${newUser.username}\``, inline: true }
-        )
-        .setFooter({ text: `User ID: ${newUser.id}` })
-        .setTimestamp();
-
-      await this.send(guildId, "members", embed);
+      nameChanges.push({
+        name: "Username",
+        value: `**Before:** @${oldUser.username}\n**After:** @${newUser.username}`,
+        inline: false,
+      });
     }
 
-    // Global display name change
     if (oldUser.globalName !== newUser.globalName) {
-      const embed = new EmbedBuilder()
-        .setTitle("📝 Global Display Name Changed")
-        .setColor(0x5865f2)
-        .setThumbnail(newUser.displayAvatarURL())
-        .addFields(
-          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
-          {
-            name: "Before",
-            value: oldUser.globalName ? `\`${oldUser.globalName}\`` : "*None*",
-            inline: true,
-          },
-          {
-            name: "After",
-            value: newUser.globalName ? `\`${newUser.globalName}\`` : "*Removed*",
-            inline: true,
-          }
-        )
-        .setFooter({ text: `User ID: ${newUser.id}` })
-        .setTimestamp();
-
-      await this.send(guildId, "members", embed);
+      nameChanges.push({
+        name: "Display Name",
+        value: `**Before:** ${oldUser.globalName ?? "*None*"}\n**After:** ${newUser.globalName ?? "*Removed*"}`,
+        inline: false,
+      });
     }
 
-    // Avatar change (compare hash — null means default avatar)
-    if (oldUser.avatar !== newUser.avatar) {
-      const embed = new EmbedBuilder()
-        .setTitle("🖼️ Avatar Changed")
-        .setColor(0x5865f2)
-        .setThumbnail(newUser.displayAvatarURL({ size: 256 }))
-        .addFields(
-          { name: "User", value: `${newUser.tag}\n<@${newUser.id}>`, inline: true },
-          {
-            name: "New Avatar",
-            value: `[View full size](${newUser.displayAvatarURL({ size: 1024 })})`,
-            inline: true,
-          }
-        )
-        .setFooter({ text: `User ID: ${newUser.id}` })
-        .setTimestamp();
+    if (nameChanges.length > 0) {
+      await this.send(
+        guildId,
+        "members",
+        createProfileCard("Name Changed", newUser, nameChanges),
+      );
+    }
 
-      await this.send(guildId, "members", embed);
+    if (oldUser.avatar !== newUser.avatar) {
+      const oldAvatarUrl = oldUser.displayAvatarURL({ size: 256 });
+      const newAvatarUrl = newUser.displayAvatarURL({ size: 256 });
+      await this.send(
+        guildId,
+        "members",
+        createProfileCard(
+          "Avatar Changed",
+          newUser,
+          {
+            name: "Avatar Transition",
+            value: `[Before](${oldAvatarUrl}) → [After](${newAvatarUrl})`,
+            inline: false,
+          },
+          oldAvatarUrl,
+        ),
+      );
     }
   }
 
@@ -536,15 +831,12 @@ export class LoggingService {
     if (!channel.isTextBased() && !("name" in channel)) return;
     const gc = channel as GuildChannel;
 
-    const embed = new EmbedBuilder()
-      .setTitle("➕ Channel Created")
-      .setColor(0x57f287)
+    const embed = createLogEmbed("Channel Created", 0x57f287)
       .addFields(
         { name: "Name", value: `<#${gc.id}> \`${gc.name}\``, inline: true },
-        { name: "Type", value: gc.type.toString(), inline: true }
+        { name: "Type", value: gc.type.toString(), inline: true },
       )
-      .setFooter({ text: `Channel ID: ${gc.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Channel ID: ${gc.id}` });
 
     await this.send(gc.guildId, "channels", embed);
   }
@@ -553,15 +845,12 @@ export class LoggingService {
     if (!("name" in channel)) return;
     const gc = channel as GuildChannel;
 
-    const embed = new EmbedBuilder()
-      .setTitle("🗑️ Channel Deleted")
-      .setColor(0xed4245)
+    const embed = createLogEmbed("Channel Deleted", 0xed4245)
       .addFields(
         { name: "Name", value: `\`${gc.name}\``, inline: true },
-        { name: "Type", value: gc.type.toString(), inline: true }
+        { name: "Type", value: gc.type.toString(), inline: true },
       )
-      .setFooter({ text: `Channel ID: ${gc.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Channel ID: ${gc.id}` });
 
     await this.send(gc.guildId, "channels", embed);
   }
@@ -574,7 +863,11 @@ export class LoggingService {
     const changes: { name: string; value: string; inline: boolean }[] = [];
 
     if (oldGC.name !== newGC.name) {
-      changes.push({ name: "Name", value: `\`${oldGC.name}\` → \`${newGC.name}\``, inline: false });
+      changes.push({
+        name: "Name",
+        value: `**Before:** \`${oldGC.name}\`\n**After:** \`${newGC.name}\``,
+        inline: false,
+      });
     }
 
     if ("topic" in oldGC && "topic" in newGC && oldGC.topic !== newGC.topic) {
@@ -584,18 +877,58 @@ export class LoggingService {
         inline: false,
       });
     }
+    if (
+      "rateLimitPerUser" in oldGC &&
+      "rateLimitPerUser" in newGC &&
+      oldGC.rateLimitPerUser !== newGC.rateLimitPerUser
+    ) {
+      changes.push({
+        name: "Slowmode",
+        value: `**Before:** ${oldGC.rateLimitPerUser}s\n**After:** ${newGC.rateLimitPerUser}s`,
+        inline: true,
+      });
+    }
+    if ("nsfw" in oldGC && "nsfw" in newGC && oldGC.nsfw !== newGC.nsfw) {
+      changes.push({
+        name: "NSFW",
+        value: `**Before:** ${oldGC.nsfw ? "On" : "Off"}\n**After:** ${newGC.nsfw ? "On" : "Off"}`,
+        inline: true,
+      });
+    }
+    if (
+      "bitrate" in oldGC &&
+      "bitrate" in newGC &&
+      oldGC.bitrate !== newGC.bitrate
+    ) {
+      changes.push({
+        name: "Bitrate",
+        value: `**Before:** ${oldGC.bitrate}\n**After:** ${newGC.bitrate}`,
+        inline: true,
+      });
+    }
+    if (
+      "userLimit" in oldGC &&
+      "userLimit" in newGC &&
+      oldGC.userLimit !== newGC.userLimit
+    ) {
+      changes.push({
+        name: "User Limit",
+        value: `**Before:** ${oldGC.userLimit || "Unlimited"}\n**After:** ${newGC.userLimit || "Unlimited"}`,
+        inline: true,
+      });
+    }
 
     if (changes.length === 0) return;
 
-    const embed = new EmbedBuilder()
-      .setTitle("✏️ Channel Updated")
-      .setColor(0x5865f2)
+    const embed = createLogEmbed("Channel Updated", 0x5865f2)
       .addFields(
         { name: "Channel", value: `<#${newGC.id}>`, inline: true },
-        ...changes
+        ...changes.map((change) => ({
+          ...change,
+          value: truncateField(change.value),
+        })),
       )
-      .setFooter({ text: `Channel ID: ${newGC.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Channel ID: ${newGC.id}` });
 
     await this.send(newGC.guildId, "channels", embed);
   }
@@ -630,9 +963,7 @@ export class LoggingService {
     const permCount = allPerms.length;
     const permList = formatPermissions(allPerms);
 
-    const embed = new EmbedBuilder()
-      .setTitle("➕ Role Created")
-      .setColor(role.color || 0x57f287)
+    const embed = createLogEmbed("Role Created", role.color || 0x57f287)
       .addFields(
         { name: "Name", value: `<@&${role.id}> \`${role.name}\``, inline: true },
         { name: "Created By", value: creatorField, inline: true },
@@ -641,25 +972,21 @@ export class LoggingService {
         { name: "Position", value: role.position.toString(), inline: true },
         { name: "Hoisted", value: role.hoist ? "Yes" : "No", inline: true },
         { name: "Mentionable", value: role.mentionable ? "Yes" : "No", inline: true },
-        { name: `Permissions (${permCount})`, value: permList, inline: false }
+        { name: `Permissions (${permCount})`, value: permList, inline: false },
       )
-      .setFooter({ text: `Role ID: ${role.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Role ID: ${role.id}` });
 
     await this.send(role.guild.id, "roles", embed);
   }
 
   async logRoleDelete(role: Role): Promise<void> {
-    const embed = new EmbedBuilder()
-      .setTitle("🗑️ Role Deleted")
-      .setColor(0xed4245)
+    const embed = createLogEmbed("Role Deleted", 0xed4245)
       .addFields(
         { name: "Name", value: `\`${role.name}\``, inline: true },
         { name: "Color", value: role.hexColor, inline: true },
-        { name: "Role ID", value: `\`${role.id}\``, inline: true }
+        { name: "Role ID", value: `\`${role.id}\``, inline: true },
       )
-      .setFooter({ text: `Role ID: ${role.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Role ID: ${role.id}` });
 
     await this.send(role.guild.id, "roles", embed);
   }
@@ -668,10 +995,18 @@ export class LoggingService {
     const changes: { name: string; value: string; inline: boolean }[] = [];
 
     if (oldRole.name !== newRole.name) {
-      changes.push({ name: "Name", value: `\`${oldRole.name}\` → \`${newRole.name}\``, inline: false });
+      changes.push({
+        name: "Name",
+        value: `**Before:** \`${oldRole.name}\`\n**After:** \`${newRole.name}\``,
+        inline: false,
+      });
     }
     if (oldRole.color !== newRole.color) {
-      changes.push({ name: "Color", value: `${oldRole.hexColor} → ${newRole.hexColor}`, inline: true });
+      changes.push({
+        name: "Color",
+        value: `**Before:** ${oldRole.hexColor}\n**After:** ${newRole.hexColor}`,
+        inline: true,
+      });
     }
     if (oldRole.position !== newRole.position) {
       changes.push({
@@ -720,15 +1055,16 @@ export class LoggingService {
 
     if (changes.length === 0) return;
 
-    const embed = new EmbedBuilder()
-      .setTitle("✏️ Role Updated")
-      .setColor(newRole.color || 0x5865f2)
+    const embed = createLogEmbed("Role Updated", newRole.color || 0x5865f2)
       .addFields(
         { name: "Role", value: `<@&${newRole.id}>`, inline: true },
-        ...changes
+        { name: "Role ID", value: newRole.id, inline: true },
+        ...changes.map((change) => ({
+          ...change,
+          value: truncateField(change.value),
+        })),
       )
-      .setFooter({ text: `Role ID: ${newRole.id}` })
-      .setTimestamp();
+      .setFooter({ text: `Gods Bot • Role ID: ${newRole.id}` });
 
     await this.send(newRole.guild.id, "roles", embed);
   }
@@ -743,19 +1079,37 @@ export class LoggingService {
     reason: string;
     extra?: { name: string; value: string; inline?: boolean }[];
   }): Promise<void> {
-    const embed = new EmbedBuilder()
-      .setTitle(`🛡️ Security Trigger — ${options.module}`)
-      .setColor(0xe67e22)
-      .setThumbnail(options.member.user.displayAvatarURL())
-      .addFields(
-        { name: "User", value: `${options.member.user.tag}\n<@${options.member.id}>`, inline: true },
-        { name: "Action Taken", value: options.action, inline: true },
-        { name: "Reason", value: options.reason, inline: false },
-        ...(options.extra ?? [])
-      )
-      .setFooter({ text: `User ID: ${options.member.id} • ${options.module}` })
-      .setTimestamp();
+    const severity = await this.resolveSeverity(
+      options.guildId,
+      options.member.id,
+      severityFromDetails(options.extra),
+    );
+    const details = [
+      { name: "Security Module", value: options.module, inline: true },
+      ...(options.extra ?? []).filter(
+        (field) => !/severity|heat/i.test(field.name),
+      ),
+    ];
+    const embed = createActionCard({
+      title: "Security Action",
+      targetId: options.member.id,
+      targetLabel: options.member.user.tag,
+      targetAvatarUrl: options.member.user.displayAvatarURL({ size: 256 }),
+      action: options.action,
+      reason: options.reason,
+      severity,
+      details,
+    }).setFooter({
+      text: `Gods Bot • User ID: ${options.member.id} • ${options.module}`,
+    });
 
-    await this.send(options.guildId, "security", embed);
+    await this.sendAction(
+      options.guildId,
+      "security",
+      embed,
+      options.member.id,
+      options.action,
+      "security",
+    );
   }
 }
