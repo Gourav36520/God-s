@@ -11,6 +11,7 @@ import type {
   GuildAuditLogsEntry,
   GuildMember,
   Message,
+  Role,
   User,
   VoiceState,
 } from "discord.js";
@@ -39,6 +40,31 @@ function makeUser(
     displayAvatarURL: ({ size = 256 }: { size?: number } = {}) =>
       `https://cdn.example.test/${id}/${avatar ?? "default"}?size=${size}`,
   } as unknown as User;
+}
+
+function makeMember(
+  id: string,
+  nickname: string | null,
+  roles: { id: string; name: string }[],
+): GuildMember {
+  const user = {
+    ...makeUser(id, "member", "Member", "member-avatar"),
+    createdTimestamp: 1_600_000_000_000,
+  } as User;
+  const roleCache = new Collection(
+    roles.map((role) => [role.id, role] as const),
+  );
+  return {
+    id,
+    user,
+    nickname,
+    guild: {
+      id: "guild-1",
+      memberCount: 12,
+      roles: { everyone: { id: "everyone" } },
+    },
+    roles: { cache: roleCache },
+  } as unknown as GuildMember;
 }
 
 function createHarness(
@@ -337,4 +363,156 @@ test("channel update cards include previous and updated settings", async () => {
   assert.match(fields.find((field) => field.name === "Topic")?.value ?? "", /Old topic.*New topic/s);
   assert.match(fields.find((field) => field.name === "Slowmode")?.value ?? "", /0s.*10s/s);
   assert.match(fields.find((field) => field.name === "NSFW")?.value ?? "", /Off.*On/s);
+});
+
+test("member join and leave cards use the members category and include member details", async () => {
+  const { service, sent } = createHarness();
+  const member = makeMember("member-1", null, [
+    { id: "everyone", name: "@everyone" },
+    { id: "helper", name: "Helper" },
+  ]);
+
+  await service.logMemberJoin(member);
+  await service.logMemberLeave(member);
+
+  assert.deepEqual(sent.map(({ category }) => category), ["members", "members"]);
+  const joinCard = sent[0].embed.toJSON();
+  assert.match(joinCard.title ?? "", /Member Joined/);
+  assert.equal(joinCard.color, 0x57f287);
+  assert.match(
+    joinCard.fields?.find((field) => field.name === "Account Created")?.value ?? "",
+    /<t:1600000000:R>/,
+  );
+  assert.equal(
+    joinCard.fields?.find((field) => field.name === "Member Count")?.value,
+    "12",
+  );
+
+  const leaveCard = sent[1].embed.toJSON();
+  assert.match(leaveCard.title ?? "", /Member Left/);
+  assert.equal(
+    leaveCard.fields?.find((field) => field.name === "Roles")?.value,
+    "<@&helper>",
+  );
+});
+
+test("member nickname and role changes produce separate cards in the members category", async () => {
+  const { service, sent } = createHarness();
+  const oldMember = makeMember("member-2", "Before", [
+    { id: "everyone", name: "@everyone" },
+    { id: "kept", name: "Kept" },
+    { id: "removed", name: "Removed" },
+  ]);
+  const newMember = makeMember("member-2", "After", [
+    { id: "everyone", name: "@everyone" },
+    { id: "kept", name: "Kept" },
+    { id: "added", name: "Added" },
+  ]);
+
+  await service.logMemberUpdate(oldMember, newMember);
+
+  assert.deepEqual(
+    sent.map(({ category }) => category),
+    ["members", "members", "members"],
+  );
+  const [nicknameCard, addedRoleCard, removedRoleCard] = sent.map(({ embed }) =>
+    embed.toJSON(),
+  );
+  assert.match(nicknameCard.title ?? "", /Name Changed/);
+  assert.match(
+    nicknameCard.fields?.find((field) => field.name === "Before → After")?.value ?? "",
+    /Display Name.*Before.*Before.*After.*After/s,
+  );
+  assert.match(addedRoleCard.title ?? "", /Member Role Added/);
+  assert.match(
+    addedRoleCard.fields?.find((field) => field.name === "Role Added (1)")?.value ?? "",
+    /<@&added> `Added`/,
+  );
+  assert.match(removedRoleCard.title ?? "", /Member Role Removed/);
+  assert.match(
+    removedRoleCard.fields?.find((field) => field.name === "Role Removed (1)")?.value ?? "",
+    /<@&removed> `Removed`/,
+  );
+});
+
+test("role create, update, and delete cards preserve their payloads in the roles category", async () => {
+  const { service, sent } = createHarness();
+  const role = {
+    id: "role-1",
+    name: "Builder",
+    color: 0x123456,
+    hexColor: "#123456",
+    position: 3,
+    hoist: true,
+    mentionable: true,
+    permissions: { toArray: () => ["ViewChannel", "SendMessages"] },
+    guild: {
+      id: "guild-1",
+      fetchAuditLogs: async () => ({
+        entries: {
+          find: (predicate: (entry: unknown) => boolean) => {
+            const entry = {
+              target: { id: "role-1" },
+              executor: { id: "creator-1", tag: "creator#0001" },
+            };
+            return predicate(entry) ? entry : undefined;
+          },
+        },
+      }),
+    },
+  } as unknown as Role;
+  const oldRole = {
+    ...role,
+    name: "Builder",
+    color: 0x123456,
+    hexColor: "#123456",
+    position: 3,
+    hoist: false,
+    mentionable: false,
+  } as unknown as Role;
+  const newRole = {
+    ...role,
+    name: "Senior Builder",
+    color: 0x654321,
+    hexColor: "#654321",
+    position: 5,
+    hoist: true,
+    mentionable: true,
+  } as unknown as Role;
+
+  await service.logRoleCreate(role);
+  await service.logRoleUpdate(oldRole, newRole);
+  await service.logRoleDelete(newRole);
+
+  assert.deepEqual(sent.map(({ category }) => category), ["roles", "roles", "roles"]);
+  const [createdCard, updatedCard, deletedCard] = sent.map(({ embed }) =>
+    embed.toJSON(),
+  );
+  assert.match(createdCard.title ?? "", /Role Created/);
+  assert.match(createdCard.fields?.find((field) => field.name === "Name")?.value ?? "", /Builder/);
+  assert.match(
+    createdCard.fields?.find((field) => field.name === "Created By")?.value ?? "",
+    /creator#0001.*creator-1/s,
+  );
+  assert.equal(createdCard.fields?.find((field) => field.name === "Role ID")?.value, "`role-1`");
+  assert.equal(createdCard.fields?.find((field) => field.name === "Color")?.value, "#123456");
+  assert.equal(createdCard.fields?.find((field) => field.name === "Position")?.value, "3");
+  assert.equal(createdCard.fields?.find((field) => field.name === "Hoisted")?.value, "Yes");
+  assert.equal(createdCard.fields?.find((field) => field.name === "Mentionable")?.value, "Yes");
+  assert.match(
+    createdCard.fields?.find((field) => field.name === "Permissions (2)")?.value ?? "",
+    /View Channel, Send Messages/,
+  );
+
+  assert.match(updatedCard.title ?? "", /Role Updated/);
+  assert.match(updatedCard.fields?.find((field) => field.name === "Name")?.value ?? "", /Builder.*Senior Builder/s);
+  assert.match(updatedCard.fields?.find((field) => field.name === "Color")?.value ?? "", /#123456.*#654321/s);
+  assert.equal(updatedCard.fields?.find((field) => field.name === "Position")?.value, "3 → 5");
+  assert.equal(updatedCard.fields?.find((field) => field.name === "Hoisted")?.value, "No → Yes");
+  assert.equal(updatedCard.fields?.find((field) => field.name === "Mentionable")?.value, "No → Yes");
+
+  assert.match(deletedCard.title ?? "", /Role Deleted/);
+  assert.match(deletedCard.fields?.find((field) => field.name === "Name")?.value ?? "", /Senior Builder/);
+  assert.equal(deletedCard.fields?.find((field) => field.name === "Color")?.value, "#654321");
+  assert.equal(deletedCard.fields?.find((field) => field.name === "Role ID")?.value, "`role-1`");
 });
