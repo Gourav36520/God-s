@@ -1,0 +1,77 @@
+import type { GuildSecurityConfig } from "./types.js";
+import { ALL_CATEGORIES } from "../logging/types.js";
+
+export function buildDefaultConfig(guildId: string): GuildSecurityConfig {
+  return {
+    guildId,
+    prefix: "!",
+    logChannelId: null,
+    inviteChannelId: null,
+    muteRoleId: null,
+    autoRoleRoleId: null,
+    reactionRolePanels: [],
+    reactionRoleAssignments: {},
+    exemptRoles: [],
+    exemptChannels: [],
+    antiSpam: {
+      enabled: false,
+      maxMessages: 3,
+      timeWindowMs: 5_000,
+      action: "warn",
+      timeoutDurationMs: 5 * 60 * 1_000,
+      warnThreshold: 3,
+      bypassRoles: [],
+      bypassUsers: [],
+    },
+    antiMention: {
+      enabled: true,
+    },
+    antiLink: {
+      enabled: false,
+      allowedDomains: [],
+      bypassRoles: [],
+      action: "delete",
+    },
+    antiInvite: {
+      enabled: false,
+      bypassRoles: [],
+      action: "delete",
+    },
+    antiRaid: {
+      enabled: false,
+      joinThreshold: 10,
+      joinWindowMs: 10_000,
+      action: "kick",
+      lockdownDurationMs: 5 * 60 * 1_000,
+    },
+    badWord: {
+      words: [],
+      exceptionRoles: [],
+    },
+    godsJudgment: {
+      enabled: false,
+      logChannelId: null,
+      dmOnAction: true,
+      judgmentRoleId: null,
+      judgmentChannelId: null,
+      activeJudgments: {},
+    },
+    ticket: {
+      enabled: false,
+      staffRoleId: null,
+      categoryId: null,
+      transcriptChannelId: null,
+      panelChannelId: null,
+      panelEmbedId: null,
+    },
+    logging: {
+      channelId: null,
+      channelIds: {},
+      categories: Object.fromEntries(ALL_CATEGORIES.map((c) => [c, false])) as Record<
+        typeof ALL_CATEGORIES[number],
+        boolean
+      >,
+    },
+    updatedAt: new Date().toISOString(),
+  };
+}

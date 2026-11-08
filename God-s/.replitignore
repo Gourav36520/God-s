@@ -1,0 +1,12 @@
+# The format of this file is identical to `.dockerignore`.
+# It is used to reduce the size of deployed images to make the process of publishing faster.
+
+# No need to store the pnpm store twice.
+.local
+
+# Local exports and database backups must not be deployed.
+generated-artifacts/
+database-backups/
+.env
+.env.*
+node_modules/
