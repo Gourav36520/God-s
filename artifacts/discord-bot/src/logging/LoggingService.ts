@@ -127,19 +127,34 @@ function createProfileCard(
   user: User,
   changes: ActionDetail | ActionDetail[],
   beforeImageUrl?: string,
+  afterImageUrl?: string,
 ): EmbedBuilder {
   const profileChanges = Array.isArray(changes) ? changes : [changes];
   const embed = createLogEmbed(title, 0x5865f2)
-    .setThumbnail(user.displayAvatarURL({ size: 256 }))
+    .setAuthor({
+      name: "Aegis Logs • Profile Update",
+      iconURL: user.displayAvatarURL({ size: 64 }),
+    })
     .addFields(
-      { name: "User", value: `${user.tag}\n<@${user.id}>`, inline: true },
-      { name: "User ID", value: user.id, inline: true },
-      ...profileChanges.map((change) => ({
-        ...change,
-        value: truncateField(change.value),
-      })),
+      {
+        name: "Profile",
+        value: truncateField(
+          `**${user.globalName ?? user.username}**\n@${user.username}\nID: ${user.id}`,
+        ),
+        inline: true,
+      },
+      {
+        name: "Before → After",
+        value: truncateField(
+          profileChanges
+            .map((change) => `**${change.name}**\n${change.value}`)
+            .join("\n\n"),
+        ),
+        inline: true,
+      },
     );
   if (beforeImageUrl) embed.setImage(beforeImageUrl);
+  if (afterImageUrl) embed.setThumbnail(afterImageUrl);
   return embed;
 }
 
@@ -817,9 +832,9 @@ export class LoggingService {
           {
             name: "Avatar Transition",
             value: `[Before](${oldAvatarUrl}) → [After](${newAvatarUrl})`,
-            inline: false,
           },
           oldAvatarUrl,
+          newAvatarUrl,
         ),
       );
     }

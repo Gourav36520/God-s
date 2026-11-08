@@ -123,12 +123,21 @@ test("profile logs share the blue card family and show before-to-after values", 
   assert.equal(avatarCard.color, 0x5865f2);
   assert.match(nameCard.title ?? "", /Name Changed/);
   assert.match(avatarCard.title ?? "", /Avatar Changed/);
+  assert.equal(nameCard.author?.name, "Aegis Logs • Profile Update");
+  assert.equal(avatarCard.author?.name, "Aegis Logs • Profile Update");
+  const nameProfile = nameCard.fields?.find((field) => field.name === "Profile");
+  const nameTransition = nameCard.fields?.find(
+    (field) => field.name === "Before → After",
+  );
+  assert.equal(nameProfile?.inline, true);
+  assert.match(nameProfile?.value ?? "", /Nova\.exe.*@nova\.exe.*user-1/s);
+  assert.equal(nameTransition?.inline, true);
   assert.match(
-    nameCard.fields?.find((field) => field.name === "Username")?.value ?? "",
+    nameTransition?.value ?? "",
     /@nova.*@nova\.exe/s,
   );
   assert.match(
-    nameCard.fields?.find((field) => field.name === "Display Name")?.value ?? "",
+    nameTransition?.value ?? "",
     /Nova.*Nova\.exe/s,
   );
   assert.equal(
@@ -139,9 +148,21 @@ test("profile logs share the blue card family and show before-to-after values", 
     avatarCard.image?.url,
     "https://cdn.example.test/user-1/old-avatar?size=256",
   );
+  assert.equal(
+    avatarCard.thumbnail?.url,
+    "https://cdn.example.test/user-1/new-avatar?size=256",
+  );
+  assert.equal(
+    avatarCard.fields?.find((field) => field.name === "Profile")?.inline,
+    true,
+  );
+  assert.equal(
+    avatarCard.fields?.find((field) => field.name === "Before → After")?.inline,
+    true,
+  );
   assert.match(
-    avatarCard.fields?.find((field) => field.name === "Avatar Transition")?.value ?? "",
-    /Before.*After/s,
+    avatarCard.fields?.find((field) => field.name === "Before → After")?.value ?? "",
+    /Before.*old-avatar.*After.*new-avatar/s,
   );
 });
 
