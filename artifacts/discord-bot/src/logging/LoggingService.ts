@@ -225,6 +225,7 @@ function createProfileCard(
       },
     );
 
+  if (options.beforeImageUrl) comparison.setImage(options.beforeImageUrl);
   if (options.afterImageUrl) comparison.setThumbnail(options.afterImageUrl);
   return [summary, comparison];
 }
@@ -834,8 +835,7 @@ export class LoggingService {
       messageAttachmentSignature(oldMessage) !==
       messageAttachmentSignature(currentMessage);
     const editTimestampChanged =
-      oldMessage.editedTimestamp?.getTime() !==
-      currentMessage.editedTimestamp?.getTime();
+      oldMessage.editedTimestamp !== currentMessage.editedTimestamp;
     const hasUncachedState = oldMessage.partial || currentMessage.partial;
 
     if (
@@ -1100,8 +1100,8 @@ export class LoggingService {
           newUser,
           {
             label: "Avatar",
-            before: `[View old avatar](${oldAvatarUrl})`,
-            after: `[View new avatar](${newAvatarUrl})`,
+            before: "Old avatar",
+            after: "New avatar",
           },
           {
             summaryChange: "Profile picture updated",

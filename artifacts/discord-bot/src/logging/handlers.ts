@@ -37,8 +37,9 @@ export function registerLoggingHandlers(client: Client): void {
   client.on(
     Events.MessageUpdate,
     async (oldMessage: Message | PartialMessage, newMessage: Message | PartialMessage) => {
-      if (!newMessage.guildId) return;
-      if (newMessage.author?.bot) return;
+      const guildId = newMessage.guildId ?? oldMessage.guildId;
+      if (!guildId) return;
+      if ((newMessage.author ?? oldMessage.author)?.bot) return;
       await loggingService.logMessageEdit(oldMessage, newMessage).catch((err) =>
         logger.warn("Log error [messageUpdate]:", err)
       );

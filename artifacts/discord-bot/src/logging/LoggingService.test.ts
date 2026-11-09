@@ -4,6 +4,8 @@ import {
   AuditLogEvent,
   Collection,
   EmbedBuilder,
+  GatewayIntentBits,
+  IntentsBitField,
 } from "discord.js";
 import type {
   Channel,
@@ -11,6 +13,7 @@ import type {
   GuildAuditLogsEntry,
   GuildMember,
   Message,
+  PartialMessage,
   User,
   VoiceState,
 } from "discord.js";
@@ -50,6 +53,9 @@ function createHarness(
   const sent: RecordedLog[] = [];
   const client = {
     user: { id: "bot-user" },
+    options: {
+      intents: new IntentsBitField(GatewayIntentBits.MessageContent),
+    },
     users: {
       cache: users,
       fetch: async (userId: string) => {
@@ -90,6 +96,7 @@ function createHarness(
       embed: EmbedBuilder | EmbedBuilder[],
     ) => Promise<Message | null>;
   };
+  const realSend = internals.send.bind(service);
   internals.client = client;
   internals.manager = manager;
   internals.send = async (_guildId, category, embed) => {
@@ -105,7 +112,15 @@ function createHarness(
     return message as unknown as Message;
   };
 
-  return { service, sent, users };
+  return {
+    service,
+    sent,
+    users,
+    client,
+    useRealSend: () => {
+      internals.send = realSend;
+    },
+  };
 }
 
 function embedFields(embed: EmbedBuilder) {
@@ -163,6 +178,10 @@ test("profile logs use summary and side-by-side comparison cards", async () => {
     "https://cdn.example.test/user-1/new-avatar?size=256",
   );
   assert.equal(
+    avatarCard.image?.url,
+    "https://cdn.example.test/user-1/old-avatar?size=256",
+  );
+  assert.equal(
     avatarCard.fields?.find((field) => field.name === "Profile")?.inline,
     true,
   );
@@ -172,8 +191,43 @@ test("profile logs use summary and side-by-side comparison cards", async () => {
   );
   assert.match(
     avatarCard.fields?.find((field) => field.name === "Avatar")?.value ?? "",
-    /View old avatar.*old-avatar.*View new avatar.*new-avatar/s,
+    /Old avatar.*New avatar/s,
   );
+});
+
+test("avatar changes are sent as EmbedBuilder instances in the embeds payload", async () => {
+  const { service, client, useRealSend } = createHarness();
+  const payloads: Array<{ embeds: EmbedBuilder[]; content?: string }> = [];
+  (client as unknown as {
+    channels: {
+      fetch: (channelId: string) => Promise<{
+        isTextBased: () => boolean;
+        send: (payload: { embeds: EmbedBuilder[]; content?: string }) => Promise<Message>;
+      }>;
+    };
+  }).channels = {
+    fetch: async () => ({
+      isTextBased: () => true,
+      send: async (payload) => {
+        payloads.push(payload);
+        return {} as Message;
+      },
+    }),
+  };
+  useRealSend();
+
+  await service.logUserUpdate(
+    "guild-1",
+    makeUser("avatar-user", "nova", "Nova", "before"),
+    makeUser("avatar-user", "nova", "Nova", "after"),
+  );
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].embeds.length, 2);
+  assert.ok(payloads.flatMap(({ embeds }) => embeds).every((embed) => embed instanceof EmbedBuilder));
+  assert.ok(payloads.every(({ content }) => content === undefined));
+  assert.equal(payloads[0].embeds[1].toJSON().image?.url, "https://cdn.example.test/avatar-user/before?size=256");
+  assert.equal(payloads[0].embeds[1].toJSON().thumbnail?.url, "https://cdn.example.test/avatar-user/after?size=256");
 });
 
 test("moderation cards use heat severity and retain target, moderator, reason, and case", async () => {
@@ -281,8 +335,16 @@ test("message edit and delete cards include author avatars, channels, and conten
   };
 
   await service.logMessageEdit(
-    { ...baseMessage, content: "before text" } as unknown as Message,
-    { ...baseMessage, content: "after text" } as unknown as Message,
+    {
+      ...baseMessage,
+      content: "before text",
+      editedTimestamp: null,
+    } as unknown as Message,
+    {
+      ...baseMessage,
+      content: "after text",
+      editedTimestamp: 1_794_200_000_000,
+    } as unknown as Message,
   );
   await service.logMessageDelete({
     ...baseMessage,
@@ -297,6 +359,50 @@ test("message edit and delete cards include author avatars, channels, and conten
   assert.equal(editCard.thumbnail?.url, "https://cdn.example.test/author-1/author-avatar?size=256");
   assert.match(deleteCard.fields?.find((field) => field.name === "Deleted Content")?.value ?? "", /deleted text/);
   assert.match(deleteCard.fields?.find((field) => field.name === "Channel")?.value ?? "", /channel-1/);
+});
+
+test("partial message edits log attachment-only changes using the old guild context", async () => {
+  const { service, sent } = createHarness();
+  const author = makeUser("author-2", "editor", null, "author-avatar");
+  const oldAttachments = new Collection([
+    ["old-file", { id: "old-file", name: "before.png", url: "https://files.test/before.png" }],
+  ]);
+  const updatedAttachments = new Collection([
+    ["new-file", { id: "new-file", name: "after.png", url: "https://files.test/after.png" }],
+  ]);
+  const oldMessage = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    id: "message-partial",
+    author,
+    partial: false,
+    content: "same text",
+    attachments: oldAttachments,
+    editedTimestamp: 1_794_200_000_000,
+    url: "https://discord.example.test/message-partial",
+  } as unknown as Message;
+  const fetchedMessage = {
+    ...oldMessage,
+    guildId: null,
+    partial: false,
+    attachments: updatedAttachments,
+    editedTimestamp: 1_794_200_001_000,
+  } as unknown as Message;
+  const newMessage = {
+    ...fetchedMessage,
+    partial: true,
+    content: null,
+    fetch: async () => fetchedMessage,
+  } as unknown as PartialMessage;
+
+  await service.logMessageEdit(oldMessage, newMessage);
+
+  assert.equal(sent.length, 1);
+  const embed = sent[0].embed.toJSON();
+  assert.match(embed.fields?.find((field) => field.name === "Previous Content")?.value ?? "", /same text/);
+  assert.match(embed.fields?.find((field) => field.name === "Updated Content")?.value ?? "", /same text/);
+  assert.match(embed.fields?.find((field) => field.name === "Previous Attachments")?.value ?? "", /before\.png/);
+  assert.match(embed.fields?.find((field) => field.name === "Updated Attachments")?.value ?? "", /after\.png/);
 });
 
 test("voice join, move, and leave cards identify the user and affected channels", async () => {
