@@ -1,0 +1,1 @@
+- [Discord logging card rendering](discord-logging-cards.md) — Native embeds approximate the reference layout; exact custom artwork and large side-by-side avatars need image rendering.

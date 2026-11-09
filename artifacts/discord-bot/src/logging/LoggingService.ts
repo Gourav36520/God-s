@@ -37,7 +37,7 @@ interface RecentActionLog {
   expiresAt: number;
   pending: boolean;
   message?: Message;
-  replacement?: EmbedBuilder;
+  replacement?: EmbedBuilder[];
 }
 
 interface ActionCardOptions {
@@ -53,6 +53,22 @@ interface ActionCardOptions {
   severity?: unknown;
   details?: ActionDetail[];
   caseId?: number | string | null;
+  logIconUrl?: string;
+  detailFooter?: string;
+}
+
+interface ProfileChange {
+  label: string;
+  before: string;
+  after: string;
+}
+
+interface ProfileCardOptions {
+  summaryChange?: string;
+  changedBy?: string;
+  logIconUrl?: string;
+  beforeImageUrl?: string;
+  afterImageUrl?: string;
 }
 
 function truncateField(value: string, maxLength = 1_024): string {
@@ -75,8 +91,9 @@ function createLogEmbed(title: string, color: number): EmbedBuilder {
     .setColor(color);
 }
 
-function createActionCard(options: ActionCardOptions): EmbedBuilder {
+function createActionCard(options: ActionCardOptions): EmbedBuilder[] {
   const severity = normalizeSeverity(options.severity);
+  const color = actionCardColor(severity);
   const isUser = options.targetKind !== "other";
   const targetName = isUser ? "User" : "Target";
   const targetMention =
@@ -85,79 +102,163 @@ function createActionCard(options: ActionCardOptions): EmbedBuilder {
     options.targetLabel && !options.targetLabel.includes(targetMention ?? "\0")
       ? `${options.targetLabel}${targetMention ? `\n${targetMention}` : ""}`
       : options.targetLabel || targetMention || "Unknown";
-  const fields = [
-    { name: targetName, value: targetLabel, inline: true },
-    {
-      name: isUser ? "User ID" : "Target ID",
-      value: options.targetId || "Unknown",
-      inline: true,
-    },
-    { name: "Action", value: truncateField(options.action || "Unknown action"), inline: true },
-    ...(options.moderatorId
-      ? [{
-          name: "Moderator",
-          value: options.moderatorLabel
-            ? `${options.moderatorLabel}\n<@${options.moderatorId}>`
-            : `<@${options.moderatorId}>`,
-          inline: true,
-        }]
-      : []),
-    ...(severity
-      ? [{ name: "Severity", value: severity.toUpperCase(), inline: true }]
-      : []),
-    {
-      name: "Reason",
-      value: truncateField(options.reason?.trim() || "No reason provided"),
-      inline: false,
-    },
-    ...(options.details ?? [])
-      .filter((field) => field.name.trim() && field.value.trim())
-      .map((field) => ({ ...field, value: truncateField(field.value) })),
-    ...(options.caseId !== null && options.caseId !== undefined
-      ? [{ name: "Case ID", value: String(options.caseId), inline: true }]
-      : []),
-  ];
-  const embed = createLogEmbed(options.title, actionCardColor(severity))
-    .addFields(fields);
+  const summary = createLogEmbed(options.title, color)
+    .setTitle(`🔨 ${options.title}`)
+    .setAuthor({
+      name: "Aegis Logs • Moderation",
+      ...(options.logIconUrl ? { iconURL: options.logIconUrl } : {}),
+    })
+    .addFields([
+      { name: targetName, value: targetLabel, inline: true },
+      {
+        name: isUser ? "User ID" : "Target ID",
+        value: options.targetId || "Unknown",
+        inline: true,
+      },
+      ...(severity
+        ? [{
+            name: "Severity",
+            value: `**${severity.toUpperCase()}**`,
+            inline: true,
+          }]
+        : [{ name: "Severity", value: "Unrated", inline: true }]),
+      {
+        name: "Reason",
+        value: truncateField(options.reason?.trim() || "No reason provided"),
+        inline: false,
+      },
+    ]);
 
-  if (options.targetAvatarUrl) embed.setThumbnail(options.targetAvatarUrl);
-  return embed;
+  const actionCard = createLogEmbed("Action Details", color)
+    .setTitle(null)
+    .setAuthor({
+      name: options.targetLabel || options.targetId || "Unknown",
+      ...(options.targetAvatarUrl ? { iconURL: options.targetAvatarUrl } : {}),
+    })
+    .addFields(
+      { name: "Action", value: truncateField(options.action || "Unknown action"), inline: true },
+      ...(severity
+        ? [{ name: "Severity", value: `**${severity.toUpperCase()}**`, inline: true }]
+        : []),
+      ...(options.moderatorId
+        ? [{
+            name: "Moderator",
+            value: options.moderatorLabel
+              ? `${options.moderatorLabel}\n<@${options.moderatorId}>`
+              : `<@${options.moderatorId}>`,
+            inline: true,
+          }]
+        : []),
+      ...(options.details ?? [])
+        .filter((field) => field.name.trim() && field.value.trim())
+        .map((field) => ({ ...field, value: truncateField(field.value) })),
+    );
+  actionCard.setFooter({
+    text: options.detailFooter ??
+      (options.caseId !== null && options.caseId !== undefined
+        ? `CASE #${options.caseId} • Aegis Moderation`
+        : "Aegis Moderation"),
+  });
+
+  return [summary, actionCard];
 }
 
 function createProfileCard(
   title: string,
   user: User,
-  changes: ActionDetail | ActionDetail[],
-  beforeImageUrl?: string,
-  afterImageUrl?: string,
-): EmbedBuilder {
+  changes: ProfileChange | ProfileChange[],
+  options: ProfileCardOptions = {},
+): EmbedBuilder[] {
   const profileChanges = Array.isArray(changes) ? changes : [changes];
-  const embed = createLogEmbed(title, 0x5865f2)
+  const displayName = user.globalName ?? user.username;
+  const profileAvatarUrl = user.displayAvatarURL({ size: 256 });
+  const changeSummary =
+    options.summaryChange ??
+    profileChanges.map(({ label }) => `${label.toLowerCase()} updated`).join(", ");
+  const summary = createLogEmbed(title, 0x5865f2)
+    .setTitle(`👤 ${title}`)
     .setAuthor({
       name: "Aegis Logs • Profile Update",
-      iconURL: user.displayAvatarURL({ size: 64 }),
+      ...(options.logIconUrl ? { iconURL: options.logIconUrl } : {}),
+    })
+    .addFields(
+      {
+        name: "User",
+        value: truncateField(`${displayName} (<@${user.id}>)`),
+        inline: true,
+      },
+      {
+        name: "User ID",
+        value: user.id,
+        inline: true,
+      },
+      { name: "Change", value: truncateField(changeSummary), inline: true },
+      { name: "Changed", value: options.changedBy ?? "By user", inline: true },
+    );
+
+  const comparison = createLogEmbed("Profile Comparison", 0x5865f2)
+    .setTitle(null)
+    .setAuthor({
+      name: "BEFORE → AFTER",
+      iconURL: options.beforeImageUrl ?? profileAvatarUrl,
     })
     .addFields(
       {
         name: "Profile",
-        value: truncateField(
-          `**${user.globalName ?? user.username}**\n@${user.username}\nID: ${user.id}`,
-        ),
+        value: truncateField(`**${displayName}**\n@${user.username}\nID: ${user.id}`),
         inline: true,
       },
       {
-        name: "Before → After",
+        name:
+          profileChanges.length === 1
+            ? profileChanges[0].label
+            : "Changes",
         value: truncateField(
           profileChanges
-            .map((change) => `**${change.name}**\n${change.value}`)
+            .map(
+              ({ label, before, after }) =>
+                `**${label.toUpperCase()}**\n**BEFORE**\n${before}\n↓\n**AFTER**\n${after}`,
+            )
             .join("\n\n"),
         ),
         inline: true,
       },
     );
-  if (beforeImageUrl) embed.setImage(beforeImageUrl);
-  if (afterImageUrl) embed.setThumbnail(afterImageUrl);
-  return embed;
+
+  if (options.afterImageUrl) comparison.setThumbnail(options.afterImageUrl);
+  return [summary, comparison];
+}
+
+function moderationTitle(action: string): string {
+  switch (action.trim().toLowerCase().replace(/\s+/g, "-")) {
+    case "ban":
+      return "Member Banned";
+    case "unban":
+      return "Member Unbanned";
+    case "kick":
+      return "Member Kicked";
+    case "timeout":
+      return "Member Timed Out";
+    case "untimeout":
+      return "Member Timeout Removed";
+    case "warn":
+      return "Member Warned";
+    case "warn-remove":
+      return "Warning Removed";
+    case "softban":
+    case "softban-partial":
+      return "Member Softbanned";
+    case "server-mute":
+      return "Member Server Muted";
+    case "server-unmute":
+      return "Member Server Unmuted";
+    case "server-deafen":
+      return "Member Server Deafened";
+    case "server-undeafen":
+      return "Member Server Undeafened";
+    default:
+      return "Moderation Action";
+  }
 }
 
 function messageContentForLog(
@@ -236,10 +337,23 @@ export class LoggingService {
     );
   }
 
+  private setLogAuthor(embed: EmbedBuilder, section: string): EmbedBuilder {
+    const botUser = this.client?.user;
+    const botIconUrl = botUser?.displayAvatarURL?.({ size: 64 });
+    return embed.setAuthor({
+      name: `${botUser?.username ?? "Aegis"} • ${section}`,
+      ...(botIconUrl ? { iconURL: botIconUrl } : {}),
+    });
+  }
+
+  private getLogIconUrl(): string | undefined {
+    return this.client?.user?.displayAvatarURL?.({ size: 64 });
+  }
+
   private async send(
     guildId: string,
     category: LogCategory,
-    embed: EmbedBuilder,
+    embed: EmbedBuilder | EmbedBuilder[],
   ): Promise<Message | null> {
     if (!this.client) return null;
     if (!this.isEnabled(guildId, category)) return null;
@@ -255,7 +369,9 @@ export class LoggingService {
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (channel?.isTextBased()) {
-        return await (channel as TextChannel).send({ embeds: [embed] });
+        return await (channel as TextChannel).send({
+          embeds: Array.isArray(embed) ? embed : [embed],
+        });
       }
     } catch (err) {
       logger.warn(`LoggingService: failed to send ${category} log to ${channelId}:`, err);
@@ -266,19 +382,20 @@ export class LoggingService {
   private async sendAction(
     guildId: string,
     category: LogCategory,
-    embed: EmbedBuilder,
+    embed: EmbedBuilder | EmbedBuilder[],
     targetId: string,
     action: string,
     source: ActionLogSource,
   ): Promise<void> {
+    const embeds = Array.isArray(embed) ? embed : [embed];
     const actionKeys = moderationActionKeys(action);
     if (targetId === "Unknown" || actionKeys.length === 0) {
-      await this.send(guildId, category, embed);
+      await this.send(guildId, category, embeds);
       return;
     }
     const configuredChannelId = this.getChannelId(guildId, category);
     if (!this.isEnabled(guildId, category) || !configuredChannelId) {
-      await this.send(guildId, category, embed);
+      await this.send(guildId, category, embeds);
       return;
     }
 
@@ -300,10 +417,10 @@ export class LoggingService {
 
       previous.source = source;
       previous.expiresAt = now + 5_000;
-      previous.replacement = embed;
+      previous.replacement = embeds;
       if (previous.message) {
         try {
-          await previous.message.edit({ embeds: [embed] });
+          await previous.message.edit({ embeds });
           previous.replacement = undefined;
         } catch (err) {
           logger.warn("LoggingService: failed to update a duplicate action log:", err);
@@ -313,7 +430,7 @@ export class LoggingService {
       if (previous.pending) return;
 
       previous.pending = true;
-      const message = await this.send(guildId, category, embed);
+      const message = await this.send(guildId, category, embeds);
       previous.pending = false;
       previous.message = message ?? undefined;
       previous.replacement = undefined;
@@ -327,14 +444,14 @@ export class LoggingService {
     };
     for (const key of keys) this.recentActionLogs.set(key, record);
 
-    const message = await this.send(guildId, category, embed);
+    const message = await this.send(guildId, category, embeds);
     record.pending = false;
     record.message = message ?? undefined;
     if (!record.replacement) return;
 
     if (message) {
       try {
-        await message.edit({ embeds: [record.replacement] });
+        await message.edit({ embeds: record.replacement });
       } catch (err) {
         logger.warn("LoggingService: failed to update a duplicate action log:", err);
       }
@@ -385,6 +502,7 @@ export class LoggingService {
       targetId: options.target.id,
       targetLabel: options.target.user.tag,
       targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
       moderatorId: options.moderatorId,
       action: "Judgment",
       reason: options.reason,
@@ -418,6 +536,7 @@ export class LoggingService {
       targetId: options.target.id,
       targetLabel: options.target.user.tag,
       targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
       moderatorId: options.moderatorId,
       action: "Release",
       reason: options.reason,
@@ -477,11 +596,12 @@ export class LoggingService {
       ? await this.resolveSeverity(options.guildId, options.targetId)
       : null;
     const embed = createActionCard({
-      title: "Moderation Action",
+      title: moderationTitle(options.action),
       targetId: options.targetId,
       targetLabel: options.targetLabel || options.targetId,
       targetKind: isUserAction ? "user" : "other",
       targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
       moderatorId: options.moderatorId,
       action: options.action,
       reason: options.reason,
@@ -579,10 +699,11 @@ export class LoggingService {
 
     const severity = await this.resolveSeverity(guildId, targetId);
     const embed = createActionCard({
-      title: "Moderation Action",
+      title: moderationTitle(action),
       targetId,
       targetLabel,
       targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
       moderatorId: executor?.id,
       moderatorLabel: executor?.tag,
       action,
@@ -617,7 +738,11 @@ export class LoggingService {
             GatewayIntentBits.MessageContent,
           )
         : false;
-    const embed = createLogEmbed("Attachment-Only Message", 0x57f287)
+    const embed = this.setLogAuthor(
+      createLogEmbed("Attachment-Only Message", 0x57f287)
+        .setTitle("📎 Attachment-Only Message"),
+      "Aegis Logs • Messages",
+    )
       .addFields(
         {
           name: "Author",
@@ -654,7 +779,11 @@ export class LoggingService {
         : false;
     const content = messageContentForLog(message, contentIntentEnabled);
 
-    const embed = createLogEmbed("Message Deleted", 0xed4245)
+    const embed = this.setLogAuthor(
+      createLogEmbed("Message Deleted", 0xed4245)
+        .setTitle("🗑️ Message Deleted"),
+      "Aegis Logs • Messages",
+    )
       .addFields(
         { name: "Author", value: message.author ? `${message.author.tag}\n<@${message.author.id}>` : "Unknown", inline: true },
         { name: "Channel", value: `<#${message.channelId}>`, inline: true },
@@ -719,7 +848,11 @@ export class LoggingService {
     }
 
     const author = currentMessage.author ?? oldMessage.author;
-    const embed = createLogEmbed("Message Edited", 0x5865f2)
+    const embed = this.setLogAuthor(
+      createLogEmbed("Message Edited", 0x5865f2)
+        .setTitle("✏️ Message Edited"),
+      "Aegis Logs • Messages",
+    )
       .setURL(currentMessage.url)
       .addFields(
         {
@@ -858,13 +991,22 @@ export class LoggingService {
     const oldNick = oldMember.nickname;
     const newNick = newMember.nickname;
     if (oldNick !== newNick) {
-      const embed = createProfileCard("Name Changed", newMember.user, {
-        name: "Display Name",
-        value: `**Before:** ${oldNick ?? "*None*"}\n**After:** ${newNick ?? "*Removed*"}`,
-        inline: false,
-      });
+      const embeds = createProfileCard(
+        "Name Changed",
+        newMember.user,
+        {
+          label: "Display Name",
+          before: oldNick ?? "None",
+          after: newNick ?? "Removed",
+        },
+        {
+          summaryChange: "Display name updated",
+          changedBy: "Server update",
+          logIconUrl: this.getLogIconUrl(),
+        },
+      );
 
-      await this.send(guildId, "members", embed);
+      await this.send(guildId, "members", embeds);
     }
 
     // ── Role changes — separate embeds for Added and Removed ──────────────
@@ -916,20 +1058,20 @@ export class LoggingService {
    * Called from the UserUpdate event handler for every guild the user is in.
    */
   async logUserUpdate(guildId: string, oldUser: User, newUser: User): Promise<void> {
-    const nameChanges: ActionDetail[] = [];
+    const nameChanges: ProfileChange[] = [];
     if (oldUser.username !== newUser.username) {
       nameChanges.push({
-        name: "Username",
-        value: `**Before:** @${oldUser.username}\n**After:** @${newUser.username}`,
-        inline: false,
+        label: "Username",
+        before: `@${oldUser.username}`,
+        after: `@${newUser.username}`,
       });
     }
 
     if (oldUser.globalName !== newUser.globalName) {
       nameChanges.push({
-        name: "Display Name",
-        value: `**Before:** ${oldUser.globalName ?? "*None*"}\n**After:** ${newUser.globalName ?? "*Removed*"}`,
-        inline: false,
+        label: "Display Name",
+        before: oldUser.globalName ?? "None",
+        after: newUser.globalName ?? "Removed",
       });
     }
 
@@ -937,7 +1079,13 @@ export class LoggingService {
       await this.send(
         guildId,
         "members",
-        createProfileCard("Name Changed", newUser, nameChanges),
+        createProfileCard("Name Changed", newUser, nameChanges, {
+          summaryChange: nameChanges
+            .map(({ label }) => `${label.toLowerCase()} updated`)
+            .join(", "),
+          changedBy: "By user",
+          logIconUrl: this.getLogIconUrl(),
+        }),
       );
     }
 
@@ -951,11 +1099,17 @@ export class LoggingService {
           "Avatar Changed",
           newUser,
           {
-            name: "Avatar Transition",
-            value: `[Before](${oldAvatarUrl}) → [After](${newAvatarUrl})`,
+            label: "Avatar",
+            before: `[View old avatar](${oldAvatarUrl})`,
+            after: `[View new avatar](${newAvatarUrl})`,
           },
-          oldAvatarUrl,
-          newAvatarUrl,
+          {
+            summaryChange: "Profile picture updated",
+            changedBy: "By user",
+            logIconUrl: this.getLogIconUrl(),
+            beforeImageUrl: oldAvatarUrl,
+            afterImageUrl: newAvatarUrl,
+          },
         ),
       );
     }
@@ -1226,23 +1380,23 @@ export class LoggingService {
         (field) => !/severity|heat/i.test(field.name),
       ),
     ];
-    const embed = createActionCard({
+    const embeds = createActionCard({
       title: "Security Action",
       targetId: options.member.id,
       targetLabel: options.member.user.tag,
       targetAvatarUrl: options.member.user.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
       action: options.action,
       reason: options.reason,
       severity,
       details,
-    }).setFooter({
-      text: `Gods Bot • User ID: ${options.member.id} • ${options.module}`,
+      detailFooter: `Gods Bot • User ID: ${options.member.id} • ${options.module}`,
     });
 
     await this.sendAction(
       options.guildId,
       "security",
-      embed,
+      embeds,
       options.member.id,
       options.action,
       "security",

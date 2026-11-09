@@ -21,6 +21,7 @@ import { LoggingService } from "./LoggingService.js";
 interface RecordedLog {
   category: LogCategory;
   embed: EmbedBuilder;
+  embeds: EmbedBuilder[];
 }
 
 function makeUser(
@@ -86,16 +87,18 @@ function createHarness(
     send: (
       guildId: string,
       category: LogCategory,
-      embed: EmbedBuilder,
+      embed: EmbedBuilder | EmbedBuilder[],
     ) => Promise<Message | null>;
   };
   internals.client = client;
   internals.manager = manager;
   internals.send = async (_guildId, category, embed) => {
-    const index = sent.push({ category, embed }) - 1;
+    const embeds = Array.isArray(embed) ? embed : [embed];
+    const index = sent.push({ category, embed: embeds[0], embeds }) - 1;
     const message = {
       edit: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
         sent[index].embed = embeds[0];
+        sent[index].embeds = embeds;
         return message;
       },
     };
@@ -109,7 +112,7 @@ function embedFields(embed: EmbedBuilder) {
   return embed.toJSON().fields ?? [];
 }
 
-test("profile logs share the blue card family and show before-to-after values", async () => {
+test("profile logs use summary and side-by-side comparison cards", async () => {
   const { service, sent } = createHarness();
   const oldUser = makeUser("user-1", "nova", "Nova", "old-avatar");
   const newUser = makeUser("user-1", "nova.exe", "Nova.exe", "new-avatar");
@@ -117,17 +120,28 @@ test("profile logs share the blue card family and show before-to-after values", 
   await service.logUserUpdate("guild-1", oldUser, newUser);
 
   assert.equal(sent.length, 2);
-  const nameCard = sent[0].embed.toJSON();
-  const avatarCard = sent[1].embed.toJSON();
-  assert.equal(nameCard.color, 0x5865f2);
-  assert.equal(avatarCard.color, 0x5865f2);
-  assert.match(nameCard.title ?? "", /Name Changed/);
-  assert.match(avatarCard.title ?? "", /Avatar Changed/);
-  assert.equal(nameCard.author?.name, "Aegis Logs • Profile Update");
-  assert.equal(avatarCard.author?.name, "Aegis Logs • Profile Update");
+  assert.ok(sent.every(({ embeds }) => embeds.length === 2));
+  const nameSummary = sent[0].embeds[0].toJSON();
+  const nameCard = sent[0].embeds[1].toJSON();
+  const avatarSummary = sent[1].embeds[0].toJSON();
+  const avatarCard = sent[1].embeds[1].toJSON();
+  assert.equal(nameSummary.color, 0x5865f2);
+  assert.equal(avatarSummary.color, 0x5865f2);
+  assert.match(nameSummary.title ?? "", /Name Changed/);
+  assert.match(avatarSummary.title ?? "", /Avatar Changed/);
+  assert.equal(nameSummary.author?.name, "Aegis Logs • Profile Update");
+  assert.equal(avatarSummary.author?.name, "Aegis Logs • Profile Update");
+  assert.equal(
+    nameSummary.fields?.find((field) => field.name === "Change")?.value,
+    "username updated, display name updated",
+  );
+  assert.equal(
+    avatarSummary.fields?.find((field) => field.name === "Changed")?.value,
+    "By user",
+  );
   const nameProfile = nameCard.fields?.find((field) => field.name === "Profile");
   const nameTransition = nameCard.fields?.find(
-    (field) => field.name === "Before → After",
+    (field) => field.name === "Changes",
   );
   assert.equal(nameProfile?.inline, true);
   assert.match(nameProfile?.value ?? "", /Nova\.exe.*@nova\.exe.*user-1/s);
@@ -141,11 +155,7 @@ test("profile logs share the blue card family and show before-to-after values", 
     /Nova.*Nova\.exe/s,
   );
   assert.equal(
-    avatarCard.thumbnail?.url,
-    "https://cdn.example.test/user-1/new-avatar?size=256",
-  );
-  assert.equal(
-    avatarCard.image?.url,
+    avatarCard.author?.icon_url,
     "https://cdn.example.test/user-1/old-avatar?size=256",
   );
   assert.equal(
@@ -157,12 +167,12 @@ test("profile logs share the blue card family and show before-to-after values", 
     true,
   );
   assert.equal(
-    avatarCard.fields?.find((field) => field.name === "Before → After")?.inline,
+    avatarCard.fields?.find((field) => field.name === "Avatar")?.inline,
     true,
   );
   assert.match(
-    avatarCard.fields?.find((field) => field.name === "Before → After")?.value ?? "",
-    /Before.*old-avatar.*After.*new-avatar/s,
+    avatarCard.fields?.find((field) => field.name === "Avatar")?.value ?? "",
+    /View old avatar.*old-avatar.*View new avatar.*new-avatar/s,
   );
 });
 
@@ -181,12 +191,13 @@ test("moderation cards use heat severity and retain target, moderator, reason, a
     caseId: 42,
   });
 
-  const card = sent[0].embed.toJSON();
-  assert.equal(card.color, 0xfee75c);
-  assert.equal(card.thumbnail?.url, "https://cdn.example.test/user-2/latest-avatar?size=256");
-  assert.equal(card.fields?.find((field) => field.name === "Severity")?.value, "MEDIUM");
-  assert.equal(card.fields?.find((field) => field.name === "Case ID")?.value, "42");
-  assert.match(card.fields?.find((field) => field.name === "Reason")?.value ?? "", /Repeated spam/);
+  const summary = sent[0].embeds[0].toJSON();
+  const card = sent[0].embeds[1].toJSON();
+  assert.equal(summary.color, 0xfee75c);
+  assert.equal(card.author?.icon_url, "https://cdn.example.test/user-2/latest-avatar?size=256");
+  assert.equal(summary.fields?.find((field) => field.name === "Severity")?.value, "**MEDIUM**");
+  assert.match(card.footer?.text ?? "", /CASE #42/);
+  assert.match(summary.fields?.find((field) => field.name === "Reason")?.value ?? "", /Repeated spam/);
   assert.match(card.fields?.find((field) => field.name === "Moderator")?.value ?? "", /moderator-1/);
 });
 
@@ -221,8 +232,8 @@ test("server mute and deafen audit changes produce the four expected actions", a
   assert.equal(sent.length, transitions.length);
   assert.deepEqual(
     sent.map(
-      ({ embed }) =>
-        embed.toJSON().fields?.find((field) => field.name === "Action")?.value,
+      ({ embeds }) =>
+        embeds[1].toJSON().fields?.find((field) => field.name === "Action")?.value,
     ),
     transitions.map(({ action }) => action),
   );
@@ -252,8 +263,8 @@ test("a moderation case enriches an earlier duplicate security action card", asy
   });
 
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].embed.toJSON().color, 0x57f287);
-  assert.equal(sent[0].embed.toJSON().fields?.find((field) => field.name === "Case ID")?.value, "57");
+  assert.equal(sent[0].embeds[0].toJSON().color, 0x57f287);
+  assert.match(sent[0].embeds[1].toJSON().footer?.text ?? "", /CASE #57/);
 });
 
 test("message edit and delete cards include author avatars, channels, and content", async () => {
