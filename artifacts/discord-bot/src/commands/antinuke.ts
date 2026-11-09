@@ -469,7 +469,7 @@ export async function execute(
       });
       await interaction.editReply(
         [
-          `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"} · dry-run: ${config.dryRun ? "on" : "off"}`,
+          `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"}`,
           "Detector policies:",
           ...detectorDetails,
           `Whitelist: ${Object.keys(config.whitelist).length} · blacklist: ${Object.keys(config.blacklist).length}`,
@@ -621,7 +621,7 @@ export async function execute(
     const required = ["channel-delete", "channel-create", "member-kick", "member-ban"] as const;
     await interaction.editReply(
       [
-        `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"} · dry-run: ${config.dryRun ? "on" : "off"}`,
+        `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"}`,
         ...required.map((name) => {
           const item = config.detectors[name];
           return `${name}: ${item.enabled ? "on" : "off"} · ${item.limit} in ${item.windowSeconds}s`;

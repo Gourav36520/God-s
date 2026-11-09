@@ -89,29 +89,27 @@ export class AntiNukeService {
       try {
         const migrated = hasLegacyDryRunSetting(row.config);
         const config = normalizeAntiNukeConfig(row.config);
+        if (migrated) {
+          await this.database.saveAntiNukeConfigRow(
+            row.guildId,
+            config as unknown as Record<string, unknown>,
+          );
+          logger.info(
+            `AntiNukeService: migrated legacy dry-run config reason=protection_paused_for_review guild=${row.guildId}`,
+          );
+        }
         this.configs.set(row.guildId, config);
         this.persistedConfigGuilds.add(row.guildId);
-        if (migrated) {
-          try {
-            await this.database.saveAntiNukeConfigRow(
-              row.guildId,
-              config as unknown as Record<string, unknown>,
-            );
-            logger.info(
-              `AntiNukeService: migrated legacy dry-run config reason=protection_paused_for_review guild=${row.guildId}`,
-            );
-          } catch (error) {
-            logger.error(
-              `AntiNukeService: legacy dry-run migration write failed reason=protection_paused_for_review guild=${row.guildId} code=${errorCode(error)}`,
-            );
-          }
-        }
       } catch (error) {
-        logger.warn(
-          `AntiNukeService: ignored invalid configuration row reason=config_row_invalid guild=${row.guildId} code=${errorCode(error)}`,
+        logger.error(
+          `AntiNukeService: configuration row could not be loaded or migrated; refusing initialization guild=${row.guildId} code=${errorCode(error)}`,
         );
+        throw error;
       }
     }
+    await Promise.all(
+      [...client.guilds.cache.keys()].map((guildId) => this.ensureConfig(guildId)),
+    );
     client.on(Events.GuildCreate, (guild) => {
       void this.ensureConfig(guild.id).catch((error: unknown) => {
         logger.error(
@@ -119,17 +117,6 @@ export class AntiNukeService {
         );
       });
     });
-    await Promise.all(
-      [...client.guilds.cache.keys()].map(async (guildId) => {
-        try {
-          await this.ensureConfig(guildId);
-        } catch (error) {
-          logger.error(
-            `AntiNukeService: default configuration persistence failed reason=default_config_persist_failed guild=${guildId} code=${errorCode(error)}`,
-          );
-        }
-      }),
-    );
     logger.info(
       `AntiNukeService: loaded ${rows.length} guild configuration(s) from PostgreSQL`,
     );

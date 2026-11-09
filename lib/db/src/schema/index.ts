@@ -19,3 +19,4 @@
 
 export * from "./moderation.js";
 export * from "./backups.js";
+export * from "./antinuke.js";

@@ -514,8 +514,9 @@ async function main(): Promise<void> {
     logger.info("[STARTUP] Anti-Nuke initialized and registered.");
   } catch (error) {
     logger.error(
-      `[STARTUP] Anti-Nuke initialization failed; continuing startup. ${safeStartupError(error)}`,
+      `[STARTUP] Anti-Nuke initialization failed; refusing to continue. ${safeStartupError(error)}`,
     );
+    throw new Error("Anti-Nuke initialization failed; refusing to continue.");
   }
 
   // ── Startup validation: audit + repair all guild channels once ready ───────

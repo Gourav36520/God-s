@@ -3,6 +3,10 @@ import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "./schema/index.js";
 import {
+  antiNukeGuildConfigs,
+  antiNukeIncidents,
+} from "./schema/antinuke.js";
+import {
   moderationBanExpirations,
   moderationCases,
 } from "./schema/moderation.js";
@@ -20,6 +24,112 @@ export const db = drizzle(pool, { schema });
 
 export * from "./schema/index.js";
 export * from "./backup-store.js";
+
+export async function loadAntiNukeConfigRows(): Promise<
+  Pick<schema.AntiNukeGuildConfig, "guildId" | "config">[]
+> {
+  return db
+    .select({
+      guildId: antiNukeGuildConfigs.guildId,
+      config: antiNukeGuildConfigs.config,
+    })
+    .from(antiNukeGuildConfigs);
+}
+
+export async function saveAntiNukeConfigRow(
+  guildId: string,
+  config: Record<string, unknown>,
+): Promise<void> {
+  await db
+    .insert(antiNukeGuildConfigs)
+    .values({ guildId, config })
+    .onConflictDoUpdate({
+      target: antiNukeGuildConfigs.guildId,
+      set: { config, updatedAt: new Date() },
+    });
+}
+
+export async function createAntiNukeIncidentRow(
+  values: schema.NewAntiNukeIncident,
+): Promise<boolean> {
+  const [created] = await db
+    .insert(antiNukeIncidents)
+    .values(values)
+    .onConflictDoNothing()
+    .returning({ id: antiNukeIncidents.id });
+
+  return Boolean(created);
+}
+
+export async function findAntiNukeIncidentRow(
+  guildId: string,
+  id: string,
+): Promise<schema.AntiNukeIncidentRow | null> {
+  const [incident] = await db
+    .select()
+    .from(antiNukeIncidents)
+    .where(
+      and(
+        eq(antiNukeIncidents.guildId, guildId),
+        eq(antiNukeIncidents.id, id),
+      ),
+    )
+    .limit(1);
+
+  return incident ?? null;
+}
+
+export async function listAntiNukeIncidentRows(
+  guildId: string,
+  filters: {
+    executorId?: string;
+    targetId?: string;
+    detector?: string;
+  } = {},
+  limit = 10,
+): Promise<schema.AntiNukeIncidentRow[]> {
+  const conditions = [eq(antiNukeIncidents.guildId, guildId)];
+  if (filters.executorId) {
+    conditions.push(eq(antiNukeIncidents.executorId, filters.executorId));
+  }
+  if (filters.targetId) {
+    conditions.push(eq(antiNukeIncidents.targetId, filters.targetId));
+  }
+  if (filters.detector) {
+    conditions.push(eq(antiNukeIncidents.detector, filters.detector));
+  }
+
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(100, Math.floor(limit)))
+    : 10;
+
+  return db
+    .select()
+    .from(antiNukeIncidents)
+    .where(and(...conditions))
+    .orderBy(desc(antiNukeIncidents.occurredAt))
+    .limit(safeLimit);
+}
+
+export async function updateAntiNukeIncidentOutcome(
+  guildId: string,
+  id: string,
+  outcome: string,
+  details: Record<string, unknown>,
+): Promise<boolean> {
+  const [updated] = await db
+    .update(antiNukeIncidents)
+    .set({ outcome, details })
+    .where(
+      and(
+        eq(antiNukeIncidents.guildId, guildId),
+        eq(antiNukeIncidents.id, id),
+      ),
+    )
+    .returning({ id: antiNukeIncidents.id });
+
+  return Boolean(updated);
+}
 
 export async function createModerationCase(
   values: schema.NewModerationCase,
