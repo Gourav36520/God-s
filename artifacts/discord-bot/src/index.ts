@@ -407,7 +407,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const wantMessageContent = envBool("INTENT_MESSAGE_CONTENT");
+  const wantMessageContent =
+    process.env.INTENT_MESSAGE_CONTENT === undefined ||
+    envBool("INTENT_MESSAGE_CONTENT");
   // Anti-Nuke bot-admission and member-role correlation require this privileged intent.
   const wantGuildMembers = true;
 
@@ -462,7 +464,7 @@ async function main(): Promise<void> {
     logger.error(
       "═══════════════════════════════════════════════════════════════\n" +
         "  PORTAL ACTION REQUIRED — MessageContent intent was REJECTED\n" +
-        "  Anti-Link URL detection will NOT work.\n" +
+        "  Message edit logs cannot show before/after text and Anti-Link URL detection will NOT work.\n" +
         "  1. Go to: https://discord.com/developers/applications\n" +
         "  2. Select your application → Click 'Bot'\n" +
         "  3. Scroll to 'Privileged Gateway Intents'\n" +

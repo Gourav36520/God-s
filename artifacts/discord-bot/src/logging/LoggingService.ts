@@ -3,9 +3,11 @@ import {
   Channel,
   Collection,
   EmbedBuilder,
+  GatewayIntentBits,
   GuildAuditLogsEntry,
   GuildChannel,
   GuildMember,
+  IntentsBitField,
   Message,
   PartialGuildMember,
   PartialMessage,
@@ -156,6 +158,43 @@ function createProfileCard(
   if (beforeImageUrl) embed.setImage(beforeImageUrl);
   if (afterImageUrl) embed.setThumbnail(afterImageUrl);
   return embed;
+}
+
+function messageContentForLog(
+  message: Message | PartialMessage,
+  contentIntentEnabled: boolean,
+): string {
+  const content = message.content ?? "";
+  if (content.trim().length > 0) return content;
+  if (message.partial) return "*Content unavailable (message not cached)*";
+  if (!contentIntentEnabled) {
+    return "*Content unavailable (Message Content intent is not enabled)*";
+  }
+  return "*No text content*";
+}
+
+function messageAttachmentsForLog(message: Message | PartialMessage): string {
+  const attachments = [...message.attachments.values()];
+  if (attachments.length === 0) {
+    return message.partial
+      ? "*Attachment information unavailable (message not cached)*"
+      : "*None*";
+  }
+  return attachments
+    .map((attachment) =>
+      attachment.name
+        ? `**${attachment.name}**\n${attachment.url}`
+        : attachment.url,
+    )
+    .join("\n");
+}
+
+function messageAttachmentSignature(message: Message | PartialMessage): string {
+  return JSON.stringify(
+    [...message.attachments.values()]
+      .map(({ id, name, url }) => ({ id, name, url }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  );
 }
 
 function formatPermissions(perms: string[]): string {
@@ -568,12 +607,52 @@ export class LoggingService {
 
   // ─── Messages ──────────────────────────────────────────────────────────────
 
+  async logMessageCreate(message: Message): Promise<void> {
+    if (!message.guildId || message.author.bot) return;
+    if ((message.content ?? "").trim() || message.attachments.size === 0) return;
+
+    const contentIntentEnabled =
+      this.client
+        ? (this.client.options.intents as IntentsBitField).has(
+            GatewayIntentBits.MessageContent,
+          )
+        : false;
+    const embed = createLogEmbed("Attachment-Only Message", 0x57f287)
+      .addFields(
+        {
+          name: "Author",
+          value: `${message.author.tag}\n<@${message.author.id}>`,
+          inline: true,
+        },
+        { name: "Channel", value: `<#${message.channelId}>`, inline: true },
+        {
+          name: "Content",
+          value: messageContentForLog(message, contentIntentEnabled),
+          inline: false,
+        },
+        {
+          name: "Attachments",
+          value: truncateField(messageAttachmentsForLog(message)),
+          inline: false,
+        },
+      )
+      .setFooter({ text: `Gods Bot • Message ID: ${message.id}` })
+      .setURL(message.url)
+      .setThumbnail(message.author.displayAvatarURL({ size: 256 }));
+
+    await this.send(message.guildId, "messages", embed);
+  }
+
   async logMessageDelete(message: Message | PartialMessage): Promise<void> {
     if (!message.guildId) return;
 
-    const content = message.partial
-      ? "*Message content unavailable (not cached)*"
-      : message.content || "No text content (possibly an attachment-only message)";
+    const contentIntentEnabled =
+      this.client
+        ? (this.client.options.intents as IntentsBitField).has(
+            GatewayIntentBits.MessageContent,
+          )
+        : false;
+    const content = messageContentForLog(message, contentIntentEnabled);
 
     const embed = createLogEmbed("Message Deleted", 0xed4245)
       .addFields(
@@ -587,10 +666,10 @@ export class LoggingService {
       embed.setThumbnail(message.author.displayAvatarURL({ size: 256 }));
     }
 
-    if (message.attachments?.size) {
+    if (message.attachments.size > 0 || message.partial) {
       embed.addFields({
         name: "Attachments",
-        value: message.attachments.map((a) => a.url).join("\n"),
+        value: truncateField(messageAttachmentsForLog(message)),
         inline: false,
       });
     }
@@ -599,39 +678,81 @@ export class LoggingService {
   }
 
   async logMessageEdit(oldMessage: Message | PartialMessage, newMessage: Message | PartialMessage): Promise<void> {
-    if (!newMessage.guildId) return;
-    if (newMessage.author?.bot) return;
+    let currentMessage = newMessage;
+    if (newMessage.partial) {
+      currentMessage = await newMessage.fetch().catch((err) => {
+        logger.warn(
+          `LoggingService: failed to fetch partial updated message ${newMessage.id}:`,
+          err,
+        );
+        return newMessage;
+      });
+    }
 
-    const oldContent = oldMessage.partial
-      ? "*Previous content unavailable (not cached)*"
-      : oldMessage.content || "No text content (possibly an attachment-only message)";
+    const guildId = currentMessage.guildId ?? oldMessage.guildId;
+    if (!guildId || currentMessage.author?.bot) return;
 
-    const newContent = newMessage.content
-      ? newMessage.content
-      : "No text content (possibly an attachment-only message)";
+    const contentIntentEnabled =
+      this.client
+        ? (this.client.options.intents as IntentsBitField).has(
+            GatewayIntentBits.MessageContent,
+          )
+        : false;
+    const oldContent = messageContentForLog(oldMessage, contentIntentEnabled);
+    const newContent = messageContentForLog(currentMessage, contentIntentEnabled);
+    const contentChanged = (oldMessage.content ?? "") !== (currentMessage.content ?? "");
+    const attachmentsChanged =
+      messageAttachmentSignature(oldMessage) !==
+      messageAttachmentSignature(currentMessage);
+    const editTimestampChanged =
+      oldMessage.editedTimestamp?.getTime() !==
+      currentMessage.editedTimestamp?.getTime();
+    const hasUncachedState = oldMessage.partial || currentMessage.partial;
 
-    if (oldContent === newContent) return;
+    if (
+      !contentChanged &&
+      !attachmentsChanged &&
+      !editTimestampChanged &&
+      !hasUncachedState
+    ) {
+      return;
+    }
 
+    const author = currentMessage.author ?? oldMessage.author;
     const embed = createLogEmbed("Message Edited", 0x5865f2)
-      .setURL(newMessage.url)
+      .setURL(currentMessage.url)
       .addFields(
         {
           name: "Author",
-          value: newMessage.author
-            ? `${newMessage.author.tag}\n<@${newMessage.author.id}>`
+          value: author
+            ? `${author.tag}\n<@${author.id}>`
             : "Unknown",
           inline: true,
         },
-        { name: "Channel", value: `<#${newMessage.channelId}>`, inline: true },
+        { name: "Channel", value: `<#${currentMessage.channelId}>`, inline: true },
         { name: "Previous Content", value: truncateField(oldContent), inline: false },
         { name: "Updated Content", value: truncateField(newContent), inline: false },
       )
-      .setFooter({ text: `Gods Bot • Message ID: ${newMessage.id}` });
+      .setFooter({ text: `Gods Bot • Message ID: ${currentMessage.id}` });
 
-    const author = newMessage.author ?? oldMessage.author;
     if (author) embed.setThumbnail(author.displayAvatarURL({ size: 256 }));
 
-    await this.send(newMessage.guildId, "messages", embed);
+    if (attachmentsChanged || hasUncachedState) {
+      embed.addFields(
+        {
+          name: "Previous Attachments",
+          value: truncateField(messageAttachmentsForLog(oldMessage)),
+          inline: false,
+        },
+        {
+          name: "Updated Attachments",
+          value: truncateField(messageAttachmentsForLog(currentMessage)),
+          inline: false,
+        },
+      );
+    }
+
+    await this.send(guildId, "messages", embed);
   }
 
   async logVoiceStateUpdate(

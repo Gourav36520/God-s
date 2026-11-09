@@ -13,9 +13,10 @@ export async function execute(message: Message): Promise<void> {
   messageTracker.recordMessage(message.guildId, message.author.id);
 
   const prefix = securityManager.getConfig(message.guildId).prefix;
-  if (!prefix || !message.content.startsWith(prefix)) return;
+  const content = message.content ?? "";
+  if (!prefix || !content.startsWith(prefix)) return;
 
-  const input = message.content.slice(prefix.length).trim();
+  const input = content.slice(prefix.length).trim();
   if (!input) return;
 
   const [rawName, ...args] = input.split(/\s+/u);
