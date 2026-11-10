@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AuditLogEvent,
+  AttachmentBuilder,
   Collection,
   EmbedBuilder,
   GatewayIntentBits,
@@ -20,11 +21,16 @@ import type {
 import type { SecurityManager } from "../security/SecurityManager.js";
 import type { LogCategory } from "./types.js";
 import { LoggingService } from "./LoggingService.js";
+import {
+  createMessageEditCardSvg,
+  renderMessageEditCard,
+} from "./messageEditCard.js";
 
 interface RecordedLog {
   category: LogCategory;
   embed: EmbedBuilder;
   embeds: EmbedBuilder[];
+  files?: AttachmentBuilder[];
 }
 
 function makeUser(
@@ -94,14 +100,21 @@ function createHarness(
       guildId: string,
       category: LogCategory,
       embed: EmbedBuilder | EmbedBuilder[],
+      files?: AttachmentBuilder[],
     ) => Promise<Message | null>;
   };
   const realSend = internals.send.bind(service);
   internals.client = client;
   internals.manager = manager;
-  internals.send = async (_guildId, category, embed) => {
+  internals.send = async (_guildId, category, embed, files) => {
     const embeds = Array.isArray(embed) ? embed : [embed];
-    const index = sent.push({ category, embed: embeds[0], embeds }) - 1;
+    const index =
+      sent.push({
+        category,
+        embed: embeds[0],
+        embeds,
+        ...(files?.length ? { files } : {}),
+      }) - 1;
     const message = {
       edit: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
         sent[index].embed = embeds[0];
@@ -321,7 +334,7 @@ test("a moderation case enriches an earlier duplicate security action card", asy
   assert.match(sent[0].embeds[1].toJSON().footer?.text ?? "", /CASE #57/);
 });
 
-test("message edit and delete cards include author avatars, channels, and content", async () => {
+test("message edit uses a comparison image and keeps metadata readable", async () => {
   const { service, sent } = createHarness();
   const author = makeUser("author-1", "editor", null, "author-avatar");
   const baseMessage = {
@@ -354,11 +367,78 @@ test("message edit and delete cards include author avatars, channels, and conten
   assert.equal(sent.length, 2);
   const editCard = sent[0].embed.toJSON();
   const deleteCard = sent[1].embed.toJSON();
-  assert.match(editCard.fields?.find((field) => field.name === "Previous Content")?.value ?? "", /before text/);
-  assert.match(editCard.fields?.find((field) => field.name === "Updated Content")?.value ?? "", /after text/);
-  assert.equal(editCard.thumbnail?.url, "https://cdn.example.test/author-1/author-avatar?size=256");
+  assert.equal(editCard.thumbnail, undefined);
+  assert.equal(sent[0].embeds.length, 2);
+  assert.equal(
+    sent[0].embeds[1].toJSON().image?.url,
+    "attachment://message-edit-card.png",
+  );
+  assert.equal(sent[0].files?.[0].name, "message-edit-card.png");
+  assert.match(editCard.fields?.find((field) => field.name === "Author")?.value ?? "", /author-1/);
+  assert.match(editCard.fields?.find((field) => field.name === "Channel")?.value ?? "", /channel-1/);
+  assert.match(editCard.fields?.find((field) => field.name === "Message ID")?.value ?? "", /message-1/);
   assert.match(deleteCard.fields?.find((field) => field.name === "Deleted Content")?.value ?? "", /deleted text/);
   assert.match(deleteCard.fields?.find((field) => field.name === "Channel")?.value ?? "", /channel-1/);
+});
+
+test("message edit sends its image attachment with both embeds", async () => {
+  const { service, client, useRealSend } = createHarness();
+  const payloads: Array<{
+    embeds: EmbedBuilder[];
+    files?: AttachmentBuilder[];
+  }> = [];
+  (client as unknown as {
+    channels: {
+      fetch: (channelId: string) => Promise<{
+        isTextBased: () => boolean;
+        send: (payload: {
+          embeds: EmbedBuilder[];
+          files?: AttachmentBuilder[];
+        }) => Promise<Message>;
+      }>;
+    };
+  }).channels = {
+    fetch: async () => ({
+      isTextBased: () => true,
+      send: async (payload) => {
+        payloads.push(payload);
+        return {} as Message;
+      },
+    }),
+  };
+  useRealSend();
+
+  const author = makeUser("author-1", "editor", "Editor", "avatar");
+  const baseMessage = {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    id: "message-send",
+    author,
+    partial: false,
+    attachments: new Collection(),
+    url: "https://discord.example.test/message-send",
+  };
+  await service.logMessageEdit(
+    {
+      ...baseMessage,
+      content: "before",
+      editedTimestamp: null,
+    } as unknown as Message,
+    {
+      ...baseMessage,
+      content: "after",
+      editedTimestamp: 1_794_200_000_000,
+    } as unknown as Message,
+  );
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].embeds.length, 2);
+  assert.equal(
+    payloads[0].embeds[1].toJSON().image?.url,
+    "attachment://message-edit-card.png",
+  );
+  assert.equal(payloads[0].files?.[0].name, "message-edit-card.png");
+  assert.ok(Buffer.isBuffer(payloads[0].files?.[0].attachment));
 });
 
 test("partial message edits log attachment-only changes using the old guild context", async () => {
@@ -399,10 +479,37 @@ test("partial message edits log attachment-only changes using the old guild cont
 
   assert.equal(sent.length, 1);
   const embed = sent[0].embed.toJSON();
-  assert.match(embed.fields?.find((field) => field.name === "Previous Content")?.value ?? "", /same text/);
-  assert.match(embed.fields?.find((field) => field.name === "Updated Content")?.value ?? "", /same text/);
   assert.match(embed.fields?.find((field) => field.name === "Previous Attachments")?.value ?? "", /before\.png/);
   assert.match(embed.fields?.find((field) => field.name === "Updated Attachments")?.value ?? "", /after\.png/);
+  assert.equal(sent[0].files?.[0].name, "message-edit-card.png");
+});
+
+test("message edit card escapes text and safely shortens long content", () => {
+  const svg = createMessageEditCardSvg({
+    authorName: "Editor <admin>",
+    authorTag: "@editor",
+    authorId: "user-1",
+    beforeContent: `<script>${"long text ".repeat(100)}</script>`,
+    afterContent: "updated",
+  });
+
+  assert.match(svg, /BEFORE/);
+  assert.match(svg, /AFTER/);
+  assert.match(svg, /&lt;script&gt;/);
+  assert.doesNotMatch(svg, /<script>/);
+  assert.match(svg, /CONTENT SHORTENED/);
+});
+
+test("message edit card renders to a valid PNG", async () => {
+  const png = await renderMessageEditCard({
+    authorName: "Nova",
+    authorTag: "@nova",
+    authorId: "user-1",
+    beforeContent: "Before content",
+    afterContent: "After content",
+  });
+
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 });
 
 test("voice join, move, and leave cards identify the user and affected channels", async () => {

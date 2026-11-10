@@ -1,5 +1,6 @@
 import {
   AuditLogEvent,
+  AttachmentBuilder,
   Channel,
   Collection,
   EmbedBuilder,
@@ -27,6 +28,7 @@ import {
   normalizeSeverity,
   type LogSeverity,
 } from "./presentation.js";
+import { renderMessageEditCard } from "./messageEditCard.js";
 
 type ActionDetail = { name: string; value: string; inline?: boolean };
 
@@ -355,6 +357,7 @@ export class LoggingService {
     guildId: string,
     category: LogCategory,
     embed: EmbedBuilder | EmbedBuilder[],
+    files?: AttachmentBuilder[],
   ): Promise<Message | null> {
     if (!this.client) return null;
     if (!this.isEnabled(guildId, category)) return null;
@@ -372,6 +375,7 @@ export class LoggingService {
       if (channel?.isTextBased()) {
         return await (channel as TextChannel).send({
           embeds: Array.isArray(embed) ? embed : [embed],
+          ...(files?.length ? { files } : {}),
         });
       }
     } catch (err) {
@@ -848,6 +852,26 @@ export class LoggingService {
     }
 
     const author = currentMessage.author ?? oldMessage.author;
+    const authorName = author?.globalName ?? author?.username ?? "Unknown";
+    const authorTag = author?.username ? `@${author.username}` : "Unknown";
+    const avatarUrl = author?.displayAvatarURL({ extension: "png", size: 128 });
+    let cardFile: AttachmentBuilder | undefined;
+    try {
+      const card = await renderMessageEditCard({
+        authorName,
+        authorTag,
+        authorId: author?.id ?? "Unknown",
+        avatarUrl,
+        beforeContent: oldContent,
+        afterContent: newContent,
+      });
+      cardFile = new AttachmentBuilder(card, {
+        name: "message-edit-card.png",
+      });
+    } catch (err) {
+      logger.warn("LoggingService: failed to render message edit comparison card:", err);
+    }
+
     const embed = this.setLogAuthor(
       createLogEmbed("Message Edited", 0x5865f2)
         .setTitle("✏️ Message Edited"),
@@ -858,17 +882,14 @@ export class LoggingService {
         {
           name: "Author",
           value: author
-            ? `${author.tag}\n<@${author.id}>`
+            ? `${author.globalName ?? author.username}\n<@${author.id}>`
             : "Unknown",
           inline: true,
         },
         { name: "Channel", value: `<#${currentMessage.channelId}>`, inline: true },
-        { name: "Previous Content", value: truncateField(oldContent), inline: false },
-        { name: "Updated Content", value: truncateField(newContent), inline: false },
+        { name: "Message ID", value: `\`${currentMessage.id}\``, inline: true },
       )
       .setFooter({ text: `Gods Bot • Message ID: ${currentMessage.id}` });
-
-    if (author) embed.setThumbnail(author.displayAvatarURL({ size: 256 }));
 
     if (attachmentsChanged || hasUncachedState) {
       embed.addFields(
@@ -885,7 +906,17 @@ export class LoggingService {
       );
     }
 
-    await this.send(guildId, "messages", embed);
+    const cardEmbed = cardFile
+      ? new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setImage("attachment://message-edit-card.png")
+      : null;
+    await this.send(
+      guildId,
+      "messages",
+      cardEmbed ? [embed, cardEmbed] : embed,
+      cardFile ? [cardFile] : undefined,
+    );
   }
 
   async logVoiceStateUpdate(
