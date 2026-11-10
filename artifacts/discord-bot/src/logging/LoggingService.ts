@@ -34,6 +34,7 @@ import {
   renderMessageDeleteCard,
   renderNameChangeCard,
 } from "./profileAndDeleteCards.js";
+import { renderModerationCard } from "./moderationCard.js";
 
 type ActionDetail = { name: string; value: string; inline?: boolean };
 
@@ -44,7 +45,10 @@ interface RecentActionLog {
   expiresAt: number;
   pending: boolean;
   message?: Message;
-  replacement?: EmbedBuilder[];
+  replacement?: {
+    embeds: EmbedBuilder[];
+    files?: AttachmentBuilder[];
+  };
 }
 
 interface ActionCardOptions {
@@ -62,6 +66,28 @@ interface ActionCardOptions {
   caseId?: number | string | null;
   logIconUrl?: string;
   detailFooter?: string;
+  timestamp?: Date;
+  unratedColor?: number;
+  includeModeratorIdField?: boolean;
+}
+
+interface ModerationLogOptions {
+  guildId: string;
+  targetId: string;
+  targetLabel: string;
+  targetKind?: "user" | "other";
+  targetUser?: User | null;
+  moderatorId?: string | null;
+  moderatorLabel?: string | null;
+  moderatorUser?: User | null;
+  action: string;
+  reason?: string | null;
+  duration?: string | null;
+  expiresAt?: Date | null;
+  details?: ActionDetail[];
+  caseId?: number | string | null;
+  timestamp?: Date;
+  severity?: unknown;
 }
 
 interface ProfileChange {
@@ -82,6 +108,27 @@ function truncateField(value: string, maxLength = 1_024): string {
   return value.length > maxLength ? value.slice(0, maxLength - 1) + "…" : value;
 }
 
+function formatElapsedDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return "Less than a minute";
+  let remainingSeconds = Math.floor(durationMs / 1_000);
+  const units: Array<[string, number]> = [
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+    ["second", 1],
+  ];
+  const parts: string[] = [];
+  for (const [unit, secondsPerUnit] of units) {
+    const count = Math.floor(remainingSeconds / secondsPerUnit);
+    if (count > 0) {
+      parts.push(`${count} ${unit}${count === 1 ? "" : "s"}`);
+      remainingSeconds %= secondsPerUnit;
+    }
+    if (parts.length === 2) break;
+  }
+  return parts.join(" ") || "Less than a minute";
+}
+
 function severityFromDetails(details: ActionDetail[] | undefined): LogSeverity | null {
   for (const detail of details ?? []) {
     if (!/severity|heat/i.test(detail.name)) continue;
@@ -100,7 +147,9 @@ function createLogEmbed(title: string, color: number): EmbedBuilder {
 
 function createActionCard(options: ActionCardOptions): EmbedBuilder[] {
   const severity = normalizeSeverity(options.severity);
-  const color = actionCardColor(severity);
+  const color = severity
+    ? actionCardColor(severity)
+    : options.unratedColor ?? actionCardColor(severity);
   const isUser = options.targetKind !== "other";
   const targetName = isUser ? "User" : "Target";
   const targetMention =
@@ -135,6 +184,7 @@ function createActionCard(options: ActionCardOptions): EmbedBuilder[] {
         inline: false,
       },
     ]);
+  if (options.timestamp) summary.setTimestamp(options.timestamp);
 
   const actionCard = createLogEmbed("Action Details", color)
     .setTitle(null)
@@ -153,6 +203,13 @@ function createActionCard(options: ActionCardOptions): EmbedBuilder[] {
             value: options.moderatorLabel
               ? `${options.moderatorLabel}\n<@${options.moderatorId}>`
               : `<@${options.moderatorId}>`,
+            inline: true,
+          }]
+        : []),
+      ...(options.includeModeratorIdField && options.moderatorId
+        ? [{
+            name: "Moderator ID",
+            value: options.moderatorId,
             inline: true,
           }]
         : []),
@@ -273,6 +330,10 @@ function createProfileCard(
 
 function moderationTitle(action: string): string {
   switch (action.trim().toLowerCase().replace(/\s+/g, "-")) {
+    case "judgment":
+      return "God's Judgment";
+    case "release":
+      return "Member Released";
     case "ban":
       return "Member Banned";
     case "unban":
@@ -288,8 +349,9 @@ function moderationTitle(action: string): string {
     case "warn-remove":
       return "Warning Removed";
     case "softban":
-    case "softban-partial":
       return "Member Softbanned";
+    case "softban-partial":
+      return "Softban Partially Completed";
     case "server-mute":
       return "Member Server Muted";
     case "server-unmute":
@@ -298,6 +360,18 @@ function moderationTitle(action: string): string {
       return "Member Server Deafened";
     case "server-undeafen":
       return "Member Server Undeafened";
+    case "lock":
+      return "Channel Locked";
+    case "unlock":
+      return "Channel Unlocked";
+    case "slowmode":
+      return "Channel Slowmode Updated";
+    case "role-add":
+      return "Role Added";
+    case "role-remove":
+      return "Role Removed";
+    case "nickname":
+      return "Nickname Changed";
     default:
       return "Moderation Action";
   }
@@ -460,16 +534,17 @@ export class LoggingService {
     targetId: string,
     action: string,
     source: ActionLogSource,
+    files?: AttachmentBuilder[],
   ): Promise<void> {
     const embeds = Array.isArray(embed) ? embed : [embed];
     const actionKeys = moderationActionKeys(action);
     if (targetId === "Unknown" || actionKeys.length === 0) {
-      await this.send(guildId, category, embeds);
+      await this.send(guildId, category, embeds, files);
       return;
     }
     const configuredChannelId = this.getChannelId(guildId, category);
     if (!this.isEnabled(guildId, category) || !configuredChannelId) {
-      await this.send(guildId, category, embeds);
+      await this.send(guildId, category, embeds, files);
       return;
     }
 
@@ -491,10 +566,14 @@ export class LoggingService {
 
       previous.source = source;
       previous.expiresAt = now + 5_000;
-      previous.replacement = embeds;
+      previous.replacement = { embeds, files };
       if (previous.message) {
         try {
-          await previous.message.edit({ embeds });
+          await previous.message.edit({
+            embeds,
+            files: files ?? [],
+            attachments: [],
+          });
           previous.replacement = undefined;
         } catch (err) {
           logger.warn("LoggingService: failed to update a duplicate action log:", err);
@@ -504,7 +583,7 @@ export class LoggingService {
       if (previous.pending) return;
 
       previous.pending = true;
-      const message = await this.send(guildId, category, embeds);
+      const message = await this.send(guildId, category, embeds, files);
       previous.pending = false;
       previous.message = message ?? undefined;
       previous.replacement = undefined;
@@ -518,20 +597,29 @@ export class LoggingService {
     };
     for (const key of keys) this.recentActionLogs.set(key, record);
 
-    const message = await this.send(guildId, category, embeds);
+    const message = await this.send(guildId, category, embeds, files);
     record.pending = false;
     record.message = message ?? undefined;
     if (!record.replacement) return;
 
     if (message) {
       try {
-        await message.edit({ embeds: record.replacement });
+        await message.edit({
+          embeds: record.replacement.embeds,
+          files: record.replacement.files ?? [],
+          attachments: [],
+        });
       } catch (err) {
         logger.warn("LoggingService: failed to update a duplicate action log:", err);
       }
     } else {
       record.message =
-        (await this.send(guildId, category, record.replacement)) ?? undefined;
+        (await this.send(
+          guildId,
+          category,
+          record.replacement.embeds,
+          record.replacement.files,
+        )) ?? undefined;
     }
     record.replacement = undefined;
   }
@@ -558,6 +646,132 @@ export class LoggingService {
     }
   }
 
+  private async resolveLogUser(userId?: string | null): Promise<User | null> {
+    if (!this.client || !userId || userId === "Unknown") return null;
+    return this.client.users.cache.get(userId) ??
+      (await this.client.users.fetch(userId).catch(() => null));
+  }
+
+  private async createModerationPayload(
+    options: ModerationLogOptions,
+  ): Promise<{ embeds: EmbedBuilder[]; files?: AttachmentBuilder[] }> {
+    const isUser = options.targetKind !== "other";
+    const [targetUser, moderatorUser] = await Promise.all([
+      isUser
+        ? options.targetUser ?? this.resolveLogUser(options.targetId)
+        : null,
+      options.moderatorUser ??
+        this.resolveLogUser(options.moderatorId),
+    ]);
+    const severity = isUser
+      ? await this.resolveSeverity(
+          options.guildId,
+          options.targetId,
+          options.severity,
+        )
+      : null;
+    const timestamp = options.timestamp ?? new Date();
+    const targetLabel =
+      targetUser?.tag ||
+      options.targetLabel ||
+      options.targetId ||
+      "Unknown";
+    const moderatorLabel =
+      moderatorUser?.tag || options.moderatorLabel || null;
+    const moderatorName =
+      moderatorUser?.globalName ??
+      moderatorUser?.username ??
+      moderatorLabel?.split("#")[0] ??
+      "Moderator unavailable";
+    const moderatorUsername = moderatorUser?.username
+      ? `@${moderatorUser.username}`
+      : moderatorLabel?.split("#")[0]
+        ? `@${moderatorLabel.split("#")[0]}`
+        : "Username unavailable";
+    const targetName =
+      targetUser?.globalName ??
+      targetUser?.username ??
+      (targetLabel !== options.targetId ? targetLabel : "Unknown user");
+    const targetUsername = targetUser?.username
+      ? `@${targetUser.username}`
+      : targetLabel !== options.targetId && !/^\d+$/.test(targetLabel)
+        ? `@${targetLabel.split("#")[0].replace(/^@/, "")}`
+        : "Username unavailable";
+    const expiryDate =
+      options.expiresAt && Number.isFinite(options.expiresAt.getTime())
+        ? options.expiresAt
+        : null;
+    const actionDetails: ActionDetail[] = [
+      ...(options.duration
+        ? [{ name: "Duration", value: options.duration, inline: true }]
+        : []),
+      ...(expiryDate
+        ? [{
+            name: "Expires",
+            value: `<t:${Math.floor(expiryDate.getTime() / 1_000)}:F> · <t:${Math.floor(expiryDate.getTime() / 1_000)}:R>`,
+            inline: true,
+          }]
+        : []),
+      ...(options.details ?? []),
+    ];
+    const [summary, fallbackDetails] = createActionCard({
+      title: moderationTitle(options.action),
+      targetId: options.targetId,
+      targetLabel,
+      targetKind: options.targetKind ?? "user",
+      targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+      logIconUrl: this.getLogIconUrl(),
+      moderatorId: options.moderatorId,
+      moderatorLabel,
+      action: options.action,
+      reason: options.reason,
+      severity,
+      details: actionDetails,
+      caseId: options.caseId,
+      timestamp,
+      unratedColor: 0x5865f2,
+      includeModeratorIdField: true,
+    });
+
+    try {
+      const image = await renderModerationCard({
+        action: moderationTitle(options.action),
+        targetName,
+        targetUsername,
+        targetId: options.targetId || "Unavailable",
+        targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+        moderatorName,
+        moderatorUsername,
+        moderatorId: options.moderatorId || "Unavailable",
+        severity,
+        reason: options.reason,
+        duration: options.duration,
+        expiresAt: expiryDate,
+        details: (options.details ?? []).map((detail) => ({
+          label: detail.name,
+          value: detail.value,
+        })),
+        timestamp,
+        caseId: options.caseId,
+      });
+      const color = severity ? actionCardColor(severity) : 0x5865f2;
+      fallbackDetails
+        .setColor(color)
+        .setImage("attachment://moderation-action-card.png");
+      return {
+        embeds: [summary, fallbackDetails],
+        files: [
+          new AttachmentBuilder(image, {
+            name: "moderation-action-card.png",
+          }),
+        ],
+      };
+    } catch (err) {
+      logger.warn("LoggingService: failed to render moderation action card:", err);
+      return { embeds: [summary, fallbackDetails] };
+    }
+  }
+
   // ─── Moderation ────────────────────────────────────────────────────────────
 
   async logJudgment(options: {
@@ -567,20 +781,14 @@ export class LoggingService {
     reason: string;
     savedRoles: string[];
   }): Promise<void> {
-    const severity = await this.resolveSeverity(
-      options.guildId,
-      options.target.id,
-    );
-    const embed = createActionCard({
-      title: "God's Judgment",
+    const payload = await this.createModerationPayload({
+      guildId: options.guildId,
       targetId: options.target.id,
       targetLabel: options.target.user.tag,
-      targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
-      logIconUrl: this.getLogIconUrl(),
+      targetUser: options.target.user,
       moderatorId: options.moderatorId,
       action: "Judgment",
       reason: options.reason,
-      severity,
       details: [{
         name: `Saved Roles (${options.savedRoles.length})`,
         value: options.savedRoles.length > 0
@@ -590,7 +798,12 @@ export class LoggingService {
       }],
     });
 
-    await this.send(options.guildId, "moderation", embed);
+    await this.send(
+      options.guildId,
+      "moderation",
+      payload.embeds,
+      payload.files,
+    );
   }
 
   async logRelease(options: {
@@ -601,20 +814,14 @@ export class LoggingService {
     restoredRoles: string[];
     skippedRoles: number;
   }): Promise<void> {
-    const severity = await this.resolveSeverity(
-      options.guildId,
-      options.target.id,
-    );
-    const embed = createActionCard({
-      title: "God's Judgment",
+    const payload = await this.createModerationPayload({
+      guildId: options.guildId,
       targetId: options.target.id,
       targetLabel: options.target.user.tag,
-      targetAvatarUrl: options.target.user.displayAvatarURL({ size: 256 }),
-      logIconUrl: this.getLogIconUrl(),
+      targetUser: options.target.user,
       moderatorId: options.moderatorId,
       action: "Release",
       reason: options.reason,
-      severity,
       details: [
         {
           name: `Roles Restored (${options.restoredRoles.length})`,
@@ -633,7 +840,12 @@ export class LoggingService {
       ],
     });
 
-    await this.send(options.guildId, "moderation", embed);
+    await this.send(
+      options.guildId,
+      "moderation",
+      payload.embeds,
+      payload.files,
+    );
   }
 
   async logModerationCommand(options: {
@@ -645,6 +857,9 @@ export class LoggingService {
     reason: string;
     duration?: string;
     caseId?: number | null;
+    expiresAt?: Date | null;
+    details?: ActionDetail[];
+    severity?: unknown;
   }): Promise<void> {
     const userActions = new Set([
       "ban",
@@ -660,39 +875,23 @@ export class LoggingService {
       "server-unmute",
       "server-deafen",
       "server-undeafen",
+      "nickname",
     ]);
     const isUserAction = userActions.has(options.action.trim().toLowerCase());
-    const targetUser = isUserAction && this.client
-      ? this.client.users.cache.get(options.targetId) ??
-        (await this.client.users.fetch(options.targetId).catch(() => null))
-      : null;
-    const severity = isUserAction
-      ? await this.resolveSeverity(options.guildId, options.targetId)
-      : null;
-    const embed = createActionCard({
-      title: moderationTitle(options.action),
-      targetId: options.targetId,
-      targetLabel: options.targetLabel || options.targetId,
+    const payload = await this.createModerationPayload({
+      ...options,
       targetKind: isUserAction ? "user" : "other",
-      targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
-      logIconUrl: this.getLogIconUrl(),
-      moderatorId: options.moderatorId,
-      action: options.action,
-      reason: options.reason,
-      severity,
-      details: options.duration
-        ? [{ name: "Duration", value: options.duration, inline: true }]
-        : [],
-      caseId: options.caseId,
+      timestamp: new Date(),
     });
 
     await this.sendAction(
       options.guildId,
       "moderation",
-      embed,
+      payload.embeds,
       options.targetId,
       options.action,
       "moderation",
+      payload.files,
     );
   }
 
@@ -710,6 +909,8 @@ export class LoggingService {
           : undefined;
     const targetLabel = targetUser?.tag ?? targetId;
     let action: string | null = null;
+    let duration: string | undefined;
+    let expiresAt: Date | null = null;
     let details: ActionDetail[] = [];
 
     switch (entry.action) {
@@ -740,13 +941,13 @@ export class LoggingService {
           if (isTimedOut) {
             action = "Timeout";
             if (typeof newValue === "string") {
-              const expiresAt = Date.parse(newValue);
-              if (Number.isFinite(expiresAt)) {
-                details = [{
-                  name: "Expires",
-                  value: `<t:${Math.floor(expiresAt / 1_000)}:R>`,
-                  inline: true,
-                }];
+              const parsedExpiry = Date.parse(newValue);
+              if (Number.isFinite(parsedExpiry)) {
+                expiresAt = new Date(parsedExpiry);
+                const timestamp = entry.createdAt instanceof Date
+                  ? entry.createdAt.getTime()
+                  : Date.now();
+                duration = formatElapsedDuration(parsedExpiry - timestamp);
               }
             }
           } else if (wasTimedOut) {
@@ -771,32 +972,39 @@ export class LoggingService {
 
     if (!action) return;
 
-    const severity = await this.resolveSeverity(guildId, targetId);
-    const embed = createActionCard({
-      title: moderationTitle(action),
+    const payload = await this.createModerationPayload({
+      guildId,
       targetId,
       targetLabel,
-      targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
-      logIconUrl: this.getLogIconUrl(),
+      targetUser,
       moderatorId: executor?.id,
       moderatorLabel: executor?.tag,
+      moderatorUser: executor,
       action,
       reason,
-      severity,
+      duration,
+      expiresAt,
       details,
+      timestamp: entry.createdAt instanceof Date ? entry.createdAt : new Date(),
     });
 
     if (executor?.id === this.client?.user?.id) {
       await this.sendAction(
         guildId,
         "moderation",
-        embed,
+        payload.embeds,
         targetId,
         action,
         "audit",
+        payload.files,
       );
     } else {
-      await this.send(guildId, "moderation", embed);
+      await this.send(
+        guildId,
+        "moderation",
+        payload.embeds,
+        payload.files,
+      );
     }
   }
 

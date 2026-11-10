@@ -121,9 +121,16 @@ function createHarness(
         ...(files?.length ? { files } : {}),
       }) - 1;
     const message = {
-      edit: async ({ embeds }: { embeds: EmbedBuilder[] }) => {
+      edit: async ({
+        embeds,
+        files,
+      }: {
+        embeds: EmbedBuilder[];
+        files?: AttachmentBuilder[];
+      }) => {
         sent[index].embed = embeds[0];
         sent[index].embeds = embeds;
+        sent[index].files = files;
         return message;
       },
     };
@@ -263,6 +270,159 @@ test("moderation cards use heat severity and retain target, moderator, reason, a
   assert.match(card.footer?.text ?? "", /CASE #42/);
   assert.match(summary.fields?.find((field) => field.name === "Reason")?.value ?? "", /Repeated spam/);
   assert.match(card.fields?.find((field) => field.name === "Moderator")?.value ?? "", /moderator-1/);
+  assert.equal(card.fields?.find((field) => field.name === "Moderator ID")?.value, "moderator-1");
+  assert.equal(card.image?.url, "attachment://moderation-action-card.png");
+  assert.equal(sent[0].files?.[0].name, "moderation-action-card.png");
+});
+
+test("all supported moderation commands use the same severity-colored PNG card", async () => {
+  const actionCases = [
+    ["ban", "low", 0x57f287],
+    ["unban", "medium", 0xfee75c],
+    ["kick", "high", 0xe67e22],
+    ["timeout", "critical", 0x8b0000],
+    ["untimeout", "low", 0x57f287],
+    ["softban", "medium", 0xfee75c],
+    ["softban-partial", "high", 0xe67e22],
+    ["warn", "critical", 0x8b0000],
+    ["warn-remove", "low", 0x57f287],
+    ["server-mute", "medium", 0xfee75c],
+    ["server-unmute", "high", 0xe67e22],
+    ["server-deafen", "critical", 0x8b0000],
+    ["server-undeafen", "low", 0x57f287],
+    ["nickname", "medium", 0xfee75c],
+  ] as const;
+  const severityByUser = new Map<string, string>(
+    actionCases.map(
+      ([, severity], index) => [`target-${index}`, severity] as [string, string],
+    ),
+  );
+  const { service, sent, users } = createHarness(
+    (userId) => severityByUser.get(userId) ?? "none",
+  );
+
+  for (const [index, [action]] of actionCases.entries()) {
+    const target = makeUser(`target-${index}`, `member${index}`, null, "avatar");
+    users.set(target.id, target);
+    await service.logModerationCommand({
+      guildId: "guild-1",
+      targetId: target.id,
+      targetLabel: target.tag,
+      moderatorId: "moderator-1",
+      action,
+      reason: "Action-specific test",
+      duration: action === "timeout" ? "15 minutes" : undefined,
+      caseId: index + 1,
+    });
+  }
+
+  assert.equal(sent.length, actionCases.length);
+  for (const [index, [action, severity, color]] of actionCases.entries()) {
+    const summary = sent[index].embeds[0].toJSON();
+    const card = sent[index].embeds[1].toJSON();
+    assert.equal(summary.color, color, action);
+    assert.equal(card.color, color, action);
+    assert.equal(card.image?.url, "attachment://moderation-action-card.png", action);
+    assert.equal(sent[index].files?.[0].name, "moderation-action-card.png", action);
+    assert.equal(
+      card.fields?.find((field) => field.name === "Action")?.value,
+      action,
+    );
+    assert.equal(
+      summary.fields?.find((field) => field.name === "Severity")?.value,
+      `**${severity.toUpperCase()}**`,
+    );
+  }
+});
+
+test("non-user moderation targets use the same card without inventing severity", async () => {
+  const { service, sent } = createHarness(() => "critical");
+
+  await service.logModerationCommand({
+    guildId: "guild-1",
+    targetId: "role-1",
+    targetLabel: "Helpers",
+    moderatorId: "moderator-1",
+    action: "role-add",
+    reason: "Role access updated",
+    caseId: 77,
+  });
+
+  const summary = sent[0].embeds[0].toJSON();
+  const card = sent[0].embeds[1].toJSON();
+  assert.equal(summary.color, 0x5865f2);
+  assert.equal(summary.fields?.find((field) => field.name === "Severity")?.value, "Unrated");
+  assert.equal(card.color, 0x5865f2);
+  assert.equal(card.fields?.find((field) => field.name === "Action")?.value, "role-add");
+  assert.equal(card.image?.url, "attachment://moderation-action-card.png");
+  assert.equal(sent[0].files?.[0].name, "moderation-action-card.png");
+});
+
+test("judgment and release actions use the shared moderation PNG card", async () => {
+  const { service, sent } = createHarness(() => "low");
+  const user = makeUser("judgment-target", "nova", "Nova", "avatar");
+  const target = { id: user.id, user } as GuildMember;
+
+  await service.logJudgment({
+    guildId: "guild-1",
+    target,
+    moderatorId: "moderator-1",
+    reason: "Repeated disruption",
+    savedRoles: ["role-1"],
+  });
+  await service.logRelease({
+    guildId: "guild-1",
+    target,
+    moderatorId: "moderator-1",
+    reason: "Review complete",
+    restoredRoles: ["role-1"],
+    skippedRoles: 0,
+  });
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(
+    sent.map(({ embeds }) =>
+      embeds[1].toJSON().fields?.find((field) => field.name === "Action")?.value,
+    ),
+    ["Judgment", "Release"],
+  );
+  assert.ok(sent.every(({ files }) => files?.[0].name === "moderation-action-card.png"));
+});
+
+test("audit timeout cards show duration, expiry, timestamp, and target fallback data", async () => {
+  const { service, sent, users } = createHarness(() => "high");
+  const target = makeUser("timeout-user", "nova", "Nova", "avatar");
+  const moderator = makeUser("timeout-mod", "kai", "Kai", "mod-avatar");
+  users.set(target.id, target);
+  users.set(moderator.id, moderator);
+  const createdAt = new Date("2026-11-10T04:00:00.000Z");
+  const expiresAt = new Date("2026-11-10T04:30:00.000Z");
+  const entry = {
+    action: AuditLogEvent.MemberUpdate,
+    executor: moderator,
+    target,
+    targetId: target.id,
+    reason: null,
+    createdAt,
+    changes: [{
+      key: "communication_disabled_until",
+      old: null,
+      new: expiresAt.toISOString(),
+    }],
+  } as unknown as GuildAuditLogsEntry;
+
+  await service.logAuditAction("guild-1", entry);
+
+  const summary = sent[0].embeds[0].toJSON();
+  const card = sent[0].embeds[1].toJSON();
+  const fields = card.fields ?? [];
+  assert.equal(summary.color, 0xe67e22);
+  assert.match(fields.find((field) => field.name === "Duration")?.value ?? "", /30 minutes/);
+  assert.match(fields.find((field) => field.name === "Expires")?.value ?? "", /<t:1794285000:F>/);
+  assert.match(fields.find((field) => field.name === "Moderator ID")?.value ?? "", /timeout-mod/);
+  assert.equal(summary.timestamp, createdAt.toISOString());
+  assert.equal(card.image?.url, "attachment://moderation-action-card.png");
+  assert.equal(sent[0].files?.[0].name, "moderation-action-card.png");
 });
 
 test("server mute and deafen audit changes produce the four expected actions", async () => {
@@ -329,6 +489,7 @@ test("a moderation case enriches an earlier duplicate security action card", asy
   assert.equal(sent.length, 1);
   assert.equal(sent[0].embeds[0].toJSON().color, 0x57f287);
   assert.match(sent[0].embeds[1].toJSON().footer?.text ?? "", /CASE #57/);
+  assert.equal(sent[0].files?.[0].name, "moderation-action-card.png");
 });
 
 test("message edit and delete cards keep metadata and attach their PNGs", async () => {
