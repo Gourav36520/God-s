@@ -25,6 +25,11 @@ import {
   createMessageEditCardSvg,
   renderMessageEditCard,
 } from "./messageEditCard.js";
+import {
+  createAvatarChangeCardSvg,
+  createMessageDeleteCardSvg,
+  createNameChangeCardSvg,
+} from "./profileAndDeleteCards.js";
 
 interface RecordedLog {
   category: LogCategory;
@@ -140,7 +145,7 @@ function embedFields(embed: EmbedBuilder) {
   return embed.toJSON().fields ?? [];
 }
 
-test("profile logs use summary and side-by-side comparison cards", async () => {
+test("profile logs use summary embeds and attached comparison PNGs", async () => {
   const { service, sent } = createHarness();
   const oldUser = makeUser("user-1", "nova", "Nova", "old-avatar");
   const newUser = makeUser("user-1", "nova.exe", "Nova.exe", "new-avatar");
@@ -153,6 +158,8 @@ test("profile logs use summary and side-by-side comparison cards", async () => {
   const nameCard = sent[0].embeds[1].toJSON();
   const avatarSummary = sent[1].embeds[0].toJSON();
   const avatarCard = sent[1].embeds[1].toJSON();
+  assert.equal(sent[0].files?.[0].name, "name-change-card.png");
+  assert.equal(sent[1].files?.[0].name, "avatar-change-card.png");
   assert.equal(nameSummary.color, 0x5865f2);
   assert.equal(avatarSummary.color, 0x5865f2);
   assert.match(nameSummary.title ?? "", /Name Changed/);
@@ -167,55 +174,31 @@ test("profile logs use summary and side-by-side comparison cards", async () => {
     avatarSummary.fields?.find((field) => field.name === "Changed")?.value,
     "By user",
   );
-  const nameProfile = nameCard.fields?.find((field) => field.name === "Profile");
-  const nameTransition = nameCard.fields?.find(
-    (field) => field.name === "Changes",
-  );
-  assert.equal(nameProfile?.inline, true);
-  assert.match(nameProfile?.value ?? "", /Nova\.exe.*@nova\.exe.*user-1/s);
-  assert.equal(nameTransition?.inline, true);
-  assert.match(
-    nameTransition?.value ?? "",
-    /@nova.*@nova\.exe/s,
-  );
-  assert.match(
-    nameTransition?.value ?? "",
-    /Nova.*Nova\.exe/s,
-  );
   assert.equal(
-    avatarCard.author?.icon_url,
-    "https://cdn.example.test/user-1/old-avatar?size=256",
+    nameCard.image?.url,
+    "attachment://name-change-card.png",
   );
-  assert.equal(
-    avatarCard.thumbnail?.url,
-    "https://cdn.example.test/user-1/new-avatar?size=256",
-  );
-  assert.equal(
-    avatarCard.image?.url,
-    "https://cdn.example.test/user-1/old-avatar?size=256",
-  );
-  assert.equal(
-    avatarCard.fields?.find((field) => field.name === "Profile")?.inline,
-    true,
-  );
-  assert.equal(
-    avatarCard.fields?.find((field) => field.name === "Avatar")?.inline,
-    true,
-  );
-  assert.match(
-    avatarCard.fields?.find((field) => field.name === "Avatar")?.value ?? "",
-    /Old avatar.*New avatar/s,
-  );
+  assert.equal(nameCard.thumbnail, undefined);
+  assert.equal(avatarCard.image?.url, "attachment://avatar-change-card.png");
+  assert.equal(avatarCard.thumbnail, undefined);
 });
 
-test("avatar changes are sent as EmbedBuilder instances in the embeds payload", async () => {
+test("name and avatar changes send their PNGs with the embeds payload", async () => {
   const { service, client, useRealSend } = createHarness();
-  const payloads: Array<{ embeds: EmbedBuilder[]; content?: string }> = [];
+  const payloads: Array<{
+    embeds: EmbedBuilder[];
+    files?: AttachmentBuilder[];
+    content?: string;
+  }> = [];
   (client as unknown as {
     channels: {
       fetch: (channelId: string) => Promise<{
         isTextBased: () => boolean;
-        send: (payload: { embeds: EmbedBuilder[]; content?: string }) => Promise<Message>;
+        send: (payload: {
+          embeds: EmbedBuilder[];
+          files?: AttachmentBuilder[];
+          content?: string;
+        }) => Promise<Message>;
       }>;
     };
   }).channels = {
@@ -232,15 +215,29 @@ test("avatar changes are sent as EmbedBuilder instances in the embeds payload", 
   await service.logUserUpdate(
     "guild-1",
     makeUser("avatar-user", "nova", "Nova", "before"),
-    makeUser("avatar-user", "nova", "Nova", "after"),
+    makeUser("avatar-user", "nova.exe", "Nova.exe", "after"),
   );
 
-  assert.equal(payloads.length, 1);
-  assert.equal(payloads[0].embeds.length, 2);
-  assert.ok(payloads.flatMap(({ embeds }) => embeds).every((embed) => embed instanceof EmbedBuilder));
+  assert.equal(payloads.length, 2);
+  assert.deepEqual(
+    payloads.map(({ files }) => files?.[0].name),
+    ["name-change-card.png", "avatar-change-card.png"],
+  );
+  assert.ok(
+    payloads
+      .flatMap(({ embeds }) => embeds)
+      .every((embed) => embed instanceof EmbedBuilder),
+  );
   assert.ok(payloads.every(({ content }) => content === undefined));
-  assert.equal(payloads[0].embeds[1].toJSON().image?.url, "https://cdn.example.test/avatar-user/before?size=256");
-  assert.equal(payloads[0].embeds[1].toJSON().thumbnail?.url, "https://cdn.example.test/avatar-user/after?size=256");
+  assert.equal(
+    payloads[0].embeds[1].toJSON().image?.url,
+    "attachment://name-change-card.png",
+  );
+  assert.equal(
+    payloads[1].embeds[1].toJSON().image?.url,
+    "attachment://avatar-change-card.png",
+  );
+  assert.ok(payloads.every(({ files }) => Buffer.isBuffer(files?.[0].attachment)));
 });
 
 test("moderation cards use heat severity and retain target, moderator, reason, and case", async () => {
@@ -334,7 +331,7 @@ test("a moderation case enriches an earlier duplicate security action card", asy
   assert.match(sent[0].embeds[1].toJSON().footer?.text ?? "", /CASE #57/);
 });
 
-test("message edit uses a comparison image and keeps metadata readable", async () => {
+test("message edit and delete cards keep metadata and attach their PNGs", async () => {
   const { service, sent } = createHarness();
   const author = makeUser("author-1", "editor", null, "author-avatar");
   const baseMessage = {
@@ -374,11 +371,74 @@ test("message edit uses a comparison image and keeps metadata readable", async (
     "attachment://message-edit-card.png",
   );
   assert.equal(sent[0].files?.[0].name, "message-edit-card.png");
+  assert.equal(deleteCard.color, 0x5865f2);
+  assert.equal(deleteCard.thumbnail, undefined);
+  assert.equal(sent[1].embeds.length, 2);
+  assert.equal(
+    sent[1].embeds[1].toJSON().image?.url,
+    "attachment://message-delete-card.png",
+  );
+  assert.equal(sent[1].files?.[0].name, "message-delete-card.png");
   assert.match(editCard.fields?.find((field) => field.name === "Author")?.value ?? "", /author-1/);
   assert.match(editCard.fields?.find((field) => field.name === "Channel")?.value ?? "", /channel-1/);
   assert.match(editCard.fields?.find((field) => field.name === "Message ID")?.value ?? "", /message-1/);
   assert.match(deleteCard.fields?.find((field) => field.name === "Deleted Content")?.value ?? "", /deleted text/);
   assert.match(deleteCard.fields?.find((field) => field.name === "Channel")?.value ?? "", /channel-1/);
+});
+
+test("message delete sends the PNG attachment with its information embed", async () => {
+  const { service, client, useRealSend } = createHarness();
+  const payloads: Array<{
+    embeds: EmbedBuilder[];
+    files?: AttachmentBuilder[];
+  }> = [];
+  (client as unknown as {
+    channels: {
+      fetch: (channelId: string) => Promise<{
+        isTextBased: () => boolean;
+        send: (payload: {
+          embeds: EmbedBuilder[];
+          files?: AttachmentBuilder[];
+        }) => Promise<Message>;
+      }>;
+    };
+  }).channels = {
+    fetch: async () => ({
+      isTextBased: () => true,
+      send: async (payload) => {
+        payloads.push(payload);
+        return {} as Message;
+      },
+    }),
+  };
+  useRealSend();
+
+  const author = makeUser("deleted-author", "editor", "Editor", "avatar");
+  await service.logMessageDelete({
+    guildId: "guild-1",
+    channelId: "channel-1",
+    id: "deleted-message",
+    author,
+    partial: false,
+    content: "This message was removed.",
+    attachments: new Collection(),
+    url: "https://discord.example.test/deleted-message",
+  } as unknown as Message);
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].embeds.length, 2);
+  assert.equal(
+    payloads[0].embeds[1].toJSON().image?.url,
+    "attachment://message-delete-card.png",
+  );
+  assert.equal(payloads[0].files?.[0].name, "message-delete-card.png");
+  assert.ok(Buffer.isBuffer(payloads[0].files?.[0].attachment));
+  assert.match(
+    payloads[0].embeds[0].toJSON().fields?.find(
+      (field) => field.name === "Deleted Content",
+    )?.value ?? "",
+    /This message was removed/,
+  );
 });
 
 test("message edit sends its image attachment with both embeds", async () => {
@@ -510,6 +570,51 @@ test("message edit card renders to a valid PNG", async () => {
   });
 
   assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+});
+
+test("profile and delete PNG templates show event values and safe avatar images", () => {
+  const avatarBefore = "data:image/png;base64,b2xk";
+  const avatarAfter = "data:image/png;base64,bmV3";
+  const profile = {
+    authorName: "Nova",
+    authorTag: "@nova.exe",
+    authorId: "482901736154209281",
+    avatarUrl: "https://cdn.discordapp.com/avatar.png",
+  };
+  const nameSvg = createNameChangeCardSvg(
+    {
+      ...profile,
+      beforeName: "Nova",
+      afterName: "Nova.exe",
+      beforeTag: "@nova",
+      afterTag: "@nova.exe",
+    },
+    avatarAfter,
+  );
+  const avatarSvg = createAvatarChangeCardSvg(
+    profile,
+    avatarAfter,
+    avatarBefore,
+    avatarAfter,
+  );
+  const deleteSvg = createMessageDeleteCardSvg(
+    {
+      ...profile,
+      content: `<script>${"deleted content ".repeat(100)}</script>`,
+    },
+    avatarAfter,
+  );
+
+  assert.match(nameSvg, /BEFORE/);
+  assert.match(nameSvg, /Nova\.exe/);
+  assert.match(nameSvg, /@nova/);
+  assert.match(avatarSvg, /href="data:image\/png;base64,b2xk"/);
+  assert.match(avatarSvg, /href="data:image\/png;base64,bmV3"/);
+  assert.match(avatarSvg, /AFTER/);
+  assert.match(deleteSvg, /DELETED MESSAGE/);
+  assert.match(deleteSvg, /&lt;script&gt;/);
+  assert.doesNotMatch(deleteSvg, /<script>/);
+  assert.match(deleteSvg, /MESSAGE PREVIEW SHORTENED TO FIT/);
 });
 
 test("voice join, move, and leave cards identify the user and affected channels", async () => {

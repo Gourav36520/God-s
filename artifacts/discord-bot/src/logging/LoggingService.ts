@@ -29,6 +29,11 @@ import {
   type LogSeverity,
 } from "./presentation.js";
 import { renderMessageEditCard } from "./messageEditCard.js";
+import {
+  renderAvatarChangeCard,
+  renderMessageDeleteCard,
+  renderNameChangeCard,
+} from "./profileAndDeleteCards.js";
 
 type ActionDetail = { name: string; value: string; inline?: boolean };
 
@@ -163,6 +168,40 @@ function createActionCard(options: ActionCardOptions): EmbedBuilder[] {
   });
 
   return [summary, actionCard];
+}
+
+function createProfileSummary(
+  title: string,
+  user: User,
+  changes: ProfileChange | ProfileChange[],
+  options: ProfileCardOptions = {},
+): EmbedBuilder {
+  const profileChanges = Array.isArray(changes) ? changes : [changes];
+  const displayName = user.globalName ?? user.username;
+  const changeSummary =
+    options.summaryChange ??
+    profileChanges.map(({ label }) => `${label.toLowerCase()} updated`).join(", ");
+  const summary = createLogEmbed(title, 0x5865f2)
+    .setTitle(`👤 ${title}`)
+    .setAuthor({
+      name: "Aegis Logs • Profile Update",
+      ...(options.logIconUrl ? { iconURL: options.logIconUrl } : {}),
+    })
+    .addFields(
+      {
+        name: "User",
+        value: truncateField(`${displayName} (<@${user.id}>)`),
+        inline: true,
+      },
+      {
+        name: "User ID",
+        value: user.id,
+        inline: true,
+      },
+      { name: "Change", value: truncateField(changeSummary), inline: true },
+      { name: "Changed", value: options.changedBy ?? "By user", inline: true },
+    );
+  return summary;
 }
 
 function createProfileCard(
@@ -382,6 +421,36 @@ export class LoggingService {
       logger.warn(`LoggingService: failed to send ${category} log to ${channelId}:`, err);
     }
     return null;
+  }
+
+  private async sendPngCard(
+    guildId: string,
+    category: LogCategory,
+    summary: EmbedBuilder,
+    filename: string,
+    renderCard: () => Promise<Buffer>,
+  ): Promise<void> {
+    if (!this.client || !this.isEnabled(guildId, category)) return;
+    if (!this.getChannelId(guildId, category)) {
+      await this.send(guildId, category, summary);
+      return;
+    }
+
+    try {
+      const image = await renderCard();
+      const imageEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setImage(`attachment://${filename}`);
+      await this.send(
+        guildId,
+        category,
+        [summary, imageEmbed],
+        [new AttachmentBuilder(image, { name: filename })],
+      );
+    } catch (err) {
+      logger.warn(`LoggingService: failed to render ${filename}:`, err);
+      await this.send(guildId, category, summary);
+    }
   }
 
   private async sendAction(
@@ -784,21 +853,29 @@ export class LoggingService {
         : false;
     const content = messageContentForLog(message, contentIntentEnabled);
 
+    const author = message.author;
+    const avatarUrl = author?.displayAvatarURL({
+      extension: "png",
+      size: 128,
+    });
     const embed = this.setLogAuthor(
-      createLogEmbed("Message Deleted", 0xed4245)
+      createLogEmbed("Message Deleted", 0x5865f2)
         .setTitle("🗑️ Message Deleted"),
       "Aegis Logs • Messages",
     )
       .addFields(
-        { name: "Author", value: message.author ? `${message.author.tag}\n<@${message.author.id}>` : "Unknown", inline: true },
+        {
+          name: "Author",
+          value: author
+            ? `${author.globalName ?? author.username}\n<@${author.id}>`
+            : "Unknown",
+          inline: true,
+        },
         { name: "Channel", value: `<#${message.channelId}>`, inline: true },
-        { name: "Deleted Content", value: truncateField(content), inline: false }
+        { name: "Message ID", value: `\`${message.id}\``, inline: true },
+        { name: "Deleted Content", value: truncateField(content), inline: false },
       )
       .setFooter({ text: `Gods Bot • Message ID: ${message.id}` });
-
-    if (message.author) {
-      embed.setThumbnail(message.author.displayAvatarURL({ size: 256 }));
-    }
 
     if (message.attachments.size > 0 || message.partial) {
       embed.addFields({
@@ -808,7 +885,20 @@ export class LoggingService {
       });
     }
 
-    await this.send(message.guildId, "messages", embed);
+    await this.sendPngCard(
+      message.guildId,
+      "messages",
+      embed,
+      "message-delete-card.png",
+      () =>
+        renderMessageDeleteCard({
+          authorName: author?.globalName ?? author?.username ?? "Unknown",
+          authorTag: author?.username ? `@${author.username}` : "Unknown",
+          authorId: author?.id ?? "Unknown",
+          avatarUrl,
+          content,
+        }),
+    );
   }
 
   async logMessageEdit(oldMessage: Message | PartialMessage, newMessage: Message | PartialMessage): Promise<void> {
@@ -1107,26 +1197,47 @@ export class LoggingService {
     }
 
     if (nameChanges.length > 0) {
-      await this.send(
+      await this.sendPngCard(
         guildId,
         "members",
-        createProfileCard("Name Changed", newUser, nameChanges, {
+        createProfileSummary("Name Changed", newUser, nameChanges, {
           summaryChange: nameChanges
             .map(({ label }) => `${label.toLowerCase()} updated`)
             .join(", "),
           changedBy: "By user",
           logIconUrl: this.getLogIconUrl(),
         }),
+        "name-change-card.png",
+        () =>
+          renderNameChangeCard({
+            authorName: newUser.globalName ?? newUser.username,
+            authorTag: `@${newUser.username}`,
+            authorId: newUser.id,
+            avatarUrl: newUser.displayAvatarURL({
+              extension: "png",
+              size: 128,
+            }),
+            beforeName: oldUser.globalName ?? oldUser.username,
+            afterName: newUser.globalName ?? newUser.username,
+            beforeTag: `@${oldUser.username}`,
+            afterTag: `@${newUser.username}`,
+          }),
       );
     }
 
     if (oldUser.avatar !== newUser.avatar) {
-      const oldAvatarUrl = oldUser.displayAvatarURL({ size: 256 });
-      const newAvatarUrl = newUser.displayAvatarURL({ size: 256 });
-      await this.send(
+      const oldAvatarUrl = oldUser.displayAvatarURL({
+        extension: "png",
+        size: 256,
+      });
+      const newAvatarUrl = newUser.displayAvatarURL({
+        extension: "png",
+        size: 256,
+      });
+      await this.sendPngCard(
         guildId,
         "members",
-        createProfileCard(
+        createProfileSummary(
           "Avatar Changed",
           newUser,
           {
@@ -1138,10 +1249,18 @@ export class LoggingService {
             summaryChange: "Profile picture updated",
             changedBy: "By user",
             logIconUrl: this.getLogIconUrl(),
-            beforeImageUrl: oldAvatarUrl,
-            afterImageUrl: newAvatarUrl,
           },
         ),
+        "avatar-change-card.png",
+        () =>
+          renderAvatarChangeCard({
+            authorName: newUser.globalName ?? newUser.username,
+            authorTag: `@${newUser.username}`,
+            authorId: newUser.id,
+            avatarUrl: newAvatarUrl,
+            beforeAvatarUrl: oldAvatarUrl,
+            afterAvatarUrl: newAvatarUrl,
+          }),
       );
     }
   }
