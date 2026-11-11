@@ -3,6 +3,7 @@ import { BaseSecurityModule } from "../BaseSecurityModule.js";
 import type { SecurityManager } from "../SecurityManager.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
+import { HEAT_VALUES } from "../heat/SeverityPolicy.js";
 
 const MENTION_WINDOW_MS = 5_000;
 const MENTION_THRESHOLD = 3;
@@ -81,7 +82,11 @@ export class AntiMention extends BaseSecurityModule {
         action: result.punishment.punishment,
         reason,
         extra: [
-          { name: "Heat Added", value: "+15", inline: true },
+          {
+            name: "Heat Added",
+            value: `+${HEAT_VALUES.mentionSpam}`,
+            inline: true,
+          },
           { name: "Severity", value: result.severity, inline: true },
         ],
       })

@@ -4,9 +4,10 @@ import type { SecurityManager } from "../SecurityManager.js";
 import type { AntiSpamAction, AntiSpamConfig } from "../types.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
+import { HEAT_VALUES } from "../heat/SeverityPolicy.js";
 
 const VIOLATION_RESET_MS = 24 * 60 * 60 * 1_000;
-const HEAT_PER_VIOLATION = 5;
+const HEAT_PER_VIOLATION = HEAT_VALUES.spam;
 
 const PUNISHMENT_TABLE: Record<number, { action: AntiSpamAction; timeoutDurationMs?: number }> = {
   1: { action: "warn" },
@@ -118,7 +119,7 @@ export class AntiSpam extends BaseSecurityModule {
     try {
       await this.manager
         .getHeatEngine()
-        .add(member, HEAT_PER_VIOLATION, reason, false);
+        .add(member, HEAT_PER_VIOLATION, reason, false, "spam");
       logger.info(
         `AntiSpam: added +${HEAT_PER_VIOLATION} Heat for violation ${violationCount}`
       );

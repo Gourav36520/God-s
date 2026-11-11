@@ -2,6 +2,7 @@ import { Client, Events, Message } from "discord.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
 import type { SecurityManager } from "../SecurityManager.js";
+import { HEAT_VALUES } from "../heat/SeverityPolicy.js";
 
 export class AttachmentDetector {
   constructor(private readonly manager: SecurityManager) {}
@@ -39,7 +40,11 @@ export class AttachmentDetector {
         reason,
         extra: [
           { name: "Attachments", value: `${attachmentCount}`, inline: true },
-          { name: "Heat Added", value: "+12", inline: true },
+          {
+            name: "Heat Added",
+            value: `+${HEAT_VALUES.attachment}`,
+            inline: true,
+          },
           { name: "Severity", value: result.severity, inline: true },
         ],
       })

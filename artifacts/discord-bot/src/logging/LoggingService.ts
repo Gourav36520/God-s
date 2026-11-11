@@ -979,7 +979,7 @@ export class LoggingService {
       targetUser,
       moderatorId: executor?.id,
       moderatorLabel: executor?.tag,
-      moderatorUser: executor,
+      moderatorUser: executor instanceof User ? executor : null,
       action,
       reason,
       duration,

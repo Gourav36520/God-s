@@ -2,6 +2,7 @@ import { Client, Events, GuildMember, Message } from "discord.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
 import type { SecurityManager } from "../SecurityManager.js";
+import { HEAT_VALUES } from "../heat/SeverityPolicy.js";
 
 const MINIMUM_LETTERS = 5;
 const UPPERCASE_RATIO = 0.7;
@@ -45,7 +46,7 @@ export class CapsDetector {
         action: result.punishment.punishment,
         reason,
         extra: [
-          { name: "Heat Added", value: "+5", inline: true },
+          { name: "Heat Added", value: `+${HEAT_VALUES.caps}`, inline: true },
           { name: "Severity", value: result.severity, inline: true },
         ],
       })

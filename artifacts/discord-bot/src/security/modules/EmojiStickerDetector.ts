@@ -2,6 +2,7 @@ import { Client, Events, Message } from "discord.js";
 import { loggingService } from "../../lib/registry.js";
 import { logger } from "../../lib/logger.js";
 import type { SecurityManager } from "../SecurityManager.js";
+import { HEAT_VALUES } from "../heat/SeverityPolicy.js";
 
 const EMOJI_STICKER_THRESHOLD = 5;
 const CUSTOM_EMOJI_REGEX = /<a?:[\w~]+:\d+>/gu;
@@ -35,10 +36,14 @@ export class EmojiStickerDetector {
 
     if (totalCount < EMOJI_STICKER_THRESHOLD) return;
 
+    const violationType =
+      stickerCount > 0 && customEmojiCount + unicodeEmojiCount === 0
+        ? "sticker"
+        : "emoji";
     const reason = `Emoji/sticker spam detected: ${totalCount} usages in one message`;
     const result = await this.manager
       .getHeatEngine()
-      .addViolation(member, "emoji", reason);
+      .addViolation(member, violationType, reason);
 
     await loggingService
       .logSecurityTrigger({
@@ -49,7 +54,11 @@ export class EmojiStickerDetector {
         reason,
         extra: [
           { name: "Usages", value: `${totalCount}`, inline: true },
-          { name: "Heat Added", value: "+8", inline: true },
+          {
+            name: "Heat Added",
+            value: `+${HEAT_VALUES[violationType]}`,
+            inline: true,
+          },
           { name: "Severity", value: result.severity, inline: true },
         ],
       })
