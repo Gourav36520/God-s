@@ -12,6 +12,11 @@ const REQUIRED_DETECTORS = new Set<AntiNukeDetector>([
   "member-kick",
   "member-ban",
 ]);
+const WEBHOOK_DETECTORS = new Set<AntiNukeDetector>([
+  "webhook-create",
+  "webhook-delete",
+  "webhook-update",
+]);
 
 export function resolveTrust(
   config: AntiNukeConfig,
@@ -33,6 +38,55 @@ export function resolveDefaultResponse(
     return executorKind === "bot" ? "kick" : "judgement";
   }
   return "log";
+}
+
+export function isGuildOwner(actorId: string, guildOwnerId: string): boolean {
+  return actorId === guildOwnerId;
+}
+
+export function isWebhookDetector(detector: AntiNukeDetector): boolean {
+  return WEBHOOK_DETECTORS.has(detector);
+}
+
+export function thresholdForDetector(
+  detector: AntiNukeDetector,
+  configuredLimit: number,
+): number {
+  return isWebhookDetector(detector)
+    ? Math.max(2, configuredLimit)
+    : configuredLimit;
+}
+
+export function isConfirmedWebhookRaid(
+  detector: AntiNukeDetector,
+  eventCount: number,
+  configuredLimit: number,
+): boolean {
+  return (
+    isWebhookDetector(detector) &&
+    Number.isInteger(eventCount) &&
+    eventCount >= thresholdForDetector(detector, configuredLimit)
+  );
+}
+
+export function resolveIncidentResponse(
+  detector: AntiNukeDetector,
+  executorKind: TrustKind,
+  configured: AntiNukeResponse | null,
+  confirmedWebhookRaid = false,
+): AntiNukeResponse {
+  if (executorKind === "unknown") return "log";
+  if (isWebhookDetector(detector) && confirmedWebhookRaid) {
+    return executorKind === "bot" ? "kick" : "judgement";
+  }
+
+  // Existing saved lockdown response values remain readable, but incidents
+  // must never turn them into an automatic channel lockdown.
+  return resolveDefaultResponse(
+    detector,
+    executorKind,
+    configured === "lockdown" ? null : configured,
+  );
 }
 
 export function resolveJoinPolicy(

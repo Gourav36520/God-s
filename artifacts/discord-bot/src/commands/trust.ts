@@ -3,7 +3,7 @@ import type { ChatInputCommandInteraction, SharedSlashCommand } from "discord.js
 import { antiNukeService } from "../lib/registry.js";
 import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
 import type { TrustEntry } from "../security/antinuke/types.js";
-import { resolveTrust } from "../security/antinuke/policy.js";
+import { isGuildOwner, resolveTrust } from "../security/antinuke/policy.js";
 
 export const whitelistData = buildTrustCommand("whitelist");
 export const blacklistData = buildTrustCommand("blacklist");
@@ -67,12 +67,16 @@ async function executeTrust(
     await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    const context = await resolveInteractionGuild(interaction);
-    if (context.kind !== "guild" || interaction.user.id !== context.guild.ownerId) {
-      await interaction.reply({ content: "Administrator permission is required.", ephemeral: true });
-      return;
-    }
+  const context = await resolveInteractionGuild(interaction);
+  if (
+    context.kind !== "guild" ||
+    !isGuildOwner(interaction.user.id, context.guild.ownerId)
+  ) {
+    await interaction.reply({
+      content: "Only the server owner can manage Anti-Nuke trust lists.",
+      ephemeral: true,
+    });
+    return;
   }
   await interaction.deferReply({ ephemeral: true });
   await antiNukeService.ensureConfig(guildId);

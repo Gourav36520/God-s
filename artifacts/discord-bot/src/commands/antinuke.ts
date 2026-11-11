@@ -14,7 +14,7 @@ import { antiNukeService } from "../lib/registry.js";
 import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
 import { ANTI_NUKE_DETECTORS } from "../security/antinuke/types.js";
 import type { AntiNukeDetector, AntiNukeResponse } from "../security/antinuke/types.js";
-import { isAntiNukeDetector } from "../security/antinuke/policy.js";
+import { isAntiNukeDetector, isGuildOwner } from "../security/antinuke/policy.js";
 import {
   arrowLine,
   createGodsEmbed,
@@ -66,10 +66,10 @@ const coreCommands = [
 ];
 const directDetectorCommands = [
   helpCommand("channel-create enabled:true limit:3 window:3", "Channel creation; default threshold is 3 in 3s."),
-  helpCommand("channel-delete enabled:true limit:3 window:3", "Channel deletion; default threshold is 3 in 3s."),
+  helpCommand("channel-delete enabled:true limit:2 window:5", "Channel deletion; default threshold is 2 in 5s."),
   helpCommand("channel-update enabled:<bool>", "Channel updates."),
-  helpCommand("member-kick enabled:true limit:3 window:5", "Member kicks; default threshold is 3 in 5s."),
-  helpCommand("member-ban enabled:true limit:3 window:5", "Member bans; default threshold is 3 in 5s."),
+  helpCommand("member-kick enabled:true limit:2 window:5", "Member kicks; default threshold is 2 in 5s."),
+  helpCommand("member-ban enabled:true limit:2 window:5", "Member bans; default threshold is 2 in 5s."),
   helpCommand("role-create enabled:<bool> limit:<n> window:<s>", "Role creation."),
   helpCommand("role-delete enabled:<bool> limit:<n> window:<s>", "Role deletion."),
   helpCommand("role-update enabled:<bool>", "Role updates."),
@@ -89,7 +89,7 @@ const additionalDetectorCommands = [
   helpCommand("detectors invite-delete enabled:<bool> [limit] [window]", "Invite deletion."),
 ];
 const responseAndLogCommands = [
-  helpCommand("response action:<detector> mode:<mode>", "Modes: log, judgement, kick, lockdown; blacklisted-human-join has no lockdown."),
+  helpCommand("response action:<detector> mode:<mode>", "Modes: log, judgement, kick; lockdown is not an incident response."),
   helpCommand("logs setup", "Create or reuse private Anti-Nuke logs."),
   helpCommand("logs-config [channel] [alerts-enabled] [mention-owner]", "View or update log settings."),
   helpCommand("logs recent", "Show recent server incidents."),
@@ -100,7 +100,7 @@ const responseAndLogCommands = [
 const judgementAndLockdownCommands = [
   helpCommand("judgement-role view", "View the God's Judgment quarantine role."),
   helpCommand("judgement-role set role:<role>", "Set the existing quarantine role."),
-  helpCommand("lockdown enabled enabled:<bool>", "Toggle targeted automatic lockdown."),
+  helpCommand("lockdown enabled enabled:<bool>", "Configure targeted lockdown availability; incidents never invoke it."),
   helpCommand("lockdown status", "View targets and saved snapshots."),
   helpCommand("lockdown restore", "Restore unchanged targets."),
   helpCommand("lockdown target-add channel:<channel>", "Add a lockdown target."),
@@ -112,7 +112,7 @@ export const data = buildCommand();
 function buildCommand() {
   const command = new SlashCommandBuilder()
     .setName("antinuke")
-    .setDescription("Configure and inspect Anti-Nuke protection")
+    .setDescription("Owner-only Anti-Nuke configuration and status")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
       sub.setName("help").setDescription("Show Anti-Nuke commands and permissions"),
@@ -278,7 +278,6 @@ function buildCommand() {
               { name: "Log only", value: "log" },
               { name: "God's Judgment", value: "judgement" },
               { name: "Kick", value: "kick" },
-              { name: "Lockdown configured channels", value: "lockdown" },
             ),
         ),
     )
@@ -289,13 +288,13 @@ function buildCommand() {
         .addSubcommand((sub) =>
           sub
             .setName("enabled")
-            .setDescription("Enable or disable automatic targeted lockdown")
+            .setDescription("Set whether targeted lockdown operations are enabled")
             .addBooleanOption((option) =>
               option.setName("enabled").setDescription("Enable lockdown").setRequired(true),
             ),
         )
         .addSubcommand((sub) =>
-          sub.setName("status").setDescription("Show lockdown configuration and snapshots"),
+          sub.setName("status").setDescription("Show lockdown settings and snapshots"),
         )
         .addSubcommand((sub) =>
           sub.setName("restore").setDescription("Restore unchanged lockdown targets"),
@@ -329,7 +328,7 @@ function buildAntiNukeHelpEmbeds(): EmbedBuilder[] {
   const detectorDetails =
     "All detectors require enabled. Burst detectors accept limit (1–100) and window (1–3600 seconds); both are required for channel create/delete, member kick/ban, and role create/delete. Other burst thresholds are optional.";
   const permissionDetails = [
-    "**Who can use these commands:** Administrator permission is required.",
+    "**Who can use these commands:** Only the server owner can use Anti-Nuke commands.",
     "**Bot permissions depend on configuration:** View Audit Log for audit-based detection; Kick Members, Ban Members, or Manage Roles for matching responses; Manage Channels for lockdown; Manage Roles for quarantine actions.",
     "Log delivery needs View Channel, Send Messages, and Embed Links. The bot role must be high enough to manage selected roles.",
   ].join("\n\n");
@@ -445,15 +444,13 @@ export async function execute(
     return resolvedGuild;
   };
 
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    const resolvedGuild = await resolveGuild();
-    if (interaction.user.id === resolvedGuild?.ownerId) {
-      // The server owner is authorized even if the interaction permission
-      // snapshot does not include Administrator.
-    } else {
-      await interaction.editReply("Administrator permission is required.");
-      return;
-    }
+  const resolvedGuild = await resolveGuild();
+  if (
+    !resolvedGuild ||
+    !isGuildOwner(interaction.user.id, resolvedGuild.ownerId)
+  ) {
+    await interaction.editReply("Only the server owner can use Anti-Nuke commands.");
+    return;
   }
 
   if (sub === "help") {
@@ -472,7 +469,11 @@ export async function execute(
       const config = antiNukeService.getConfig(guildId);
       const detectorDetails = ANTI_NUKE_DETECTORS.map((name) => {
         const detector = config.detectors[name];
-        return `${GOLDEN_ARROW} ${featureStatusEmoji(detector.enabled)} **${name}** · ${detector.limit}/${detector.windowSeconds}s · ${detector.responseMode ?? "default"}`;
+        const responseMode =
+          detector.responseMode === "lockdown"
+            ? "lockdown (ignored for incidents)"
+            : detector.responseMode ?? "default";
+        return `${GOLDEN_ARROW} ${featureStatusEmoji(detector.enabled)} **${name}** · ${detector.limit}/${detector.windowSeconds}s · ${responseMode}`;
       });
       await interaction.editReply({
         embeds: [
@@ -589,7 +590,8 @@ export async function execute(
             emoji: ANTI_NUKE_EMOJI,
             tone: config.lockdown.enabled ? "success" : "warning",
             description: [
-              featureStatusLine("Automatic Lockdown", config.lockdown.enabled),
+              featureStatusLine("Lockdown setting", config.lockdown.enabled),
+              "Anti-Nuke incidents never trigger lockdown.",
               arrowLine(
                 "Targets",
                 config.lockdown.targets.length
@@ -773,11 +775,13 @@ export async function execute(
   if (sub === "response") {
     const action = interaction.options.getString("action", true);
     const mode = interaction.options.getString("mode", true) as AntiNukeResponse;
+    if (mode === "lockdown") {
+      await interaction.editReply(
+        "Lockdown cannot be used as an automatic incident response. Existing lockdown settings and restore controls remain available.",
+      );
+      return;
+    }
     if (action === "blacklisted-human-join") {
-      if (mode === "lockdown") {
-        await interaction.editReply("Lockdown is not a valid join response; choose log, judgement, or kick.");
-        return;
-      }
       await antiNukeService.updateConfig(guildId, (current) => ({
         ...current,
         blacklistedHumanJoinResponse: mode,

@@ -2,6 +2,7 @@ import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { antiNukeService } from "../lib/registry.js";
 import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
+import { isGuildOwner } from "../security/antinuke/policy.js";
 
 export const data = new SlashCommandBuilder()
   .setName("configure")
@@ -24,12 +25,16 @@ export async function execute(
     await interaction.reply({ content: "Use this command in a server.", ephemeral: true });
     return;
   }
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    const context = await resolveInteractionGuild(interaction);
-    if (context.kind !== "guild" || interaction.user.id !== context.guild.ownerId) {
-      await interaction.reply({ content: "Administrator permission is required.", ephemeral: true });
-      return;
-    }
+  const context = await resolveInteractionGuild(interaction);
+  if (
+    context.kind !== "guild" ||
+    !isGuildOwner(interaction.user.id, context.guild.ownerId)
+  ) {
+    await interaction.reply({
+      content: "Only the server owner can configure Anti-Nuke security.",
+      ephemeral: true,
+    });
+    return;
   }
   await interaction.deferReply({ ephemeral: true });
   await antiNukeService.ensureConfig(guildId);

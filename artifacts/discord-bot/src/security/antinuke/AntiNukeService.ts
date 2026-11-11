@@ -25,11 +25,13 @@ import {
 } from "./defaults.js";
 import {
   EventDeduplicator,
-  resolveDefaultResponse,
+  resolveIncidentResponse,
   resolveJoinPolicy,
   resolveTrust,
+  isConfirmedWebhookRaid,
   PunishmentGate,
   RollingThresholdCounter,
+  thresholdForDetector,
 } from "./policy.js";
 import type {
   AntiNukeConfig,
@@ -744,11 +746,13 @@ export class AntiNukeService {
 
     let count = 0;
     let thresholdReached = false;
+    let thresholdLimit = setting.limit;
     let response: AntiNukeResponse = "log";
     let shouldRespond = false;
     let duplicateResponse = false;
 
     if (activity.executorId && config.enabled && setting.enabled) {
+      thresholdLimit = thresholdForDetector(activity.detector, setting.limit);
       count = this.counter.add(
         activity.guild.id,
         activity.executorId,
@@ -756,7 +760,12 @@ export class AntiNukeService {
         now,
         setting.windowSeconds * 1_000,
       );
-      thresholdReached = count >= setting.limit;
+      thresholdReached = count >= thresholdLimit;
+      const confirmedWebhookRaid = isConfirmedWebhookRaid(
+        activity.detector,
+        count,
+        setting.limit,
+      );
       const trustStatus = activity.executorId
         ? resolveTrust(config, activity.executorId)
         : "unapproved";
@@ -765,7 +774,12 @@ export class AntiNukeService {
         trust !== "unknown" &&
         trustStatus !== "whitelisted"
       ) {
-        response = resolveDefaultResponse(activity.detector, trust, setting.responseMode);
+        response = resolveIncidentResponse(
+          activity.detector,
+          trust,
+          setting.responseMode,
+          confirmedWebhookRaid,
+        );
         const key = JSON.stringify([
           activity.guild.id,
           activity.executorId,
@@ -795,7 +809,10 @@ export class AntiNukeService {
         ...activity.details,
         executorKind: trust,
         thresholdReached,
-        limit: setting.limit,
+        limit: thresholdLimit,
+        ...(thresholdLimit !== setting.limit
+          ? { configuredLimit: setting.limit }
+          : {}),
         windowSeconds: setting.windowSeconds,
         detectorEnabled: setting.enabled,
       },
@@ -835,7 +852,7 @@ export class AntiNukeService {
         activity.guild,
         activity.executorId,
         response,
-        `Anti-Nuke ${activity.detector}: ${count}/${setting.limit} events in ${setting.windowSeconds}s`,
+        `Anti-Nuke ${activity.detector}: ${count}/${thresholdLimit} events in ${setting.windowSeconds}s`,
       );
     }
 
@@ -883,7 +900,9 @@ export class AntiNukeService {
       return "Server owner protected; no automatic action attempted.";
     }
     if (response === "log") return "Logged only; response policy is log.";
-    if (response === "lockdown") return (await this.applyLockdown(guild)).message;
+    if (response === "lockdown") {
+      return "Automatic lockdown is disabled for Anti-Nuke incidents.";
+    }
     const member = await guild.members.fetch(executorId).catch(() => null);
     if (!member) return `Executor ${executorId} is unavailable; ${response} was not attempted.`;
     return response === "kick"

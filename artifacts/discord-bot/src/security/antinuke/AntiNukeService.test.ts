@@ -10,6 +10,7 @@ import {
 } from "./AntiNukeService.js";
 import { RollingThresholdCounter } from "./policy.js";
 import type { AntiNukeIncident } from "./types.js";
+import type { AntiNukeResponse } from "./types.js";
 
 const criticalDetectorCases = [
   { detector: "webhook-create", type: "webhookRaid", title: "Webhook Raid" },
@@ -82,10 +83,10 @@ test("creates and persists isolated defaults for multiple new guilds", async () 
       ],
     },
     {
-      channelDelete: [3, 3],
+      channelDelete: [2, 5],
       channelCreate: [3, 3],
-      memberKick: [3, 5],
-      memberBan: [3, 5],
+      memberKick: [2, 5],
+      memberBan: [2, 5],
     },
   );
 
@@ -99,6 +100,37 @@ test("creates and persists isolated defaults for multiple new guilds", async () 
   assert.equal(service.getConfig("guild-a").logs.channelId, "guild-a-log");
   assert.equal(service.getConfig("guild-b").enabled, true);
   assert.equal(service.getConfig("guild-b").logs.channelId, null);
+});
+
+test("incident response cannot invoke automatic lockdown from legacy settings", async () => {
+  const { service } = makeService();
+  let lockdownCalled = false;
+  Object.assign(service, {
+    applyLockdown: async () => {
+      lockdownCalled = true;
+      return { changed: 1, skipped: 0, message: "lockdown ran" };
+    },
+  });
+  const applyResponse = (
+    service as unknown as {
+      applyResponse(
+        guild: Guild,
+        executorId: string,
+        response: AntiNukeResponse,
+        reason: string,
+      ): Promise<string>;
+    }
+  ).applyResponse.bind(service);
+
+  const result = await applyResponse(
+    { ownerId: "guild-owner" } as Guild,
+    "executor-id",
+    "lockdown",
+    "legacy setting",
+  );
+
+  assert.equal(lockdownCalled, false);
+  assert.equal(result, "Automatic lockdown is disabled for Anti-Nuke incidents.");
 });
 
 test("stores and lists incidents within their own guild", async () => {

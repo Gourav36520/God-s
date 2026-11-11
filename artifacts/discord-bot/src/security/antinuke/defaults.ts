@@ -15,9 +15,9 @@ const REQUIRED_DEFAULTS: Record<
   { limit: number; windowSeconds: number }
 > = {
   "channel-create": { limit: 3, windowSeconds: 3 },
-  "channel-delete": { limit: 3, windowSeconds: 3 },
-  "member-kick": { limit: 3, windowSeconds: 5 },
-  "member-ban": { limit: 3, windowSeconds: 5 },
+  "channel-delete": { limit: 2, windowSeconds: 5 },
+  "member-kick": { limit: 2, windowSeconds: 5 },
+  "member-ban": { limit: 2, windowSeconds: 5 },
 };
 
 const VALID_RESPONSES: AntiNukeResponse[] = [

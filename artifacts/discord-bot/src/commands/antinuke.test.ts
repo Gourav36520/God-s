@@ -4,8 +4,10 @@ import type { ChatInputCommandInteraction } from "discord.js";
 import { antiNukeService } from "../lib/registry.js";
 import { createDefaultAntiNukeConfig } from "../security/antinuke/defaults.js";
 import { data, execute } from "./antinuke.js";
+import { execute as executeConfigure } from "./configure.js";
+import { executeWhitelist } from "./trust.js";
 
-test("runs a guild-scoped status command without a cached Guild object", async () => {
+test("owner can read Anti-Nuke status using the interaction guild context", async () => {
   const service = antiNukeService as unknown as {
     ensureConfig: typeof antiNukeService.ensureConfig;
     getConfig: typeof antiNukeService.getConfig;
@@ -27,7 +29,7 @@ test("runs a guild-scoped status command without a cached Guild object", async (
 
   const interaction = {
     guildId: "guild-b",
-    guild: null,
+    guild: { id: "guild-b", ownerId: "owner-id", members: { me: {} } },
     client: {
       guilds: {
         fetch: async () => {
@@ -36,7 +38,7 @@ test("runs a guild-scoped status command without a cached Guild object", async (
         },
       },
     },
-    user: { id: "admin-user" },
+    user: { id: "owner-id" },
     memberPermissions: { has: () => true },
     options: {
       getSubcommandGroup: () => null,
@@ -68,11 +70,11 @@ test("runs a guild-scoped status command without a cached Guild object", async (
   );
   assert.match(
     statusEmbed.data.description ?? "",
-    /<:Off:1566035067602735217> \*\*channel-delete\*\* · 3 in 3s/u,
+    /<:Off:1566035067602735217> \*\*channel-delete\*\* · 2 in 5s/u,
   );
   assert.match(
     statusEmbed.data.description ?? "",
-    /<:On:1566034940729233560> \*\*member-ban\*\* · 3 in 5s/u,
+    /<:On:1566034940729233560> \*\*member-ban\*\* · 2 in 5s/u,
   );
 });
 
@@ -95,7 +97,8 @@ test("provides standalone Anti-Nuke help with arrows before every listed command
 
   const interaction = {
     guildId: "guild-help",
-    user: { id: "admin-user" },
+    guild: { id: "guild-help", ownerId: "owner-id", members: { me: {} } },
+    user: { id: "owner-id" },
     memberPermissions: { has: () => true },
     options: {
       getSubcommandGroup: () => null,
@@ -139,7 +142,7 @@ test("provides standalone Anti-Nuke help with arrows before every listed command
       line.startsWith("<a:arrow_arrow_1:1554486982439079966> `/antinuke "),
     ),
   );
-  assert.ok(descriptions.join("\n").includes("Administrator permission is required"));
+  assert.ok(descriptions.join("\n").includes("Only the server owner can use Anti-Nuke commands."));
   assert.ok(descriptions.every((description) => description.length <= 4_096));
   const totalEmbedText = embeds.reduce(
     (total, embed) =>
@@ -150,4 +153,81 @@ test("provides standalone Anti-Nuke help with arrows before every listed command
     0,
   );
   assert.ok(totalEmbedText <= 6_000, `Combined Anti-Nuke embeds: ${totalEmbedText} characters`);
+});
+
+test("an administrator who is not the owner cannot run Anti-Nuke commands", async () => {
+  let reply: unknown;
+  const interaction = {
+    guildId: "guild-owner-check",
+    guild: {
+      id: "guild-owner-check",
+      ownerId: "actual-owner",
+      members: { me: {} },
+    },
+    user: { id: "administrator-id" },
+    memberPermissions: { has: () => true },
+    options: {
+      getSubcommandGroup: () => null,
+      getSubcommand: () => "status",
+    },
+    deferReply: async () => undefined,
+    editReply: async (payload: unknown) => {
+      reply = payload;
+      return payload;
+    },
+  } as unknown as ChatInputCommandInteraction;
+
+  await execute(interaction);
+
+  assert.equal(reply, "Only the server owner can use Anti-Nuke commands.");
+});
+
+test("an administrator who is not the owner cannot change Anti-Nuke bot protection", async () => {
+  let reply: unknown;
+  const interaction = {
+    guildId: "guild-configure-check",
+    guild: {
+      id: "guild-configure-check",
+      ownerId: "actual-owner",
+      members: { me: {} },
+    },
+    user: { id: "administrator-id" },
+    memberPermissions: { has: () => true },
+    reply: async (payload: unknown) => {
+      reply = payload;
+      return payload;
+    },
+  } as unknown as ChatInputCommandInteraction;
+
+  await executeConfigure(interaction);
+
+  assert.deepEqual(reply, {
+    content: "Only the server owner can configure Anti-Nuke security.",
+    ephemeral: true,
+  });
+});
+
+test("an administrator who is not the owner cannot manage trust lists", async () => {
+  let reply: unknown;
+  const interaction = {
+    guildId: "guild-trust-check",
+    guild: {
+      id: "guild-trust-check",
+      ownerId: "actual-owner",
+      members: { me: {} },
+    },
+    user: { id: "administrator-id" },
+    memberPermissions: { has: () => true },
+    reply: async (payload: unknown) => {
+      reply = payload;
+      return payload;
+    },
+  } as unknown as ChatInputCommandInteraction;
+
+  await executeWhitelist(interaction);
+
+  assert.deepEqual(reply, {
+    content: "Only the server owner can manage Anti-Nuke trust lists.",
+    ephemeral: true,
+  });
 });

@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDefaultAntiNukeConfig } from "./defaults.js";
+import {
+  createDefaultAntiNukeConfig,
+  normalizeAntiNukeConfig,
+} from "./defaults.js";
 import {
   EventDeduplicator,
+  isConfirmedWebhookRaid,
+  isGuildOwner,
   isManualJudgementOwner,
+  resolveIncidentResponse,
   PunishmentGate,
   resolveDefaultResponse,
   resolveJoinPolicy,
@@ -21,14 +27,47 @@ test("mandatory detector defaults remain exact and independent", () => {
       config.detectors["member-ban"],
     ].map(({ enabled, limit, windowSeconds }) => ({ enabled, limit, windowSeconds })),
     [
+      { enabled: true, limit: 2, windowSeconds: 5 },
       { enabled: true, limit: 3, windowSeconds: 3 },
-      { enabled: true, limit: 3, windowSeconds: 3 },
-      { enabled: true, limit: 3, windowSeconds: 5 },
-      { enabled: true, limit: 3, windowSeconds: 5 },
+      { enabled: true, limit: 2, windowSeconds: 5 },
+      { enabled: true, limit: 2, windowSeconds: 5 },
     ],
   );
   assert.equal(config.detectors["webhook-create"].enabled, false);
   assert.equal(config.detectors["bot-add"].enabled, false);
+});
+
+test("normalization preserves explicit saved detector settings", () => {
+  const saved = createDefaultAntiNukeConfig();
+  saved.detectors["channel-delete"] = {
+    ...saved.detectors["channel-delete"],
+    limit: 3,
+    windowSeconds: 3,
+  };
+  saved.detectors["member-kick"] = {
+    ...saved.detectors["member-kick"],
+    limit: 3,
+  };
+  saved.detectors["member-ban"] = {
+    ...saved.detectors["member-ban"],
+    limit: 3,
+  };
+  saved.detectors["webhook-create"].enabled = false;
+  saved.detectors["webhook-create"].limit = 5;
+
+  const normalized = normalizeAntiNukeConfig(saved);
+
+  assert.deepEqual(
+    [
+      normalized.detectors["channel-delete"].limit,
+      normalized.detectors["channel-delete"].windowSeconds,
+      normalized.detectors["member-kick"].limit,
+      normalized.detectors["member-ban"].limit,
+      normalized.detectors["webhook-create"].enabled,
+      normalized.detectors["webhook-create"].limit,
+    ],
+    [3, 3, 3, 3, false, 5],
+  );
 });
 
 test("rolling counts separate guild, executor, and action type", () => {
@@ -55,6 +94,67 @@ test("default responses are human judgment and bot kick only for four required d
   assert.equal(resolveDefaultResponse("webhook-create", "human", null), "log");
   assert.equal(resolveDefaultResponse("webhook-create", "bot", null), "log");
   assert.equal(resolveDefaultResponse("channel-create", "unknown", null), "log");
+});
+
+test("confirmed webhook raids need at least two events from the same executor", () => {
+  const counter = new RollingThresholdCounter();
+
+  const first = counter.add("guild", "executor-a", "webhook-create", 1_000, 10_000);
+  assert.equal(isConfirmedWebhookRaid("webhook-create", first, 1), false);
+
+  const otherExecutor = counter.add(
+    "guild",
+    "executor-b",
+    "webhook-create",
+    1_100,
+    10_000,
+  );
+  assert.equal(isConfirmedWebhookRaid("webhook-create", otherExecutor, 1), false);
+
+  const second = counter.add(
+    "guild",
+    "executor-a",
+    "webhook-create",
+    1_200,
+    10_000,
+  );
+  assert.equal(isConfirmedWebhookRaid("webhook-create", second, 1), true);
+  assert.equal(isConfirmedWebhookRaid("channel-delete", 2, 2), false);
+});
+
+test("confirmed webhook raids force Judgment for people and kick for bots", () => {
+  assert.equal(
+    resolveIncidentResponse("webhook-create", "human", "log", true),
+    "judgement",
+  );
+  assert.equal(
+    resolveIncidentResponse("webhook-delete", "bot", "log", true),
+    "kick",
+  );
+  assert.equal(
+    resolveIncidentResponse("webhook-update", "unknown", "judgement", true),
+    "log",
+  );
+  assert.equal(
+    resolveIncidentResponse("webhook-create", "human", "log", false),
+    "log",
+  );
+});
+
+test("legacy lockdown response settings cannot trigger incident lockdown", () => {
+  assert.equal(
+    resolveIncidentResponse("channel-delete", "human", "lockdown"),
+    "judgement",
+  );
+  assert.equal(
+    resolveIncidentResponse("channel-update", "human", "lockdown"),
+    "log",
+  );
+});
+
+test("only the exact server owner passes the security configuration gate", () => {
+  assert.equal(isGuildOwner("owner-id", "owner-id"), true);
+  assert.equal(isGuildOwner("administrator-id", "owner-id"), false);
 });
 
 test("blacklist wins over whitelist and unapproved bots follow the guild toggle", () => {
