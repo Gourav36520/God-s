@@ -11,6 +11,7 @@ import { logger } from "../lib/logger.js";
 import {
   arrowLine,
   createGodsEmbed,
+  featureStatusLine,
   GODS_EMOJI,
   GOLDEN_ARROW,
 } from "./ui.js";
@@ -474,7 +475,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
     }).addFields(
       {
         name: "System",
-        value: arrowLine("Status", config.enabled ? "Enabled" : "Disabled"),
+        value: featureStatusLine("God's Judgment", config.enabled),
         inline: false,
       },
       {

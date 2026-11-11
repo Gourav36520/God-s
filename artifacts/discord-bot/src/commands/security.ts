@@ -15,6 +15,8 @@ import { logger } from "../lib/logger.js";
 import {
   arrowLine,
   createGodsEmbed,
+  featureStatusEmoji,
+  featureStatusLine,
   GODS_EMOJI,
   GOLDEN_ARROW,
 } from "./ui.js";
@@ -271,7 +273,7 @@ async function handleGlobalStatus(interaction: ChatInputCommandInteraction, guil
 
   const moduleLines = (Object.entries(status) as [ModuleKey, boolean][]).map(
     ([key, enabled]) =>
-      `${GOLDEN_ARROW} ${MODULE_EMOJIS[key]} **${MODULE_LABELS[key]}:** ${enabled ? "Enabled" : "Disabled"}`
+      `${GOLDEN_ARROW} ${featureStatusEmoji(enabled)} ${MODULE_EMOJIS[key]} **${MODULE_LABELS[key]}**`
   );
 
   const embed = createGodsEmbed({
@@ -313,11 +315,12 @@ async function handleGlobalStatus(interaction: ChatInputCommandInteraction, guil
 async function handleModuleEnable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const module = interaction.options.getString("module", true) as ModuleKey;
   await securityManager.setModuleEnabled(guildId, module, true);
+  const enabled = securityManager.getModuleStatus(guildId)[module];
   await interaction.reply({
     embeds: [
       securityCard(
         "Protection Enabled",
-        `${arrowLine("Module", MODULE_LABELS[module])}\n${arrowLine("Status", "Enabled")}`,
+        featureStatusLine(MODULE_LABELS[module], enabled),
         "success",
         MODULE_EMOJIS[module],
       ),
@@ -329,11 +332,12 @@ async function handleModuleEnable(interaction: ChatInputCommandInteraction, guil
 async function handleModuleDisable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   const module = interaction.options.getString("module", true) as ModuleKey;
   await securityManager.setModuleEnabled(guildId, module, false);
+  const enabled = securityManager.getModuleStatus(guildId)[module];
   await interaction.reply({
     embeds: [
       securityCard(
         "Protection Disabled",
-        `${arrowLine("Module", MODULE_LABELS[module])}\n${arrowLine("Status", "Disabled")}`,
+        featureStatusLine(MODULE_LABELS[module], enabled),
         "warning",
         MODULE_EMOJIS[module],
       ),
@@ -445,12 +449,13 @@ async function handleExemptRoleRemove(interaction: ChatInputCommandInteraction, 
 
 async function handleAntiSpamEnable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   await securityManager.setModuleEnabled(guildId, "antiSpam", true);
+  const enabled = securityManager.getConfig(guildId).antiSpam.enabled;
   logger.info(`security antispam enable: enabled in guild ${guildId}`);
   await interaction.reply({
     embeds: [
       securityCard(
         "Anti-Spam Enabled",
-        arrowLine("Status", "Anti-Spam is now enabled."),
+        featureStatusLine("Anti-Spam", enabled),
         "success",
         GODS_EMOJI.security,
       ),
@@ -461,12 +466,13 @@ async function handleAntiSpamEnable(interaction: ChatInputCommandInteraction, gu
 
 async function handleAntiSpamDisable(interaction: ChatInputCommandInteraction, guildId: string): Promise<void> {
   await securityManager.setModuleEnabled(guildId, "antiSpam", false);
+  const enabled = securityManager.getConfig(guildId).antiSpam.enabled;
   logger.info(`security antispam disable: disabled in guild ${guildId}`);
   await interaction.reply({
     embeds: [
       securityCard(
         "Anti-Spam Disabled",
-        arrowLine("Status", "Anti-Spam is now disabled."),
+        featureStatusLine("Anti-Spam", enabled),
         "warning",
         GODS_EMOJI.security,
       ),
@@ -485,7 +491,7 @@ async function handleAntiSpamStatus(interaction: ChatInputCommandInteraction, gu
     emoji: GODS_EMOJI.security,
     tone: cfg.enabled ? "success" : "warning",
     description: [
-      arrowLine("Status", cfg.enabled ? "Enabled" : "Disabled"),
+      featureStatusLine("Anti-Spam", cfg.enabled),
       arrowLine("Tracking", `${trackedUsers.toLocaleString()} users currently tracked`),
     ].join("\n"),
   })

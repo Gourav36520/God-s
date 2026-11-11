@@ -15,6 +15,13 @@ import { resolveInteractionGuild } from "../lib/interactionGuildContext.js";
 import { ANTI_NUKE_DETECTORS } from "../security/antinuke/types.js";
 import type { AntiNukeDetector, AntiNukeResponse } from "../security/antinuke/types.js";
 import { isAntiNukeDetector } from "../security/antinuke/policy.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  featureStatusEmoji,
+  featureStatusLine,
+  GOLDEN_ARROW,
+} from "./ui.js";
 
 const burstDetectors = new Set<AntiNukeDetector>([
   "channel-create",
@@ -465,19 +472,26 @@ export async function execute(
       const config = antiNukeService.getConfig(guildId);
       const detectorDetails = ANTI_NUKE_DETECTORS.map((name) => {
         const detector = config.detectors[name];
-        return `${name}: ${detector.enabled ? "on" : "off"} · ${detector.limit}/${detector.windowSeconds}s · ${detector.responseMode ?? "default"}`;
+        return `${GOLDEN_ARROW} ${featureStatusEmoji(detector.enabled)} **${name}** · ${detector.limit}/${detector.windowSeconds}s · ${detector.responseMode ?? "default"}`;
       });
-      await interaction.editReply(
-        [
-          `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"}`,
-          "Detector policies:",
-          ...detectorDetails,
-          `Whitelist: ${Object.keys(config.whitelist).length} · blacklist: ${Object.keys(config.blacklist).length}`,
-          `Unapproved bot kick: ${config.unverifiedBotKick ? "on" : "off"}`,
-          `Logs: ${config.logs.channelId ? `<#${config.logs.channelId}>` : "not configured"}`,
-          `Lockdown targets: ${config.lockdown.targets.length}`,
-        ].join("\n").slice(0, 1_900),
-      );
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Anti-Nuke Configuration",
+            emoji: ANTI_NUKE_EMOJI,
+            tone: config.enabled ? "success" : "warning",
+            description: [
+              featureStatusLine("Anti-Nuke", config.enabled),
+              "Detector policies:",
+              ...detectorDetails,
+              `Whitelist: ${Object.keys(config.whitelist).length} · blacklist: ${Object.keys(config.blacklist).length}`,
+              featureStatusLine("Unapproved Bot Kick", config.unverifiedBotKick),
+              `Logs: ${config.logs.channelId ? `<#${config.logs.channelId}>` : "not configured"}`,
+              `Lockdown targets: ${config.lockdown.targets.length}`,
+            ].join("\n"),
+          }),
+        ],
+      });
     }
     return;
   }
@@ -568,13 +582,25 @@ export async function execute(
       await auditConfigChange(interaction, guildId, guild, "lockdown-enabled", undefined, { enabled });
       await interaction.editReply(`Automatic targeted lockdown ${enabled ? "enabled" : "disabled"}.`);
     } else if (sub === "status") {
-      await interaction.editReply(
-        `Automatic lockdown: ${config.lockdown.enabled ? "enabled" : "disabled"}\nTargets: ${
-          config.lockdown.targets.length
-            ? config.lockdown.targets.map((id) => `<#${id}>`).join(", ")
-            : "none"
-        }\nSaved restore snapshots: ${config.lockdown.snapshots.length}`,
-      );
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Anti-Nuke Lockdown Status",
+            emoji: ANTI_NUKE_EMOJI,
+            tone: config.lockdown.enabled ? "success" : "warning",
+            description: [
+              featureStatusLine("Automatic Lockdown", config.lockdown.enabled),
+              arrowLine(
+                "Targets",
+                config.lockdown.targets.length
+                  ? config.lockdown.targets.map((id) => `<#${id}>`).join(", ")
+                  : "None",
+              ),
+              arrowLine("Saved restore snapshots", String(config.lockdown.snapshots.length)),
+            ].join("\n"),
+          }),
+        ],
+      });
     } else if (sub === "restore") {
       const actionGuild = await requireGuild();
       if (!actionGuild) return;
@@ -619,16 +645,23 @@ export async function execute(
   if (sub === "status") {
     const config = antiNukeService.getConfig(guildId);
     const required = ["channel-delete", "channel-create", "member-kick", "member-ban"] as const;
-    await interaction.editReply(
-      [
-        `Anti-Nuke: ${config.enabled ? "enabled" : "disabled"}`,
-        ...required.map((name) => {
-          const item = config.detectors[name];
-          return `${name}: ${item.enabled ? "on" : "off"} · ${item.limit} in ${item.windowSeconds}s`;
+    await interaction.editReply({
+      embeds: [
+        createGodsEmbed({
+          title: "Anti-Nuke Status",
+          emoji: ANTI_NUKE_EMOJI,
+          tone: config.enabled ? "success" : "warning",
+          description: [
+            featureStatusLine("Anti-Nuke", config.enabled),
+            ...required.map((name) => {
+              const item = config.detectors[name];
+              return `${GOLDEN_ARROW} ${featureStatusEmoji(item.enabled)} **${name}** · ${item.limit} in ${item.windowSeconds}s`;
+            }),
+            `Logs: ${config.logs.channelId ? `<#${config.logs.channelId}>` : "not configured"}`,
+          ].join("\n"),
         }),
-        `Logs: ${config.logs.channelId ? `<#${config.logs.channelId}>` : "not configured"}`,
-      ].join("\n"),
-    );
+      ],
+    });
     return;
   }
   if (sub === "enable" || sub === "disable") {
@@ -662,11 +695,19 @@ export async function execute(
     const mentionOwner = interaction.options.getBoolean("mention-owner");
     if (!selectedChannel && alertsEnabled === null && mentionOwner === null) {
       const config = antiNukeService.getConfig(guildId).logs;
-      await interaction.editReply(
-        `Channel: ${config.channelId ? `<#${config.channelId}>` : "not configured"} · alerts: ${
-          config.alertsEnabled ? "on" : "off"
-        } · mention owner: ${config.mentionOwner ? "on" : "off"}`,
-      );
+      await interaction.editReply({
+        embeds: [
+          createGodsEmbed({
+            title: "Anti-Nuke Log Settings",
+            emoji: ANTI_NUKE_EMOJI,
+            description: [
+              arrowLine("Channel", config.channelId ? `<#${config.channelId}>` : "Not configured"),
+              featureStatusLine("Log Alerts", config.alertsEnabled),
+              featureStatusLine("Mention Owner", config.mentionOwner),
+            ].join("\n"),
+          }),
+        ],
+      });
       return;
     }
     let channel: TextChannel | null = null;

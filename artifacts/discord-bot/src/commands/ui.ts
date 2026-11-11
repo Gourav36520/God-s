@@ -15,6 +15,11 @@ export const GODS_EMOJI = {
 
 export const GOLDEN_ARROW = "<a:arrow_arrow_1:1554486982439079966>";
 
+export const FEATURE_STATUS_EMOJI = {
+  on: "<:On:1566034940729233560>",
+  off: "<:Off:1566035067602735217>",
+} as const;
+
 export type EmbedTone = "gold" | "success" | "error" | "warning" | "info";
 
 const TONE_COLORS: Record<EmbedTone, number> = {
@@ -50,4 +55,12 @@ export function createGodsEmbed({
 
 export function arrowLine(label: string, value: string): string {
   return `${GOLDEN_ARROW} **${label}:** ${value}`;
+}
+
+export function featureStatusEmoji(enabled: boolean): string {
+  return enabled ? FEATURE_STATUS_EMOJI.on : FEATURE_STATUS_EMOJI.off;
+}
+
+export function featureStatusLine(feature: string, enabled: boolean): string {
+  return `${GOLDEN_ARROW} ${featureStatusEmoji(enabled)} **${feature}**`;
 }

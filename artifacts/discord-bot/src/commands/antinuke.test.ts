@@ -14,13 +14,16 @@ test("runs a guild-scoped status command without a cached Guild object", async (
   const originalGetConfig = service.getConfig;
   const ensuredGuildIds: string[] = [];
   let guildFetchCalls = 0;
-  let reply = "";
+  let reply: unknown;
+  const config = createDefaultAntiNukeConfig();
+  config.enabled = false;
+  config.detectors["channel-delete"].enabled = false;
 
   service.ensureConfig = async (guildId) => {
     ensuredGuildIds.push(guildId);
-    return createDefaultAntiNukeConfig();
+    return config;
   };
-  service.getConfig = () => createDefaultAntiNukeConfig();
+  service.getConfig = () => config;
 
   const interaction = {
     guildId: "guild-b",
@@ -40,9 +43,9 @@ test("runs a guild-scoped status command without a cached Guild object", async (
       getSubcommand: () => "status",
     },
     deferReply: async () => undefined,
-    editReply: async (message: string) => {
-      reply = message;
-      return message;
+    editReply: async (payload: unknown) => {
+      reply = payload;
+      return payload;
     },
   } as unknown as ChatInputCommandInteraction;
 
@@ -55,8 +58,22 @@ test("runs a guild-scoped status command without a cached Guild object", async (
 
   assert.deepEqual(ensuredGuildIds, ["guild-b"]);
   assert.equal(guildFetchCalls, 0);
-  assert.match(reply, /channel-delete: on · 3 in 3s/u);
-  assert.match(reply, /member-ban: on · 3 in 5s/u);
+  const statusEmbed = (
+    reply as { embeds: Array<{ data: { title?: string; description?: string } }> }
+  ).embeds[0];
+  assert.match(statusEmbed.data.title ?? "", /Anti-Nuke Status/u);
+  assert.match(
+    statusEmbed.data.description ?? "",
+    /<:Off:1566035067602735217> \*\*Anti-Nuke\*\*/u,
+  );
+  assert.match(
+    statusEmbed.data.description ?? "",
+    /<:Off:1566035067602735217> \*\*channel-delete\*\* · 3 in 3s/u,
+  );
+  assert.match(
+    statusEmbed.data.description ?? "",
+    /<:On:1566034940729233560> \*\*member-ban\*\* · 3 in 5s/u,
+  );
 });
 
 test("provides standalone Anti-Nuke help with arrows before every listed command", async () => {

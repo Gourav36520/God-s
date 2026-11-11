@@ -6,7 +6,12 @@ import {
   type Role,
 } from "discord.js";
 import { securityManager } from "../lib/registry.js";
-import { arrowLine, createGodsEmbed, GODS_EMOJI } from "./ui.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  featureStatusLine,
+  GODS_EMOJI,
+} from "./ui.js";
 
 export const data = new SlashCommandBuilder()
   .setName("autorole")
@@ -217,7 +222,7 @@ async function replyWithCurrentRole(
       createGodsEmbed({
         title,
         description: [
-          arrowLine("Status", enabled ? "Enabled" : "Disabled"),
+          featureStatusLine("Auto Role", enabled),
           arrowLine("Role", roleValue),
           ...(title === "Auto Role"
             ? ["", "To change it, choose a role with `/autorole role`."]

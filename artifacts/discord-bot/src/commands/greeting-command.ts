@@ -8,7 +8,12 @@ import { welcomeGoodbyeStore } from "../welcome-goodbye/config-store.js";
 import { sendConfiguredGreeting } from "../welcome-goodbye/service.js";
 import type { GreetingKind } from "../welcome-goodbye/types.js";
 import { requireGuildAdministrator } from "./welcome-goodbye-helpers.js";
-import { arrowLine, createGodsEmbed, GODS_EMOJI } from "./ui.js";
+import {
+  arrowLine,
+  createGodsEmbed,
+  featureStatusLine,
+  GODS_EMOJI,
+} from "./ui.js";
 import {
   buildMessageEditorPrompt,
   buildSavedEmbedPicker,
@@ -177,7 +182,7 @@ async function replyConfig(
     ? `Set (${flow.message.length} characters)`
     : "Not set — use `/" + kind + " message`.";
   const description = [
-    arrowLine("Status", flow.enabled ? "ON" : "OFF"),
+    featureStatusLine(labelFor(kind), flow.enabled),
     arrowLine("Channel", channelText),
     arrowLine("Selected embed", embedText),
     arrowLine("Message", messageStatus),
