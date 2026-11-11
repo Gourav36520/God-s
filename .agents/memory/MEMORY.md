@@ -1,1 +1,2 @@
 - [Discord logging card rendering](discord-logging-cards.md) — Native embeds approximate the reference layout; exact custom artwork and large side-by-side avatars need image rendering.
+- [GOD'S NEXUS safety boundary](gods-nexus-safety.md) — Anti-Nuke-only advisory analysis; verified deterministic rules alone authorize enforcement, and AI must fail open.
