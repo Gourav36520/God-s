@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  AttachmentBuilder,
   AuditLogEvent,
   ChannelType,
   EmbedBuilder,
@@ -39,12 +40,18 @@ import type {
   LockdownSnapshot,
   TrustKind,
 } from "./types.js";
+import {
+  SeverityPolicy,
+  type CriticalEventType,
+} from "../heat/SeverityPolicy.js";
+import { renderModerationCard } from "../../logging/moderationCard.js";
 
 type DatabaseApi = typeof import("@workspace/db");
 
 const AUDIT_RETRY_DELAYS_MS = [0, 350, 750, 1_250] as const;
 const AUDIT_MAX_AGE_MS = 10_000;
 const EVENT_DEDUPE_TTL_MS = 60_000;
+const severityPolicy = new SeverityPolicy();
 
 interface Activity {
   guild: Guild;
@@ -971,9 +978,10 @@ export class AntiNukeService {
     thresholdReached: boolean,
   ): Promise<boolean> {
     const config = this.getConfig(guild.id);
-    if (!config.logs.alertsEnabled || !config.logs.channelId || !this.client) return false;
+    const client = this.client;
+    if (!config.logs.alertsEnabled || !config.logs.channelId || !client) return false;
 
-    const channel = await this.client.channels
+    const channel = await client.channels
       .fetch(config.logs.channelId)
       .catch(() => null);
     const botMember = guild.members.me;
@@ -1035,6 +1043,83 @@ export class AntiNukeService {
       )
       .setTimestamp(incident.occurredAt);
 
+    let cardFile: AttachmentBuilder | undefined;
+    const criticalEvent = criticalEventForIncident(incident, thresholdReached);
+    if (criticalEvent) {
+      if (!permissions.has(PermissionFlagsBits.AttachFiles)) {
+        logger.warn(
+          `AntiNuke: log channel ${config.logs.channelId} cannot attach the critical incident card; sending the incident embed only.`,
+        );
+      } else {
+        const targetUser = incident.targetId
+          ? guild.members.cache.get(incident.targetId)?.user ??
+            client.users.cache.get(incident.targetId)
+          : undefined;
+        const executorUser = incident.executorId
+          ? client.users.cache.get(incident.executorId) ??
+            guild.members.cache.get(incident.executorId)?.user
+          : undefined;
+        const targetLabel =
+          criticalEvent.type === "webhookRaid"
+            ? "Webhook activity"
+            : criticalEvent.type === "massChannelDelete"
+              ? "Deleted channel"
+              : "Unknown user";
+        const targetUsername =
+          criticalEvent.type === "webhookRaid" ||
+          criticalEvent.type === "massChannelDelete"
+            ? "Server resource"
+            : "Username unavailable";
+        const limit = incident.details.limit;
+        const windowSeconds = incident.details.windowSeconds;
+        const thresholdLabel =
+          typeof limit === "number" && typeof windowSeconds === "number"
+            ? `${incident.thresholdCount}/${limit} in ${windowSeconds}s`
+            : `${incident.thresholdCount} event(s)`;
+
+        try {
+          const image = await renderModerationCard({
+            action: criticalEvent.title,
+            targetName:
+              targetUser?.globalName ??
+              targetUser?.username ??
+              targetLabel,
+            targetUsername: targetUser
+              ? `@${targetUser.username}`
+              : targetUsername,
+            targetId: incident.targetId ?? "Unavailable",
+            targetAvatarUrl: targetUser?.displayAvatarURL({ size: 256 }),
+            moderatorName:
+              executorUser?.globalName ??
+              executorUser?.username ??
+              "Unknown executor",
+            moderatorUsername: executorUser?.username
+              ? `@${executorUser.username}`
+              : "Username unavailable",
+            moderatorId: incident.executorId ?? "Unavailable",
+            severity: severityPolicy.resolve(criticalEvent.type),
+            reason: `Anti-Nuke threshold reached for ${criticalEvent.title.toLowerCase()} (${thresholdLabel}).`,
+            details: [
+              { label: "Threshold", value: thresholdLabel },
+              { label: "Response", value: incident.response },
+              { label: "Outcome", value: incident.outcome },
+              { label: "Incident ID", value: incident.id },
+            ],
+            timestamp: incident.occurredAt,
+          });
+          embed.setImage("attachment://moderation-action-card.png");
+          cardFile = new AttachmentBuilder(image, {
+            name: "moderation-action-card.png",
+          });
+        } catch (error) {
+          logger.warn(
+            `AntiNuke: could not render critical incident card for ${incident.id}; sending the incident embed only.`,
+            error,
+          );
+        }
+      }
+    }
+
     const content =
       config.logs.mentionOwner && thresholdReached
         ? `<@${guild.ownerId}>`
@@ -1043,6 +1128,7 @@ export class AntiNukeService {
       await channel.send({
         content,
         embeds: [embed],
+        ...(cardFile ? { files: [cardFile] } : {}),
         allowedMentions: content
           ? { users: [guild.ownerId], parse: [] }
           : { parse: [] },
@@ -1062,6 +1148,33 @@ export class AntiNukeService {
     if (!this.database || !this.client) {
       throw new Error("AntiNukeService is not initialized.");
     }
+  }
+}
+
+interface CriticalIncidentCard {
+  type: CriticalEventType;
+  title: string;
+}
+
+export function criticalEventForIncident(
+  incident: Pick<AntiNukeIncident, "detector">,
+  thresholdReached: boolean,
+): CriticalIncidentCard | null {
+  if (!thresholdReached) return null;
+
+  switch (incident.detector) {
+    case "webhook-create":
+    case "webhook-delete":
+    case "webhook-update":
+      return { type: "webhookRaid", title: "Webhook Raid" };
+    case "member-ban":
+      return { type: "massBan", title: "Mass Ban" };
+    case "member-kick":
+      return { type: "massKick", title: "Mass Kick" };
+    case "channel-delete":
+      return { type: "massChannelDelete", title: "Mass Channel Delete" };
+    default:
+      return null;
   }
 }
 

@@ -1,8 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PermissionFlagsBits } from "discord.js";
+import type { Guild } from "discord.js";
 import type { SecurityManager } from "../SecurityManager.js";
-import { AntiNukeService } from "./AntiNukeService.js";
+import { SeverityPolicy } from "../heat/SeverityPolicy.js";
+import {
+  AntiNukeService,
+  criticalEventForIncident,
+} from "./AntiNukeService.js";
 import { RollingThresholdCounter } from "./policy.js";
+import type { AntiNukeIncident } from "./types.js";
+
+const criticalDetectorCases = [
+  { detector: "webhook-create", type: "webhookRaid", title: "Webhook Raid" },
+  { detector: "webhook-delete", type: "webhookRaid", title: "Webhook Raid" },
+  { detector: "webhook-update", type: "webhookRaid", title: "Webhook Raid" },
+  { detector: "member-ban", type: "massBan", title: "Mass Ban" },
+  { detector: "member-kick", type: "massKick", title: "Mass Kick" },
+  {
+    detector: "channel-delete",
+    type: "massChannelDelete",
+    title: "Mass Channel Delete",
+  },
+] as const;
 
 function makeService(failingGuildId?: string) {
   const configs = new Map<string, Record<string, unknown>>();
@@ -125,4 +145,116 @@ test("keeps burst counters isolated by guild", () => {
   assert.equal(counter.add("guild-b", "executor", "channel-delete", 1_500, 3_000), 1);
   assert.equal(counter.count("guild-a", "executor", "channel-delete", 1_500, 3_000), 2);
   assert.equal(counter.count("guild-b", "executor", "channel-delete", 1_500, 3_000), 1);
+});
+
+test("threshold incidents map to their critical severity policy entries", () => {
+  const policy = new SeverityPolicy();
+
+  for (const { detector, type, title } of criticalDetectorCases) {
+    const event = criticalEventForIncident({ detector }, true);
+    assert.deepEqual(event, { type, title }, detector);
+    assert.ok(event);
+    assert.equal(policy.resolve(event.type), "critical", detector);
+    assert.equal(criticalEventForIncident({ detector }, false), null, detector);
+  }
+});
+
+test("critical Anti-Nuke incidents attach the shared PNG and retain incident data", async () => {
+  const { service } = makeService();
+  const sent: unknown[] = [];
+  const channel = {
+    isTextBased: () => true,
+    permissionsFor: () => ({
+      has: () => true,
+    }),
+    send: async (payload: unknown) => {
+      sent.push(payload);
+    },
+  };
+  const client = {
+    channels: { fetch: async () => channel },
+    users: { cache: new Map() },
+  };
+  Object.assign(service, { client });
+  await service.updateConfig("guild-logs", (current) => ({
+    ...current,
+    logs: {
+      ...current.logs,
+      channelId: "anti-nuke-logs",
+      alertsEnabled: true,
+      mentionOwner: true,
+    },
+  }));
+
+  const guild = {
+    id: "guild-logs",
+    ownerId: "guild-owner",
+    members: { me: {}, cache: new Map() },
+  } as unknown as Guild;
+  const sendIncident = (
+    service as unknown as {
+      sendIncident(
+        guild: Guild,
+        incident: AntiNukeIncident,
+        thresholdReached: boolean,
+      ): Promise<boolean>;
+    }
+  ).sendIncident.bind(service);
+
+  for (const [index, { detector }] of criticalDetectorCases.entries()) {
+    const incident: AntiNukeIncident = {
+      id: `incident-${index}`,
+      guildId: guild.id,
+      eventKey: `event-${index}`,
+      detector,
+      executorId: "executor-id",
+      targetId: `target-${index}`,
+      action: detector,
+      thresholdCount: 3,
+      response: "log",
+      outcome: "Threshold reached; no response was scheduled.",
+      details: {
+        executorKind: "human",
+        thresholdReached: true,
+        limit: 3,
+        windowSeconds: 5,
+      },
+      occurredAt: new Date("2026-11-11T09:00:00.000Z"),
+    };
+
+    assert.equal(await sendIncident(guild, incident, true), true);
+  }
+
+  assert.equal(sent.length, criticalDetectorCases.length);
+  for (const [index, { detector }] of criticalDetectorCases.entries()) {
+    const payload = sent[index] as {
+      content?: string;
+      embeds: Array<{
+        toJSON: () => {
+          title?: string;
+          description?: string;
+          fields?: Array<{ name: string; value: string }>;
+          image?: { url?: string };
+        };
+      }>;
+      files?: Array<{ name?: string; attachment: unknown }>;
+      allowedMentions?: { users?: string[]; parse?: string[] };
+    };
+    const embed = payload.embeds[0].toJSON();
+
+    assert.equal(embed.title, `Anti-Nuke · ${detector}`);
+    assert.match(embed.description ?? "", /Action:.*Outcome:/s);
+    assert.equal(embed.image?.url, "attachment://moderation-action-card.png");
+    assert.equal(payload.files?.[0].name, "moderation-action-card.png");
+    assert.ok(Buffer.isBuffer(payload.files?.[0].attachment));
+    assert.equal(payload.content, "<@guild-owner>");
+    assert.deepEqual(payload.allowedMentions, {
+      users: ["guild-owner"],
+      parse: [],
+    });
+    assert.ok(
+      embed.fields?.some((field) => field.name === "Incident ID"),
+      `missing incident details for ${detector}`,
+    );
+  }
 });
