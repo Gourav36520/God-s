@@ -62,6 +62,7 @@ export interface BadWordConfig {
 export interface JudgmentRecord {
   userId: string;
   savedRoles: string[];
+  savedChannelViewPermissions?: Record<string, "allow" | "deny" | "unset">;
   judgedAt: string;
   reason: string;
   judgedBy: string;

@@ -356,7 +356,12 @@ function scheduleStartupValidation(client: Client, godsJudgment: GodsJudgment): 
 
     for (const guild of readyClient.guilds.cache.values()) {
       const cfg = securityManager.getConfig(guild.id).godsJudgment;
-      if (!cfg.enabled || !cfg.judgmentRoleId || !cfg.judgmentChannelId) continue;
+      if (
+        !cfg.enabled &&
+        Object.keys(cfg.activeJudgments).length === 0
+      ) {
+        continue;
+      }
 
       guildsAudited++;
       logger.info(`[STARTUP VALIDATION] Auditing guild: "${guild.name}" (${guild.id})`);

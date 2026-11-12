@@ -26,7 +26,7 @@ import {
 } from "@workspace/db";
 import type { ModerationCase } from "@workspace/db";
 import type { Command } from "../lib/registry.js";
-import { loggingService } from "../lib/registry.js";
+import { loggingService, securityManager } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 import { arrowLine, createGodsEmbed } from "./ui.js";
 import {
@@ -1525,6 +1525,39 @@ async function executeRole(
     await replyPrivate(interaction, "Role Not Found", "That role is no longer available in this server.");
     return;
   }
+
+  const judgmentConfig = securityManager.getConfig(context.guild.id).godsJudgment;
+  const isActiveJudgment = Boolean(judgmentConfig.activeJudgments[target.id]);
+  if (
+    action === "role-remove" &&
+    role.id === judgmentConfig.judgmentRoleId
+  ) {
+    if (interaction.user.id !== context.guild.ownerId) {
+      await replyPrivate(
+        interaction,
+        "Server Owner Only",
+        "Only this server's actual owner can change God's Judgment status.",
+      );
+      return;
+    }
+    if (isActiveJudgment) {
+      await replyPrivate(
+        interaction,
+        "Use the Release Command",
+        "Use `/release` so the saved roles and channel permissions are restored together.",
+      );
+      return;
+    }
+  }
+  if (action === "role-add" && isActiveJudgment) {
+    await replyPrivate(
+      interaction,
+      "Member Under Judgment",
+      "Release this member with `/release` before changing their roles.",
+    );
+    return;
+  }
+
   const hierarchyError = roleHierarchyError(context, target, role.id);
   if (hierarchyError) {
     await replyPrivate(interaction, "Role Not Allowed", hierarchyError);

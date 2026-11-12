@@ -5,7 +5,6 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { securityManager } from "../lib/registry.js";
-import { isManualJudgementOwner } from "../security/antinuke/policy.js";
 import type { GodsJudgment } from "../security/modules/GodsJudgment.js";
 import { logger } from "../lib/logger.js";
 import {
@@ -19,7 +18,7 @@ import {
 export const data = new SlashCommandBuilder()
   .setName("judgment")
   .setDescription("God's Judgment system")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addSubcommand((sub) =>
     sub.setName("setup").setDescription("Create the God's Judgment role and channel (Administrator only)")
   )
@@ -37,7 +36,7 @@ export const data = new SlashCommandBuilder()
 export const releaseData = new SlashCommandBuilder()
   .setName("release")
   .setDescription("Release a user from God's Judgment and restore their roles")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addUserOption((opt) => opt.setName("user").setDescription("The user to release").setRequired(true))
   .addStringOption((opt) => opt.setName("reason").setDescription("Reason for release").setRequired(false));
 
@@ -135,7 +134,9 @@ async function handleSetup(interaction: ChatInputCommandInteraction): Promise<vo
         embeds: [
           createGodsEmbed({
             title: "Judgment Setup Incomplete",
-            description: "Setup couldn't be completed. Check that the bot can manage roles and channels, then try again.",
+            description:
+              result.reason ||
+              "Setup couldn't be completed. Check that the bot can manage roles and channels, then try again.",
             emoji: GODS_EMOJI.judgment,
             tone: "error",
           }),
@@ -210,13 +211,16 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
   try {
     if (
       !interaction.guild ||
-      !isManualJudgementOwner(interaction.user.id, interaction.guild.ownerId)
+      (
+        interaction.user.id !== interaction.guild.ownerId &&
+        !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+      )
     ) {
       await interaction.editReply({
         embeds: [
           createGodsEmbed({
-            title: "Server Owner Only",
-            description: "Only this server's actual owner can use `/judgement user`.",
+            title: "Administrator Permission Required",
+            description: "Only a server Administrator or the server owner can use `/judgment user`.",
             emoji: GODS_EMOJI.judgment,
             tone: "error",
           }),
@@ -326,6 +330,24 @@ async function handleJudgeUser(interaction: ChatInputCommandInteraction): Promis
 }
 
 async function handleRelease(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (
+    !interaction.guild ||
+    interaction.user.id !== interaction.guild.ownerId
+  ) {
+    await interaction.reply({
+      embeds: [
+        createGodsEmbed({
+          title: "Server Owner Only",
+          description: "Only this server's actual owner can release a member from God's Judgment.",
+          emoji: GODS_EMOJI.judgment,
+          tone: "error",
+        }),
+      ],
+      ephemeral: true,
+    });
+    return;
+  }
+
   try {
     await interaction.deferReply({ ephemeral: true });
   } catch (err) {
@@ -359,7 +381,9 @@ async function handleRelease(interaction: ChatInputCommandInteraction): Promise<
         embeds: [
           createGodsEmbed({
             title: "Release Not Completed",
-            description: "The member couldn't be released. Confirm they are currently under Judgment and that the bot can restore their roles, then try again.",
+            description:
+              result.reason ||
+              "The member couldn't be released. Confirm they are currently under Judgment and that the bot can restore their roles, then try again.",
             emoji: GODS_EMOJI.judgment,
             tone: "error",
           }),

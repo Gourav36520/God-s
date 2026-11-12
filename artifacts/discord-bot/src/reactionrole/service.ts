@@ -83,6 +83,18 @@ export function getReactionRoleAssignmentCount(guildId: string): number {
   ).length;
 }
 
+export function isJudgmentReactionRoleMutationBlocked(
+  guildId: string,
+  userId: string,
+  roleId: string,
+): boolean {
+  const judgment = securityManager.getConfig(guildId).godsJudgment;
+  return (
+    roleId === judgment.judgmentRoleId ||
+    Boolean(judgment.activeJudgments[userId])
+  );
+}
+
 export async function updateReactionRoleConfig(
   guildId: string,
   update: ReactionRoleConfigUpdater,
@@ -366,6 +378,20 @@ export async function handleReactionRoleAdd(
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) return;
 
+      if (
+        isJudgmentReactionRoleMutationBlocked(
+          guildId,
+          user.id,
+          mapping.roleId,
+        )
+      ) {
+        logger.warn(
+          `[REACTION ROLE] Refused Judgment role mutation for ${user.id} in ${guildId}.`,
+        );
+        await removeFailedSelection(resolvedReaction, user.id);
+        return;
+      }
+
       const target = await resolveManageableRole(guild, mapping.roleId);
       if (!target.role) {
         logger.warn(
@@ -515,6 +541,19 @@ export async function handleReactionRoleRemove(
         assignment.messageId !== messageId ||
         assignment.emojiKey !== emojiKey
       ) {
+        return;
+      }
+
+      if (
+        isJudgmentReactionRoleMutationBlocked(
+          guildId,
+          user.id,
+          assignment.roleId,
+        )
+      ) {
+        logger.warn(
+          `[REACTION ROLE] Refused removal that could alter Judgment status for ${user.id} in ${guildId}.`,
+        );
         return;
       }
 
