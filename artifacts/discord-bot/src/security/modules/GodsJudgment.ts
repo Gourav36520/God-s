@@ -46,6 +46,58 @@ type MemberOverwriteOutcome =
 
 const MAX_CHANNEL_PERMISSION_OVERWRITES = 100;
 
+function isIsolationDangerousRole(role: Role): boolean {
+  return (
+    role.permissions.has(PermissionFlagsBits.Administrator) ||
+    role.permissions.has(PermissionFlagsBits.ManageChannels) ||
+    role.permissions.has(PermissionFlagsBits.ManageRoles)
+  );
+}
+
+function dangerousRoleManagementFailure(
+  member: GuildMember,
+  botMember: GuildMember,
+  judgmentRoleId: string,
+): string | null {
+  if (isIsolationDangerousRole(member.guild.roles.everyone)) {
+    return (
+      "The @everyone role grants permissions that can bypass or alter channel isolation and " +
+      "cannot be removed from an individual member. Remove those permissions before trying again."
+    );
+  }
+
+  const dangerousRoles = member.roles.cache.filter(
+    (role) =>
+      role.id !== member.guild.roles.everyone.id &&
+      role.id !== judgmentRoleId &&
+      isIsolationDangerousRole(role),
+  );
+  const hasUnmappedDangerousPermission = [
+    PermissionFlagsBits.Administrator,
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageRoles,
+  ].some((permission) => member.permissions.has(permission));
+  if (dangerousRoles.size === 0 && hasUnmappedDangerousPermission) {
+    return (
+      "The member has effective Administrator or channel/role management permissions that " +
+      "could not be traced to a safely removable role. Refresh the member's roles and retry."
+    );
+  }
+  if (dangerousRoles.size === 0) return null;
+
+  const unmanageableRoles = dangerousRoles.filter((role) => !role.editable);
+  const memberAtOrAboveBot =
+    member.roles.highest.comparePositionTo(botMember.roles.highest) >= 0;
+  if (unmanageableRoles.size === 0 && !memberAtOrAboveBot) return null;
+
+  return (
+    `This member has ${dangerousRoles.size} role(s) that can administer the server, channels, ` +
+    `or roles, but the bot cannot safely remove them because of role hierarchy or integration ` +
+    `management. Move the bot above the member's highest role and dangerous roles, or remove ` +
+    `those roles before trying again.`
+  );
+}
+
 function channelKind(
   channel: NonThreadGuildBasedChannel,
   judgmentChannelId: string
@@ -278,6 +330,51 @@ export class GodsJudgment extends BaseSecurityModule {
     }
   }
 
+  private async persistJudgmentRecord(
+    guildId: string,
+    record: JudgmentRecord,
+  ): Promise<void> {
+    const activeJudgments =
+      this.manager.getConfig(guildId).godsJudgment.activeJudgments;
+    await this.manager.updateModuleConfig(guildId, "godsJudgment", {
+      activeJudgments: {
+        ...activeJudgments,
+        [record.userId]: record,
+      },
+    });
+  }
+
+  private async applyMemberIsolationBeforeRoleRemoval(
+    member: GuildMember,
+  ): Promise<string[]> {
+    try {
+      await member.guild.channels.fetch();
+    } catch (error) {
+      return [
+        `Could not refresh server channels before isolating the member: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ];
+    }
+
+    const cfg = this.manager.getConfig(member.guild.id).godsJudgment;
+    const failures: string[] = [];
+    for (const channel of member.guild.channels.cache.values()) {
+      if (channel.isThread()) continue;
+      const result = await this.applyMemberOverwriteToChannel(
+        channel as NonThreadGuildBasedChannel,
+        member,
+        cfg.judgmentChannelId ?? "",
+      );
+      if (result.status === "error") {
+        failures.push(
+          `Could not deny ${member.user.tag} access to #${channel.name ?? channel.id}: ${result.reason}`,
+        );
+      }
+    }
+    return failures;
+  }
+
   private async applyActiveMemberOverwritesToChannel(
     channel: NonThreadGuildBasedChannel,
     activeJudgments: Record<string, JudgmentRecord>,
@@ -300,6 +397,12 @@ export class GodsJudgment extends BaseSecurityModule {
         respectInProgressLocks &&
         judgmentsInProgress.has(`${channel.guildId}:${memberId}`)
       ) {
+        continue;
+      }
+      if (memberId === channel.guild.ownerId) {
+        logger.error(
+          `GodsJudgment: ignored an invalid active record for server owner ${memberId}.`,
+        );
         continue;
       }
       const member =
@@ -693,6 +796,13 @@ export class GodsJudgment extends BaseSecurityModule {
     record: JudgmentRecord,
     source: string,
   ): Promise<void> {
+    if (member.id === member.guild.ownerId) {
+      logger.error(
+        `GodsJudgment.${source}: refused to modify server owner roles or permissions.`,
+      );
+      return;
+    }
+
     const operationKey = `${member.guild.id}:${member.id}`;
     if (judgmentsInProgress.has(operationKey)) return;
 
@@ -1132,7 +1242,7 @@ export class GodsJudgment extends BaseSecurityModule {
       return {
         success: false,
         reason:
-          "The bot needs Manage Roles and Manage Channels, with its highest role above the configured Judgment role.",
+          "God's Judgment isolation was not completed. The bot needs Manage Roles and Manage Channels, with its highest role above the configured Judgment role.",
       };
     }
     const roleSafetyError = await this.ensureJudgmentRoleHasNoPermissions(judgmentRole);
@@ -1145,33 +1255,15 @@ export class GodsJudgment extends BaseSecurityModule {
       };
     }
 
-    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
-      return {
-        success: false,
-        reason:
-          "This member has Administrator. Discord's Administrator permission bypasses channel " +
-          "overwrites, so complete channel isolation is not possible until that permission is removed.",
-      };
-    }
-
-    const protectedRoles = member.roles.cache.filter(
-      (role) =>
-        role.id !== member.guild.roles.everyone.id &&
-        role.id !== judgmentRole.id &&
-        !role.editable &&
-        (
-          role.permissions.has(PermissionFlagsBits.Administrator) ||
-          role.permissions.has(PermissionFlagsBits.ManageChannels) ||
-          role.permissions.has(PermissionFlagsBits.ManageRoles)
-        ),
+    const dangerousRoleError = dangerousRoleManagementFailure(
+      member,
+      botMember,
+      judgmentRole.id,
     );
-    if (protectedRoles.size > 0) {
+    if (dangerousRoleError) {
       return {
         success: false,
-        reason:
-          `This member has ${protectedRoles.size} role(s) above the bot or managed by an integration ` +
-          `that can administer channels, roles, or the server. Move the bot above those roles or ` +
-          `remove the privileged role before applying God's Judgment.`,
+        reason: `God's Judgment isolation was not completed. ${dangerousRoleError}`,
       };
     }
 
@@ -1179,17 +1271,21 @@ export class GodsJudgment extends BaseSecurityModule {
     const existingRecord = cfg.activeJudgments[member.id];
     const hasJudgmentRole = member.roles.cache.has(cfg.judgmentRoleId);
 
-    if (existingRecord && hasJudgmentRole) {
-      // Fully judged: DB record present AND role is assigned — nothing to do
-      return { success: false, reason: `${member.user.tag} is already under God's Judgment.` };
-    }
+    if (existingRecord) {
+      const hasUnexpectedRoles = member.roles.cache.some(
+        (role) =>
+          role.id !== member.guild.roles.everyone.id &&
+          role.id !== judgmentRole.id,
+      );
+      if (hasJudgmentRole && !hasUnexpectedRoles) {
+        return { success: false, reason: `${member.user.tag} is already under God's Judgment.` };
+      }
 
-    if (existingRecord && !hasJudgmentRole) {
-      // Half-judged: DB record exists but the judgment role was manually removed.
-      // Self-heal by re-applying the role and re-validating channels.
+      // Preserve the original snapshot while repairing a missing Judgment
+      // role or removing roles added after the original punishment.
       logger.warn(
-        `GodsJudgment.placeInJudgment: HALF-JUDGED state detected for ${member.user.tag} ` +
-          `(${member.id}) — record present but role is missing. Self-healing now...`
+        `GodsJudgment.placeInJudgment: incomplete state detected for ${member.user.tag} ` +
+          `(${member.id}) — preserving the original role snapshot and repairing isolation.`
       );
       const operationKey = `${member.guild.id}:${member.id}`;
       if (judgmentsInProgress.has(operationKey)) {
@@ -1229,10 +1325,19 @@ export class GodsJudgment extends BaseSecurityModule {
     }
     judgmentsInProgress.add(operationKey);
 
-    // 1. Save the member's current roles (exclude @everyone and the judgment role itself)
-    const savedRoles = member.roles.cache
-      .filter((r) => r.id !== member.guild.roles.everyone.id && r.id !== judgmentRole.id)
-      .map((r) => r.id);
+    // Save each original role exactly once, including any role with
+    // Administrator permission, before changing channel or role permissions.
+    const savedRoles = [
+      ...new Set(
+        member.roles.cache
+          .filter(
+            (role) =>
+              role.id !== member.guild.roles.everyone.id &&
+              role.id !== judgmentRole.id,
+          )
+          .map((role) => role.id),
+      ),
+    ];
 
     const record: JudgmentRecord = {
       userId: member.id,
@@ -1250,14 +1355,55 @@ export class GodsJudgment extends BaseSecurityModule {
         !role.editable,
     );
     let roleAssigned = false;
+    let memberAfterRoleRemoval = member;
+    const persistPartialState = async () => {
+      record.partial = true;
+      record.failureDetails = [...new Set(failures)];
+      try {
+        await this.persistJudgmentRecord(member.guild.id, record);
+      } catch (error) {
+        failures.push(
+          `Could not persist the isolation failure details: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        record.failureDetails = [...new Set(failures)];
+      }
+    };
+
     try {
-      // Save first so a partial Discord API failure cannot lose the original roles.
-      await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
-        activeJudgments: {
-          ...this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments,
-          [member.id]: record,
-        },
-      });
+      // Persist the snapshot before any role or channel permission mutation.
+      try {
+        await this.persistJudgmentRecord(member.guild.id, record);
+      } catch (error) {
+        return {
+          success: false,
+          reason:
+            `God's Judgment isolation was not completed because the original role snapshot ` +
+            `could not be saved. No roles or channel permissions were changed. ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        };
+      }
+
+      // Add explicit member denies while Administrator is still assigned. They
+      // take effect as soon as the bypassing role is removed.
+      const channelFailures =
+        await this.applyMemberIsolationBeforeRoleRemoval(member);
+      if (channelFailures.length > 0) {
+        failures.push(...channelFailures);
+        await persistPartialState();
+        return {
+          success: false,
+          partial: true,
+          roleAssigned: false,
+          reason:
+            `God's Judgment isolation was not completed because channel access could not be ` +
+            `denied safely. The original role snapshot is saved for owner-only release. ` +
+            failures.join(" "),
+          record,
+        };
+      }
 
       const removableRoles = member.roles.cache.filter(
         (role) =>
@@ -1277,13 +1423,65 @@ export class GodsJudgment extends BaseSecurityModule {
           logger.warn(`GodsJudgment.placeInJudgment: partial role removal — ${msg}`);
         }
       }
+
+      try {
+        memberAfterRoleRemoval = await member.guild.members.fetch(member.id);
+      } catch (error) {
+        failures.push(
+          `Could not verify role removal from Discord: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        await persistPartialState();
+        return {
+          success: false,
+          partial: true,
+          roleAssigned: false,
+          reason:
+            `God's Judgment isolation was not completed because role removal could not be ` +
+            `verified. The original role snapshot is saved for owner-only release. ` +
+            failures.join(" "),
+          record,
+        };
+      }
+      member = memberAfterRoleRemoval;
+
+      const remainingDangerousRoles = memberAfterRoleRemoval.roles.cache.filter(
+        (role) =>
+          role.id !== member.guild.roles.everyone.id &&
+          role.id !== judgmentRole.id &&
+          isIsolationDangerousRole(role),
+      );
+      if (
+        memberAfterRoleRemoval.permissions.has(PermissionFlagsBits.Administrator) ||
+        remainingDangerousRoles.size > 0
+      ) {
+        failures.push(
+          "A role that can bypass or alter channel isolation remains on the member.",
+        );
+        await persistPartialState();
+        return {
+          success: false,
+          partial: true,
+          roleAssigned: false,
+          reason:
+            `God's Judgment isolation was not completed because the bot could not remove every ` +
+            `dangerous role. The Judgment role was not assigned; the original role snapshot is ` +
+            `saved for owner-only release. ${failures.join(" ")}`,
+          record,
+        };
+      }
+
       if (blockedRoles.size > 0) {
         failures.push(
           `Could not remove ${blockedRoles.size} role(s) above the bot or managed by an integration.`,
         );
       }
       try {
-        await member.roles.add(judgmentRole, `God's Judgment: ${reason}`);
+        await memberAfterRoleRemoval.roles.add(
+          judgmentRole,
+          `God's Judgment: ${reason}`,
+        );
         roleAssigned = true;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1291,36 +1489,10 @@ export class GodsJudgment extends BaseSecurityModule {
         logger.error(`GodsJudgment.placeInJudgment: failed to assign role — ${msg}`);
       }
 
-      if (member.permissions.has(PermissionFlagsBits.Administrator)) {
-        failures.push(
-          "The member retains Administrator, which bypasses all channel overwrites.",
-        );
-      }
-      if (
-        member.roles.cache.some(
-          (role) =>
-            role.id !== member.guild.roles.everyone.id &&
-            role.id !== judgmentRole.id &&
-            (
-              role.permissions.has(PermissionFlagsBits.ManageChannels) ||
-              role.permissions.has(PermissionFlagsBits.ManageRoles)
-            ),
-        )
-      ) {
-        failures.push(
-          "The member retains a role that can change channel permissions or roles.",
-        );
-      }
-
       record.partial = failures.length > 0;
       if (record.partial) record.failureDetails = failures;
-      await this.manager
-        .updateModuleConfig(member.guild.id, "godsJudgment", {
-          activeJudgments: {
-            ...this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments,
-            [member.id]: record,
-          },
-        })
+      else delete record.failureDetails;
+      await this.persistJudgmentRecord(member.guild.id, record)
         .catch((error: unknown) => {
           failures.push(
             `Could not persist the final judgment state: ${
@@ -1340,8 +1512,8 @@ export class GodsJudgment extends BaseSecurityModule {
         partial: true,
         roleAssigned: false,
         reason:
-          "The quarantine role could not be assigned. Some manageable roles may already have been removed. " +
-          failures.join(" "),
+          `God's Judgment isolation was not completed because the quarantine role could not be ` +
+          `assigned. The original role snapshot is saved for owner-only release. ${failures.join(" ")}`,
         record,
       };
     }
@@ -1457,6 +1629,13 @@ export class GodsJudgment extends BaseSecurityModule {
     existingRecord: JudgmentRecord,
     repairedBy: string
   ): Promise<JudgmentResult> {
+    if (member.id === member.guild.ownerId) {
+      return {
+        success: false,
+        reason: "The server owner's roles and permissions cannot be changed by God's Judgment.",
+      };
+    }
+
     const cfg = this.manager.getConfig(member.guild.id).godsJudgment;
 
     const judgmentRole = member.guild.roles.cache.get(cfg.judgmentRoleId!);
@@ -1478,7 +1657,36 @@ export class GodsJudgment extends BaseSecurityModule {
       return {
         success: false,
         reason:
-          "The bot needs Manage Roles and Manage Channels, with its highest role above the configured Judgment role.",
+          "God's Judgment isolation was not completed. The bot needs Manage Roles and Manage Channels, with its highest role above the configured Judgment role.",
+      };
+    }
+
+    const dangerousRoleError = dangerousRoleManagementFailure(
+      member,
+      botMember,
+      judgmentRole.id,
+    );
+    if (dangerousRoleError) {
+      existingRecord.partial = true;
+      existingRecord.failureDetails = [
+        `God's Judgment isolation was not completed. ${dangerousRoleError}`,
+      ];
+      await this.persistJudgmentRecord(member.guild.id, existingRecord).catch(
+        (error: unknown) => {
+          logger.error(
+            `GodsJudgment.repairHalfJudgedState: could not persist role hierarchy limitation ` +
+              `for member=${member.id} — ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+          );
+        },
+      );
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: member.roles.cache.has(judgmentRole.id),
+        reason: existingRecord.failureDetails[0],
+        record: existingRecord,
       };
     }
 
@@ -1516,7 +1724,38 @@ export class GodsJudgment extends BaseSecurityModule {
         role.id !== judgmentRole.id &&
         !role.editable,
     );
-    let roleAssigned = false;
+    let memberAfterRoleRemoval = member;
+    const persistRecoveryFailure = async () => {
+      existingRecord.partial = true;
+      existingRecord.failureDetails = [...new Set(failures)];
+      await this.persistJudgmentRecord(member.guild.id, existingRecord).catch(
+        (error: unknown) => {
+          failures.push(
+            `Could not persist the recovery limitation: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          existingRecord.failureDetails = [...new Set(failures)];
+        },
+      );
+    };
+
+    const channelFailures =
+      await this.applyMemberIsolationBeforeRoleRemoval(member);
+    if (channelFailures.length > 0) {
+      failures.push(...channelFailures);
+      await persistRecoveryFailure();
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: member.roles.cache.has(judgmentRole.id),
+        reason:
+          `God's Judgment isolation was not completed because channel access could not be ` +
+          `denied safely. ${failures.join(" ")}`,
+        record: existingRecord,
+      };
+    }
+
     const removableRoles = member.roles.cache.filter(
       (role) =>
         role.id !== member.guild.roles.everyone.id &&
@@ -1539,29 +1778,73 @@ export class GodsJudgment extends BaseSecurityModule {
         `Could not remove ${blockedRoles.size} role(s) above the bot or managed by an integration.`,
       );
     }
+
     try {
-      await member.roles.add(
-        judgmentRole,
-        `God's Judgment self-heal (triggered by <@${repairedBy}>): original reason — ${existingRecord.reason}`,
+      memberAfterRoleRemoval = await member.guild.members.fetch(member.id);
+    } catch (error) {
+      failures.push(
+        `Could not verify role removal from Discord: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
-      roleAssigned = true;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      failures.push(`Could not assign the quarantine role: ${msg}`);
-      logger.error(`GodsJudgment.repairHalfJudgedState: failed to re-apply role — ${msg}`);
+      await persistRecoveryFailure();
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: member.roles.cache.has(judgmentRole.id),
+        reason:
+          `God's Judgment isolation was not completed because role removal could not be ` +
+          `verified. ${failures.join(" ")}`,
+        record: existingRecord,
+      };
+    }
+    member = memberAfterRoleRemoval;
+
+    const remainingDangerousRoles = member.roles.cache.filter(
+      (role) =>
+        role.id !== member.guild.roles.everyone.id &&
+        role.id !== judgmentRole.id &&
+        isIsolationDangerousRole(role),
+    );
+    if (
+      member.permissions.has(PermissionFlagsBits.Administrator) ||
+      remainingDangerousRoles.size > 0
+    ) {
+      failures.push(
+        "A role that can bypass or alter channel isolation remains on the member.",
+      );
+      await persistRecoveryFailure();
+      return {
+        success: false,
+        partial: true,
+        roleAssigned: member.roles.cache.has(judgmentRole.id),
+        reason:
+          `God's Judgment isolation was not completed because the bot could not remove every ` +
+          `dangerous role. ${failures.join(" ")}`,
+        record: existingRecord,
+      };
+    }
+
+    let roleAssigned = member.roles.cache.has(judgmentRole.id);
+    if (!roleAssigned) {
+      try {
+        await member.roles.add(
+          judgmentRole,
+          `God's Judgment self-heal (triggered by <@${repairedBy}>): original reason — ${existingRecord.reason}`,
+        );
+        roleAssigned = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        failures.push(`Could not assign the quarantine role: ${msg}`);
+        logger.error(`GodsJudgment.repairHalfJudgedState: failed to re-apply role — ${msg}`);
+      }
     }
 
     existingRecord.partial = failures.length > 0;
     if (existingRecord.partial) existingRecord.failureDetails = failures;
     else delete existingRecord.failureDetails;
-    await this.manager
-      .updateModuleConfig(member.guild.id, "godsJudgment", {
-        activeJudgments: {
-          ...this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments,
-          [member.id]: existingRecord,
-        },
-      })
-      .catch((error: unknown) => {
+    await this.persistJudgmentRecord(member.guild.id, existingRecord).catch(
+      (error: unknown) => {
         failures.push(
           `Could not persist the recovery result: ${
             error instanceof Error ? error.message : String(error)
@@ -1569,65 +1852,19 @@ export class GodsJudgment extends BaseSecurityModule {
         );
         existingRecord.partial = true;
         existingRecord.failureDetails = failures;
-      });
+      },
+    );
     if (!roleAssigned) {
       return {
         success: false,
         partial: true,
         roleAssigned: false,
         reason:
-          "The quarantine role could not be assigned. Some manageable roles may already have been removed. " +
+          `God's Judgment isolation was not completed because the quarantine role could not be ` +
+          `assigned. The original role snapshot remains saved for owner-only release. ` +
           failures.join(" "),
         record: existingRecord,
       };
-    }
-
-    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
-      failures.push(
-        "The member still has Administrator through a role the bot could not remove; Discord's Administrator permission bypasses channel overwrites.",
-      );
-    }
-    if (
-      blockedRoles.some(
-        (role) =>
-          role.permissions.has(PermissionFlagsBits.ManageChannels) ||
-          role.permissions.has(PermissionFlagsBits.ManageRoles),
-      )
-    ) {
-      failures.push(
-        "The member still has a non-removable role that can change channels or roles.",
-      );
-    }
-    if (
-      member.roles.cache.some(
-        (role) =>
-          role.id !== member.guild.roles.everyone.id &&
-          role.id !== judgmentRole.id &&
-          (
-            role.permissions.has(PermissionFlagsBits.ManageChannels) ||
-            role.permissions.has(PermissionFlagsBits.ManageRoles)
-          ),
-      )
-    ) {
-      failures.push(
-        "The member retains a role that can change channel permissions or roles.",
-      );
-    }
-    if (failures.length > 0) {
-      existingRecord.partial = true;
-      existingRecord.failureDetails = failures;
-      await this.manager.updateModuleConfig(member.guild.id, "godsJudgment", {
-        activeJudgments: {
-          ...this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments,
-          [member.id]: existingRecord,
-        },
-      }).catch((error: unknown) => {
-        failures.push(
-          `Could not save the isolation limitations: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      });
     }
 
     // Re-validate all channel overwrites so the lockdown is complete
@@ -1709,6 +1946,12 @@ export class GodsJudgment extends BaseSecurityModule {
         reason: "Only this server's actual owner can release a member from God's Judgment.",
       };
     }
+    if (member.id === member.guild.ownerId) {
+      return {
+        success: false,
+        reason: "The server owner's roles and permissions cannot be changed by God's Judgment.",
+      };
+    }
 
     logger.info(
       `GodsJudgment.release: user=${member.user.tag} (${member.id}) guild=${member.guild.id}`
@@ -1732,42 +1975,113 @@ export class GodsJudgment extends BaseSecurityModule {
           reason: `${member.user.tag} is not currently under God's Judgment.`,
         };
       }
-
-      const stats = await this.validateAndRepair(member.guild);
-      if (stats.errors > 0) {
-        const latestRecord =
-          this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments[
-            member.id
-          ] ?? record;
-        const limitations = latestRecord.failureDetails?.join(" ") ?? "";
+      if (
+        record.userId !== member.id ||
+        !Array.isArray(record.savedRoles) ||
+        record.savedRoles.some((id) => typeof id !== "string")
+      ) {
         return {
           success: false,
-          partial: true,
           reason:
-            `Release stopped because isolation could not be verified ` +
-            `(${stats.errors} issue(s)). Fix the reported permission or role limitation and retry; ` +
-            `the member remains under God's Judgment. ${limitations}`,
-          record: latestRecord,
+            "The saved role snapshot is invalid for this member. No roles were changed; review the stored Judgment record before retrying.",
         };
       }
-      cfg = this.manager.getConfig(member.guild.id).godsJudgment;
-      record = cfg.activeJudgments[member.id] ?? record;
+
+      const hasJudgmentRole =
+        !!cfg.judgmentRoleId && member.roles.cache.has(cfg.judgmentRoleId);
+      if (hasJudgmentRole) {
+        const hasDangerousRoles =
+          member.permissions.has(PermissionFlagsBits.Administrator) ||
+          member.roles.cache.some(
+            (role) =>
+              role.id !== member.guild.roles.everyone.id &&
+              role.id !== cfg.judgmentRoleId &&
+              isIsolationDangerousRole(role),
+          );
+        if (hasDangerousRoles) {
+          const isolationFailures =
+            await this.applyMemberIsolationBeforeRoleRemoval(member);
+          if (isolationFailures.length > 0) {
+            return {
+              success: false,
+              partial: true,
+              reason:
+                `Release stopped because channel isolation could not be re-applied before ` +
+                `restoring the saved roles. ${isolationFailures.join(" ")}`,
+              record,
+            };
+          }
+          logger.warn(
+            `GodsJudgment.release: dangerous role detected for ${member.id}; ` +
+              `owner-authorized snapshot restore will remove roles not in the original snapshot.`,
+          );
+        } else {
+          const stats = await this.validateAndRepair(member.guild);
+          if (stats.errors > 0) {
+            const latestRecord =
+              this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments[
+                member.id
+              ] ?? record;
+            const limitations = latestRecord.failureDetails?.join(" ") ?? "";
+            return {
+              success: false,
+              partial: true,
+              reason:
+                `Release stopped because isolation could not be verified ` +
+                `(${stats.errors} issue(s)). Fix the reported permission or role limitation and retry; ` +
+                `the member remains under God's Judgment. ${limitations}`,
+              record: latestRecord,
+            };
+          }
+          cfg = this.manager.getConfig(member.guild.id).godsJudgment;
+          record = cfg.activeJudgments[member.id] ?? record;
+        }
+      } else {
+        // A snapshot can remain after a safe application failure or manual
+        // removal of the Judgment role. Owner release in this state restores
+        // that saved snapshot instead of refusing cleanup for missing isolation.
+        logger.warn(
+          `GodsJudgment.release: restoring saved snapshot for member=${member.id} ` +
+            `without a Judgment role; actor is the server owner.`,
+        );
+      }
 
       // Restore saved roles while member-specific channel denies are still in
       // force. This prevents role allows from opening channels mid-release.
-      const rolesToRestore = record.savedRoles.filter((id) =>
+      const uniqueSavedRoles = [...new Set(record.savedRoles)].filter(
+        (id) =>
+          id !== member.guild.roles.everyone.id &&
+          id !== cfg.judgmentRoleId,
+      );
+      const rolesToRestore = uniqueSavedRoles.filter((id) =>
         member.guild.roles.cache.has(id),
       );
-      const skippedRoles = record.savedRoles.length - rolesToRestore.length;
-      try {
-        await member.roles.set(
-          rolesToRestore,
-          `Released from God's Judgment: ${reason}`,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error(`GodsJudgment.release: failed to restore roles — ${message}`);
-        return { success: false, reason: `Failed to restore roles: ${message}` };
+      const skippedRoles = uniqueSavedRoles.length - rolesToRestore.length;
+      const currentRoleIds = [
+        ...new Set(
+          member.roles.cache
+            .filter(
+              (role) =>
+                role.id !== member.guild.roles.everyone.id &&
+                role.id !== cfg.judgmentRoleId,
+            )
+            .map((role) => role.id),
+        ),
+      ];
+      const rolesAlreadyMatchSnapshot =
+        currentRoleIds.length === rolesToRestore.length &&
+        currentRoleIds.every((id) => rolesToRestore.includes(id));
+      if (!rolesAlreadyMatchSnapshot) {
+        try {
+          await member.roles.set(
+            rolesToRestore,
+            `Released from God's Judgment: ${reason}`,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error(`GodsJudgment.release: failed to restore roles — ${message}`);
+          return { success: false, reason: `Failed to restore roles: ${message}` };
+        }
       }
 
       const restoreErrors: string[] = [];

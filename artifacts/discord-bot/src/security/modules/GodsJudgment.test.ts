@@ -28,12 +28,16 @@ function overwrite(allowBits = 0n, denyBits = 0n): FakeOverwrite {
   };
 }
 
-function makeRole(id: string, initialPermissions = 0n): Role {
+function makeRole(
+  id: string,
+  initialPermissions = 0n,
+  editable = true,
+): Role {
   let bitfield = initialPermissions;
   const role = {
     id,
     name: id,
-    editable: true,
+    editable,
     managed: false,
     get permissions() {
       return {
@@ -79,6 +83,7 @@ function makeChannel(
     guild,
     guildId: guild.id,
     name: id,
+    send: async () => undefined,
     type,
     isThread: () => false,
     permissionOverwrites: {
@@ -148,23 +153,53 @@ function makeFixture(
       fetch: async (id: string) => (id === "punished-user" ? member : null),
       me: {
         permissions: { has: () => true },
+        roles: { highest: { comparePositionTo: () => 1 } },
       },
     },
   } as unknown as Guild;
 
-  const member = {
+  let member: GuildMember;
+  const memberRoleCache = new Collection([
+    [everyoneRole.id, everyoneRole],
+  ]);
+  const memberRoles = {
+    cache: memberRoleCache,
+    highest: { comparePositionTo: () => -1 },
+    set: async (roleIds: string[]) => {
+      memberRoleCache.clear();
+      memberRoleCache.set(everyoneRole.id, everyoneRole);
+      for (const roleId of roleIds) {
+        const role = guild.roles.cache.get(roleId);
+        if (role) memberRoleCache.set(role.id, role);
+      }
+      return member;
+    },
+    add: async (role: Role) => {
+      memberRoleCache.set(role.id, role);
+      return member;
+    },
+    remove: async (roleIds: string[] | string | Role) => {
+      const ids = Array.isArray(roleIds)
+        ? roleIds
+        : [typeof roleIds === "string" ? roleIds : roleIds.id];
+      for (const roleId of ids) memberRoleCache.delete(roleId);
+      return member;
+    },
+  };
+  member = {
     id: "punished-user",
     user: { tag: "punished#0001" },
     guild,
     permissions: { has: () => false },
-    roles: {
-      cache: new Collection([[everyoneRole.id, everyoneRole]]),
-      set: async () => undefined,
-      add: async () => undefined,
-      remove: async () => undefined,
-    },
+    roles: memberRoles,
     send: async () => undefined,
   } as unknown as GuildMember;
+  (
+    member.permissions as unknown as {
+      has: (permission: bigint) => boolean;
+    }
+  ).has = (permission) =>
+    member.roles.cache.some((role) => role.permissions.has(permission));
   (guild.members.cache as Map<string, GuildMember>).set(member.id, member);
 
   for (const spec of channelSpecs) {
@@ -208,7 +243,15 @@ function makeFixture(
     },
   } as unknown as SecurityManager;
 
-  return { module: new GodsJudgment(manager), config, guild, member, channels, judgmentRole };
+  return {
+    module: new GodsJudgment(manager),
+    manager,
+    config,
+    guild,
+    member,
+    channels,
+    judgmentRole,
+  };
 }
 
 function stateFor(channel: NonThreadGuildBasedChannel, targetId: string) {
@@ -405,37 +448,436 @@ test("service-level release rejects non-owners before changing roles", async () 
   assert.equal(roleRestoreCalls, 0);
 });
 
-test("targets with Administrator are rejected because Discord bypasses channel overwrites", async () => {
-  const fixture = makeFixture([]);
-  const adminMember = {
-    ...fixture.member,
-    permissions: {
-      has: (permission: bigint) =>
-        permission === PermissionFlagsBits.Administrator,
-    },
-  } as unknown as GuildMember;
-  let configWrites = 0;
-  const originalUpdate = (
-    fixture.module as unknown as { manager: SecurityManager }
-  ).manager.updateModuleConfig;
-  (
-    fixture.module as unknown as { manager: SecurityManager }
-  ).manager.updateModuleConfig = async (...args) => {
-    configWrites++;
-    return originalUpdate.apply(
-      (fixture.module as unknown as { manager: SecurityManager }).manager,
-      args,
+test("Administrator members are isolated after snapshotting and removing dangerous roles", async () => {
+  const fixture = makeFixture([
+    { id: "general-text", type: ChannelType.GuildText },
+    { id: "judgment-channel", type: ChannelType.GuildText },
+  ]);
+  fixture.config.activeJudgments = {};
+  const adminRole = makeRole(
+    "admin-role",
+    PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageChannels,
+  );
+  fixture.guild.roles.cache.set(adminRole.id, adminRole);
+  fixture.member.roles.cache.set("saved-role", makeRole("saved-role"));
+  fixture.member.roles.cache.set(adminRole.id, adminRole);
+
+  let removeCalls = 0;
+  fixture.member.roles.remove = async (roleIds: string[] | string | Role) => {
+    removeCalls++;
+    assert.deepEqual(
+      fixture.config.activeJudgments[fixture.member.id].savedRoles,
+      ["saved-role", "admin-role"],
+      "the complete original role snapshot must be persisted before mutation",
     );
+    for (const channel of fixture.channels.values()) {
+      assert.equal(
+        stateFor(channel, fixture.member.id),
+        "deny",
+        "member-specific denies must be ready before Administrator is removed",
+      );
+    }
+    const ids = Array.isArray(roleIds)
+      ? roleIds
+      : [typeof roleIds === "string" ? roleIds : roleIds.id];
+    for (const id of ids) fixture.member.roles.cache.delete(id);
+    return fixture.member;
+  };
+
+  const manager = fixture.manager as SecurityManager;
+  let configWrites = 0;
+  const originalUpdate = manager.updateModuleConfig.bind(manager);
+  manager.updateModuleConfig = async (...args) => {
+    configWrites++;
+    return originalUpdate(...args);
+  };
+
+  const originalLogJudgment = loggingService.logJudgment;
+  const originalLogRelease = loggingService.logRelease;
+  loggingService.logJudgment = async () => undefined;
+  loggingService.logRelease = async () => undefined;
+  try {
+    const result = await fixture.module.placeInJudgment(
+      fixture.member,
+      "test",
+      "administrator",
+    );
+    assert.equal(result.success, true);
+    assert.equal(result.partial, false);
+    assert.equal(removeCalls, 1);
+    assert.equal(
+      fixture.member.permissions.has(PermissionFlagsBits.Administrator),
+      false,
+    );
+    assert.equal(fixture.member.roles.cache.has(fixture.judgmentRole.id), true);
+    assert.deepEqual(
+      fixture.config.activeJudgments[fixture.member.id].savedRoles,
+      ["saved-role", "admin-role"],
+    );
+
+    const writesAfterFirstSnapshot = configWrites;
+    const duplicate = await fixture.module.placeInJudgment(
+      fixture.member,
+      "duplicate attempt",
+      "administrator",
+    );
+    assert.equal(duplicate.success, false);
+    assert.match(duplicate.reason, /already under/u);
+    assert.equal(configWrites, writesAfterFirstSnapshot);
+    assert.equal(removeCalls, 1);
+
+    const released = await fixture.module.release(
+      fixture.member,
+      "owner release",
+      "server-owner",
+    );
+    assert.equal(released.success, true);
+    assert.equal(fixture.member.roles.cache.has(adminRole.id), true);
+    assert.equal(fixture.member.roles.cache.has("saved-role"), true);
+    assert.equal(
+      fixture.member.roles.cache.has(fixture.judgmentRole.id),
+      false,
+    );
+  } finally {
+    loggingService.logJudgment = originalLogJudgment;
+    loggingService.logRelease = originalLogRelease;
+  }
+});
+
+test("unmanageable Administrator roles fail before snapshot or role mutation", async () => {
+  for (const failureMode of [
+    "uneditable-role",
+    "target-hierarchy",
+    "bot-permission",
+    "everyone-permission",
+  ] as const) {
+    const fixture = makeFixture([
+      { id: "general-text", type: ChannelType.GuildText },
+    ]);
+    fixture.config.activeJudgments = {};
+    const adminRole = makeRole(
+      "managed-admin-role",
+      PermissionFlagsBits.Administrator,
+      failureMode !== "uneditable-role",
+    );
+    if (failureMode === "target-hierarchy") {
+      fixture.member.roles.highest.comparePositionTo = () => 0;
+    }
+    if (failureMode === "bot-permission") {
+      (
+        fixture.guild.members.me!.permissions as unknown as {
+          has: (permission: bigint) => boolean;
+        }
+      ).has = (permission) => permission !== PermissionFlagsBits.ManageRoles;
+    }
+    if (failureMode === "everyone-permission") {
+      await fixture.guild.roles.everyone.setPermissions(
+        PermissionFlagsBits.ManageChannels,
+      );
+    }
+    fixture.guild.roles.cache.set(adminRole.id, adminRole);
+    fixture.member.roles.cache.set(adminRole.id, adminRole);
+
+    let configWrites = 0;
+    let roleMutations = 0;
+    const manager = fixture.manager as SecurityManager;
+    const originalUpdate = manager.updateModuleConfig.bind(manager);
+    manager.updateModuleConfig = async (...args) => {
+      configWrites++;
+      return originalUpdate(...args);
+    };
+    fixture.member.roles.remove = async () => {
+      roleMutations++;
+      return fixture.member;
+    };
+    fixture.member.roles.add = async () => {
+      roleMutations++;
+      return fixture.member;
+    };
+
+    const result = await fixture.module.placeInJudgment(
+      fixture.member,
+      "test",
+      "server-owner",
+    );
+    assert.equal(result.success, false, failureMode);
+    assert.match(result.reason, /isolation was not completed/u, failureMode);
+    assert.equal(configWrites, 0, failureMode);
+    assert.equal(roleMutations, 0, failureMode);
+    assert.equal(
+      fixture.config.activeJudgments[fixture.member.id],
+      undefined,
+      failureMode,
+    );
+  }
+});
+
+test("repair preserves the original snapshot instead of saving later-added roles", async () => {
+  const fixture = makeFixture(
+    [
+      { id: "general-text", type: ChannelType.GuildText },
+      { id: "judgment-channel", type: ChannelType.GuildText },
+    ],
+    { savedRoles: ["saved-role"], savedChannelViewPermissions: {} },
+  );
+  const adminRole = makeRole("later-admin-role", PermissionFlagsBits.Administrator);
+  fixture.guild.roles.cache.set(adminRole.id, adminRole);
+  fixture.member.roles.cache.set("saved-role", fixture.guild.roles.cache.get("saved-role")!);
+  fixture.member.roles.cache.set(adminRole.id, adminRole);
+
+  const originalLogJudgment = loggingService.logJudgment;
+  const originalLogRelease = loggingService.logRelease;
+  loggingService.logJudgment = async () => undefined;
+  loggingService.logRelease = async () => undefined;
+  try {
+    const repaired = await fixture.module.placeInJudgment(
+      fixture.member,
+      "repair existing judgment",
+      "server-owner",
+    );
+    assert.equal(repaired.success, true);
+    assert.equal(fixture.member.roles.cache.has(adminRole.id), false);
+    assert.equal(fixture.member.roles.cache.has(fixture.judgmentRole.id), true);
+    assert.deepEqual(
+      fixture.config.activeJudgments[fixture.member.id].savedRoles,
+      ["saved-role"],
+    );
+
+    const released = await fixture.module.release(
+      fixture.member,
+      "owner release",
+      "server-owner",
+    );
+    assert.equal(released.success, true);
+    assert.equal(fixture.member.roles.cache.has("saved-role"), true);
+    assert.equal(fixture.member.roles.cache.has(adminRole.id), false);
+  } finally {
+    loggingService.logJudgment = originalLogJudgment;
+    loggingService.logRelease = originalLogRelease;
+  }
+});
+
+test("owner release removes a later-added Administrator role using the saved snapshot", async () => {
+  const fixture = makeFixture(
+    [
+      {
+        id: "general-text",
+        type: ChannelType.GuildText,
+        memberState: "allow",
+      },
+      { id: "judgment-channel", type: ChannelType.GuildText },
+    ],
+    {
+      savedRoles: ["saved-role"],
+      savedChannelViewPermissions: {
+        "general-text": "allow",
+        "judgment-channel": "unset",
+      },
+    },
+  );
+  const laterAdminRole = makeRole(
+    "later-admin-role",
+    PermissionFlagsBits.Administrator,
+  );
+  fixture.guild.roles.cache.set(laterAdminRole.id, laterAdminRole);
+  fixture.member.roles.cache.set(
+    fixture.judgmentRole.id,
+    fixture.judgmentRole,
+  );
+  fixture.member.roles.cache.set(laterAdminRole.id, laterAdminRole);
+
+  fixture.member.roles.set = async (roleIds: string[]) => {
+    for (const channel of fixture.channels.values()) {
+      assert.equal(
+        stateFor(channel, fixture.member.id),
+        "deny",
+        "channel denies must be in place before replacing roles",
+      );
+    }
+    fixture.member.roles.cache.clear();
+    fixture.member.roles.cache.set(
+      fixture.guild.roles.everyone.id,
+      fixture.guild.roles.everyone,
+    );
+    for (const roleId of roleIds) {
+      const role = fixture.guild.roles.cache.get(roleId);
+      if (role) fixture.member.roles.cache.set(role.id, role);
+    }
+    return fixture.member;
+  };
+
+  const originalLogRelease = loggingService.logRelease;
+  loggingService.logRelease = async () => undefined;
+  try {
+    const result = await fixture.module.release(
+      fixture.member,
+      "owner release",
+      "server-owner",
+    );
+    assert.equal(result.success, true);
+    assert.equal(fixture.member.roles.cache.has("saved-role"), true);
+    assert.equal(fixture.member.roles.cache.has(laterAdminRole.id), false);
+    assert.equal(
+      stateFor(fixture.channels.get("general-text")!, fixture.member.id),
+      "allow",
+    );
+    assert.equal(
+      fixture.config.activeJudgments[fixture.member.id],
+      undefined,
+    );
+  } finally {
+    loggingService.logRelease = originalLogRelease;
+  }
+});
+
+test("snapshot persistence failure changes neither roles nor channel overwrites", async () => {
+  const fixture = makeFixture([
+    { id: "general-text", type: ChannelType.GuildText },
+  ]);
+  fixture.config.activeJudgments = {};
+  const adminRole = makeRole("admin-role", PermissionFlagsBits.Administrator);
+  fixture.guild.roles.cache.set(adminRole.id, adminRole);
+  fixture.member.roles.cache.set(adminRole.id, adminRole);
+
+  let channelEdits = 0;
+  let roleMutations = 0;
+  const channel = fixture.channels.get("general-text")!;
+  channel.permissionOverwrites.edit = async () => {
+    channelEdits++;
+    return channel;
+  };
+  fixture.member.roles.remove = async () => {
+    roleMutations++;
+    return fixture.member;
+  };
+  fixture.member.roles.add = async () => {
+    roleMutations++;
+    return fixture.member;
+  };
+  fixture.manager.updateModuleConfig = async () => {
+    throw new Error("snapshot storage unavailable");
   };
 
   const result = await fixture.module.placeInJudgment(
-    adminMember,
+    fixture.member,
     "test",
-    "administrator",
+    "server-owner",
   );
   assert.equal(result.success, false);
-  assert.match(result.reason, /bypasses channel overwrites/u);
-  assert.equal(configWrites, 0);
+  assert.match(result.reason, /snapshot could not be saved/u);
+  assert.equal(channelEdits, 0);
+  assert.equal(roleMutations, 0);
+  assert.equal(fixture.member.roles.cache.has(adminRole.id), true);
+});
+
+test("failed dangerous-role removal leaves a saved snapshot for owner-only release", async () => {
+  const fixture = makeFixture([
+    { id: "general-text", type: ChannelType.GuildText },
+    { id: "judgment-channel", type: ChannelType.GuildText },
+  ]);
+  fixture.config.activeJudgments = {};
+  const adminRole = makeRole("admin-role", PermissionFlagsBits.Administrator);
+  fixture.guild.roles.cache.set(adminRole.id, adminRole);
+  fixture.member.roles.cache.set(
+    "saved-role",
+    fixture.guild.roles.cache.get("saved-role")!,
+  );
+  fixture.member.roles.cache.set(adminRole.id, adminRole);
+  fixture.member.roles.remove = async () => {
+    fixture.member.roles.cache.delete("saved-role");
+    throw new Error("Discord denied role change");
+  };
+
+  const result = await fixture.module.placeInJudgment(
+    fixture.member,
+    "test",
+    "server-owner",
+  );
+  assert.equal(result.success, false);
+  assert.equal(result.roleAssigned, false);
+  assert.match(result.reason, /isolation was not completed/u);
+  assert.equal(fixture.member.roles.cache.has(adminRole.id), true);
+  assert.equal(fixture.member.roles.cache.has(fixture.judgmentRole.id), false);
+  assert.deepEqual(
+    fixture.config.activeJudgments[fixture.member.id].savedRoles,
+    ["saved-role", "admin-role"],
+  );
+
+  const originalLogRelease = loggingService.logRelease;
+  let restoreCalls = 0;
+  fixture.member.roles.set = async (roleIds: string[]) => {
+    restoreCalls++;
+    fixture.member.roles.cache.clear();
+    fixture.member.roles.cache.set(
+      fixture.guild.roles.everyone.id,
+      fixture.guild.roles.everyone,
+    );
+    for (const roleId of roleIds) {
+      const role = fixture.guild.roles.cache.get(roleId);
+      if (role) fixture.member.roles.cache.set(role.id, role);
+    }
+    return fixture.member;
+  };
+  loggingService.logRelease = async () => undefined;
+  try {
+    const released = await fixture.module.release(
+      fixture.member,
+      "owner cleanup",
+      "server-owner",
+    );
+    assert.equal(released.success, true);
+    assert.equal(fixture.member.roles.cache.has(adminRole.id), true);
+    assert.equal(
+      stateFor(fixture.channels.get("general-text")!, fixture.member.id),
+      "unset",
+    );
+    assert.equal(
+      fixture.config.activeJudgments[fixture.member.id],
+      undefined,
+    );
+
+    const duplicateRelease = await fixture.module.release(
+      fixture.member,
+      "duplicate cleanup",
+      "server-owner",
+    );
+    assert.equal(duplicateRelease.success, false);
+    assert.equal(restoreCalls, 1);
+  } finally {
+    loggingService.logRelease = originalLogRelease;
+  }
+});
+
+test("God's Judgment never changes the server owner's roles", async () => {
+  const fixture = makeFixture([]);
+  const owner = {
+    ...fixture.member,
+    id: fixture.guild.ownerId,
+    user: { tag: "owner#0001" },
+  } as unknown as GuildMember;
+  let roleMutations = 0;
+  owner.roles.remove = async () => {
+    roleMutations++;
+    return owner;
+  };
+  owner.roles.set = async () => {
+    roleMutations++;
+    return owner;
+  };
+
+  const punishment = await fixture.module.placeInJudgment(
+    owner,
+    "test",
+    "server-owner",
+  );
+  const release = await fixture.module.release(
+    owner,
+    "test",
+    "server-owner",
+  );
+  assert.equal(punishment.success, false);
+  assert.equal(release.success, false);
+  assert.equal(roleMutations, 0);
 });
 
 test("validation clears dangerous permissions from the Judgment role", async () => {
