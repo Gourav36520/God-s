@@ -33,6 +33,13 @@ import {
   RollingThresholdCounter,
   thresholdForDetector,
 } from "./policy.js";
+import {
+  createDeterministicNexusProvider,
+  createNexusAnalyzer,
+  NexusBehaviorHistory,
+  NEXUS_HISTORY_WINDOW_MS,
+} from "./nexus.js";
+import type { NexusAssessment } from "./nexus.js";
 import type {
   AntiNukeConfig,
   AntiNukeDetector,
@@ -79,6 +86,10 @@ export class AntiNukeService {
   private readonly eventDeduplicator = new EventDeduplicator(EVENT_DEDUPE_TTL_MS);
   private readonly punishmentGate = new PunishmentGate();
   private readonly activeLockdowns = new Set<string>();
+  private readonly nexusHistory = new NexusBehaviorHistory();
+  private readonly nexusAnalyzer = createNexusAnalyzer(
+    createDeterministicNexusProvider(),
+  );
 
   constructor(private readonly security: SecurityManager) {}
 
@@ -743,6 +754,9 @@ export class AntiNukeService {
     const trust = activity.executorId
       ? await this.resolveExecutorKind(activity.guild, activity.executorId, config)
       : "unknown";
+    const executorTrust = activity.executorId
+      ? resolveTrust(config, activity.executorId)
+      : "unapproved";
 
     let count = 0;
     let thresholdReached = false;
@@ -766,13 +780,10 @@ export class AntiNukeService {
         count,
         setting.limit,
       );
-      const trustStatus = activity.executorId
-        ? resolveTrust(config, activity.executorId)
-        : "unapproved";
       if (
         thresholdReached &&
         trust !== "unknown" &&
-        trustStatus !== "whitelisted"
+        executorTrust !== "whitelisted"
       ) {
         response = resolveIncidentResponse(
           activity.detector,
@@ -841,7 +852,7 @@ export class AntiNukeService {
       outcome = "Anti-Nuke disabled; event logged without a response.";
     } else if (!thresholdReached) {
       outcome = `Threshold not reached (${count}/${setting.limit}).`;
-    } else if (resolveTrust(config, activity.executorId) === "whitelisted") {
+    } else if (executorTrust === "whitelisted") {
       outcome = "Threshold reached; whitelisted executor was not automatically punished.";
     } else if (duplicateResponse) {
       outcome = "Threshold reached; duplicate punishment suppressed for this rolling window.";
@@ -857,6 +868,53 @@ export class AntiNukeService {
     }
 
     incident.outcome = outcome;
+    let nexusAssessment: NexusAssessment | null = null;
+    if (
+      activity.executorId &&
+      trust !== "unknown" &&
+      activity.executorId !== activity.guild.ownerId &&
+      executorTrust !== "whitelisted" &&
+      config.enabled &&
+      setting.enabled
+    ) {
+      try {
+        const history = this.nexusHistory.record(
+          activity.guild.id,
+          activity.executorId,
+          activity.detector,
+          activity.occurredAt,
+        );
+        nexusAssessment = await this.nexusAnalyzer.analyze({
+          detector: activity.detector,
+          auditVerified: true,
+          executorKind: trust,
+          executorTrust:
+            executorTrust === "blacklisted" ? "blacklisted" : "unlisted",
+          serverOwner: false,
+          thresholdCount: count,
+          configuredLimit: thresholdLimit,
+          configuredWindowSeconds: setting.windowSeconds,
+          relatedEventCount: history.relatedEventCount,
+          distinctRelatedDetectors: history.distinctRelatedDetectors,
+          sameDetectorEventCount: history.sameDetectorEventCount,
+        });
+        incident.details = {
+          ...incident.details,
+          nexus: {
+            ...nexusAssessment,
+            historyWindowMinutes: NEXUS_HISTORY_WINDOW_MS / 60_000,
+            relatedEventCount: history.relatedEventCount,
+            distinctRelatedDetectors: history.distinctRelatedDetectors,
+            sameDetectorEventCount: history.sameDetectorEventCount,
+          },
+        };
+      } catch (error) {
+        logger.warn(
+          "AntiNuke: NEXUS advisory analysis failed; deterministic response remains unchanged.",
+          error,
+        );
+      }
+    }
     await this.database!
       .updateAntiNukeIncidentOutcome(
         incident.guildId,
@@ -867,7 +925,15 @@ export class AntiNukeService {
       .catch((error: unknown) =>
         logger.error(`AntiNuke: could not update incident ${incident.id}`, error),
       );
-    await this.sendIncident(activity.guild, incident, thresholdReached);
+    const ownerReview =
+      nexusAssessment?.status === "available" &&
+      nexusAssessment.recommendation === "owner-review";
+    await this.sendIncident(
+      activity.guild,
+      incident,
+      thresholdReached,
+      ownerReview,
+    );
     logger.warn(
       `AntiNuke detector=${activity.detector} guild=${activity.guild.id} executor=${activity.executorId ?? "unknown"} target=${activity.targetId ?? "unknown"} count=${count}/${setting.limit} response=${response} outcome=${outcome}`,
     );
@@ -995,6 +1061,7 @@ export class AntiNukeService {
     guild: Guild,
     incident: AntiNukeIncident,
     thresholdReached: boolean,
+    ownerReview = false,
   ): Promise<boolean> {
     const config = this.getConfig(guild.id);
     const client = this.client;
@@ -1061,6 +1128,40 @@ export class AntiNukeService {
         },
       )
       .setTimestamp(incident.occurredAt);
+
+    const nexus = incident.details.nexus;
+    if (nexus && typeof nexus === "object" && !Array.isArray(nexus)) {
+      const report = nexus as Record<string, unknown>;
+      const reasons = Array.isArray(report.reasons)
+        ? report.reasons.filter(
+            (reason): reason is string => typeof reason === "string",
+          )
+        : [];
+      const falsePositiveIndicators = Array.isArray(
+        report.falsePositiveIndicators,
+      )
+        ? report.falsePositiveIndicators.filter(
+            (indicator): indicator is string => typeof indicator === "string",
+          )
+        : [];
+      const recommendation =
+        report.recommendation === "owner-review" ? "OWNER REVIEW" : "OBSERVE";
+      const riskScore =
+        typeof report.riskScore === "number" ? ` · ${report.riskScore}/100` : "";
+      const reportLines = [
+        `${recommendation} · ${typeof report.analysisMode === "string" ? report.analysisMode.toUpperCase() : "ANALYSIS"}${riskScore}`,
+        typeof report.summary === "string" ? report.summary : "",
+        reasons.length > 0 ? `Reasons: ${reasons.join("; ")}` : "",
+        falsePositiveIndicators.length > 0
+          ? `Check: ${falsePositiveIndicators.join("; ")}`
+          : "",
+      ].filter(Boolean);
+      embed.addFields({
+        name: "GOD'S NEXUS",
+        value: truncate(reportLines.join("\n"), 1_024),
+        inline: false,
+      });
+    }
 
     let cardFile: AttachmentBuilder | undefined;
     const criticalEvent = criticalEventForIncident(incident, thresholdReached);
@@ -1140,7 +1241,7 @@ export class AntiNukeService {
     }
 
     const content =
-      config.logs.mentionOwner && thresholdReached
+      config.logs.mentionOwner && (thresholdReached || ownerReview)
         ? `<@${guild.ownerId}>`
         : undefined;
     try {

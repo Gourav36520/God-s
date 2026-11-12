@@ -47,6 +47,7 @@ function makeService(failingGuildId?: string) {
       incidents.push(incident);
       return true;
     },
+    updateAntiNukeIncidentOutcome: async () => true,
     listAntiNukeIncidentRows: async (guildId: string) =>
       incidents.filter((incident) => incident.guildId === guildId),
   };
@@ -179,6 +180,140 @@ test("keeps burst counters isolated by guild", () => {
   assert.equal(counter.count("guild-b", "executor", "channel-delete", 1_500, 3_000), 1);
 });
 
+test("adds NEXUS owner-review reports to slow verified activity without punishment", async () => {
+  const { service } = makeService();
+  const reports: Array<{
+    incident: AntiNukeIncident;
+    thresholdReached: boolean;
+    ownerReview: boolean;
+  }> = [];
+  Object.assign(service, {
+    sendIncident: async (
+      _guild: Guild,
+      incident: AntiNukeIncident,
+      thresholdReached: boolean,
+      ownerReview: boolean,
+    ) => {
+      reports.push({ incident, thresholdReached, ownerReview });
+      return true;
+    },
+  });
+  const guild = {
+    id: "guild-nexus",
+    ownerId: "owner-id",
+    client: { users: { fetch: async () => ({ bot: false }) } },
+  } as unknown as Guild;
+  const processActivity = (
+    service as unknown as {
+      processActivity(activity: {
+        guild: Guild;
+        detector: "channel-delete";
+        targetId: string;
+        executorId: string;
+        eventKey: string;
+        action: string;
+        details: Record<string, unknown>;
+        occurredAt: Date;
+      }): Promise<void>;
+    }
+  ).processActivity.bind(service);
+  const start = Date.now() - 5 * 60_000;
+
+  for (let index = 0; index < 4; index += 1) {
+    await processActivity({
+      guild,
+      detector: "channel-delete",
+      targetId: `channel-${index}`,
+      executorId: "executor-id",
+      eventKey: `audit-${index}`,
+      action: "channel-delete",
+      details: {},
+      occurredAt: new Date(start + index * 30_000),
+    });
+  }
+
+  assert.equal(reports.length, 4);
+  assert.ok(reports.every((report) => !report.thresholdReached));
+  assert.equal(reports[3].ownerReview, true);
+  assert.equal(reports[3].incident.response, "log");
+  assert.deepEqual(reports[3].incident.details.nexus, {
+    status: "available",
+    analysisMode: "deterministic",
+    riskLevel: "high",
+    riskScore: 75,
+    confidence: 0.72,
+    summary:
+      "Verified activity forms a repeated or cross-detector pattern. Review it manually; NEXUS cannot take action.",
+    reasons: [
+      "4 verified channel-delete events occurred within 15 minutes without reaching the 2-event threshold in 5 seconds.",
+      "The repeated activity continued across multiple configured threshold windows.",
+      "Recent activity is one event below the configured burst threshold.",
+    ],
+    falsePositiveIndicators: [
+      "The configured burst threshold has not been reached; review the pattern before taking action.",
+      "Activity is limited to one detector and may reflect routine server maintenance.",
+      "Routine administrator maintenance can produce repeated verified changes.",
+    ],
+    recommendation: "owner-review",
+    historyWindowMinutes: 15,
+    relatedEventCount: 4,
+    distinctRelatedDetectors: 1,
+    sameDetectorEventCount: 4,
+  });
+});
+
+test("keeps threshold punishment active when NEXUS analysis fails", async () => {
+  const { service } = makeService();
+  let responses = 0;
+  Object.assign(service, {
+    nexusAnalyzer: {
+      analyze: async () => {
+        throw new Error("simulated NEXUS failure");
+      },
+    },
+    applyResponse: async () => {
+      responses += 1;
+      return "Deterministic response completed.";
+    },
+    sendIncident: async () => true,
+  });
+  const guild = {
+    id: "guild-failure",
+    ownerId: "owner-id",
+    client: { users: { fetch: async () => ({ bot: false }) } },
+  } as unknown as Guild;
+  const processActivity = (
+    service as unknown as {
+      processActivity(activity: {
+        guild: Guild;
+        detector: "channel-delete";
+        targetId: string;
+        executorId: string;
+        eventKey: string;
+        action: string;
+        details: Record<string, unknown>;
+        occurredAt: Date;
+      }): Promise<void>;
+    }
+  ).processActivity.bind(service);
+  const occurredAt = Date.now();
+
+  for (let index = 0; index < 2; index += 1) {
+    await processActivity({
+      guild,
+      detector: "channel-delete",
+      targetId: `channel-${index}`,
+      executorId: "executor-id",
+      eventKey: `audit-failure-${index}`,
+      action: "channel-delete",
+      details: {},
+      occurredAt: new Date(occurredAt + index * 1_000),
+    });
+  }
+
+  assert.equal(responses, 1);
+});
+
 test("threshold incidents map to their critical severity policy entries", () => {
   const policy = new SeverityPolicy();
 
@@ -289,4 +424,90 @@ test("critical Anti-Nuke incidents attach the shared PNG and retain incident dat
       `missing incident details for ${detector}`,
     );
   }
+});
+
+test("owner-review NEXUS reports can alert the owner below deterministic thresholds", async () => {
+  const { service } = makeService();
+  const sent: Array<{
+    content?: string;
+    embeds: Array<{ toJSON: () => { fields?: Array<{ name: string; value: string }> } }>;
+    allowedMentions?: { users?: string[]; parse?: string[] };
+  }> = [];
+  const channel = {
+    isTextBased: () => true,
+    permissionsFor: () => ({ has: () => true }),
+    send: async (payload: (typeof sent)[number]) => {
+      sent.push(payload);
+    },
+  };
+  Object.assign(service, {
+    client: { channels: { fetch: async () => channel }, users: { cache: new Map() } },
+  });
+  await service.updateConfig("guild-review", (current) => ({
+    ...current,
+    logs: {
+      ...current.logs,
+      channelId: "anti-nuke-logs",
+      alertsEnabled: true,
+      mentionOwner: true,
+    },
+  }));
+  const guild = {
+    id: "guild-review",
+    ownerId: "owner-id",
+    members: { me: {}, cache: new Map() },
+  } as unknown as Guild;
+  const incident: AntiNukeIncident = {
+    id: "nexus-review",
+    guildId: guild.id,
+    eventKey: "nexus-review-event",
+    detector: "channel-delete",
+    executorId: "executor-id",
+    targetId: "channel-id",
+    action: "channel-delete",
+    thresholdCount: 1,
+    response: "log",
+    outcome: "Threshold not reached (1/2).",
+    details: {
+      executorKind: "human",
+      thresholdReached: false,
+      limit: 2,
+      windowSeconds: 5,
+      nexus: {
+        status: "available",
+        analysisMode: "deterministic",
+        riskLevel: "high",
+        riskScore: 75,
+        confidence: 0.72,
+        summary: "Review the repeated activity manually.",
+        reasons: ["Repeated verified activity."],
+        falsePositiveIndicators: ["The burst threshold was not reached."],
+        recommendation: "owner-review",
+      },
+    },
+    occurredAt: new Date(),
+  };
+  const sendIncident = (
+    service as unknown as {
+      sendIncident(
+        guild: Guild,
+        incident: AntiNukeIncident,
+        thresholdReached: boolean,
+        ownerReview: boolean,
+      ): Promise<boolean>;
+    }
+  ).sendIncident.bind(service);
+
+  assert.equal(await sendIncident(guild, incident, false, true), true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, "<@owner-id>");
+  assert.deepEqual(sent[0].allowedMentions, {
+    users: ["owner-id"],
+    parse: [],
+  });
+  assert.ok(
+    sent[0].embeds[0]
+      .toJSON()
+      .fields?.some((field) => field.name === "GOD'S NEXUS"),
+  );
 });
