@@ -77,7 +77,7 @@ export function resolveIncidentResponse(
 ): AntiNukeResponse {
   if (executorKind === "unknown") return "log";
   if (isWebhookDetector(detector) && confirmedWebhookRaid) {
-    return executorKind === "bot" ? "kick" : "judgement";
+    return "judgement";
   }
 
   // Existing saved lockdown response values remain readable, but incidents

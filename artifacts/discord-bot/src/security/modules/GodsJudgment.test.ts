@@ -54,6 +54,7 @@ function makeChannel(
   id: string,
   type: ChannelType,
   initialMemberState: "allow" | "deny" | "unset" = "unset",
+  initialRoleState: "allow" | "deny" | "unset" = "unset",
 ): NonThreadGuildBasedChannel {
   const cache = new Map<string, FakeOverwrite>();
   const viewFlag = PermissionFlagsBits.ViewChannel;
@@ -61,6 +62,14 @@ function makeChannel(
     cache.set(
       "punished-user",
       initialMemberState === "allow"
+        ? overwrite(viewFlag)
+        : overwrite(0n, viewFlag),
+    );
+  }
+  if (initialRoleState !== "unset") {
+    cache.set(
+      "existing-role",
+      initialRoleState === "allow"
         ? overwrite(viewFlag)
         : overwrite(0n, viewFlag),
     );
@@ -106,6 +115,7 @@ function makeFixture(
     id: string;
     type: ChannelType;
     memberState?: "allow" | "deny" | "unset";
+    roleState?: "allow" | "deny" | "unset";
   }>,
   record?: Partial<JudgmentRecord>,
 ) {
@@ -165,6 +175,7 @@ function makeFixture(
         spec.id,
         spec.type,
         spec.memberState ?? "unset",
+        spec.roleState ?? "unset",
       ),
     );
   }
@@ -207,14 +218,24 @@ function stateFor(channel: NonThreadGuildBasedChannel, targetId: string) {
   return "unset";
 }
 
-test("member-specific isolation overrides role and explicit user allows across channel kinds", async () => {
+test("all channel kinds, including the Judgment channel, are hidden from judged members", async () => {
   const fixture = makeFixture([
-    { id: "general-category", type: ChannelType.GuildCategory, memberState: "allow" },
+    {
+      id: "general-category",
+      type: ChannelType.GuildCategory,
+      memberState: "allow",
+      roleState: "allow",
+    },
     { id: "general-text", type: ChannelType.GuildText },
     { id: "general-voice", type: ChannelType.GuildVoice },
     { id: "general-stage", type: ChannelType.GuildStageVoice },
     { id: "general-forum", type: ChannelType.GuildForum },
-    { id: "judgment-channel", type: ChannelType.GuildText, memberState: "deny" },
+    {
+      id: "judgment-channel",
+      type: ChannelType.GuildText,
+      memberState: "allow",
+      roleState: "allow",
+    },
   ]);
 
   const stats = await fixture.module.applyOverwritesToAllChannels(
@@ -230,6 +251,7 @@ test("member-specific isolation overrides role and explicit user allows across c
     "general-voice",
     "general-stage",
     "general-forum",
+    "judgment-channel",
   ]) {
     const channel = fixture.channels.get(channelId)!;
     assert.equal(
@@ -240,10 +262,17 @@ test("member-specific isolation overrides role and explicit user allows across c
       `${channelId} should deny the Judgment role`,
     );
     assert.equal(stateFor(channel, fixture.member.id), "deny", `${channelId} should deny the member`);
+    if (channelId === "general-category" || channelId === "judgment-channel") {
+      assert.equal(
+        channel.permissionOverwrites.cache
+          .get("existing-role")
+          ?.allow.has(PermissionFlagsBits.ViewChannel),
+        true,
+        `${channelId} should retain the existing role allow while the member deny takes precedence`,
+      );
+    }
   }
 
-  const judgmentChannel = fixture.channels.get("judgment-channel")!;
-  assert.equal(stateFor(judgmentChannel, fixture.member.id), "allow");
   assert.deepEqual(
     fixture.config.activeJudgments[fixture.member.id].savedChannelViewPermissions,
     {
@@ -252,7 +281,7 @@ test("member-specific isolation overrides role and explicit user allows across c
       "general-voice": "unset",
       "general-stage": "unset",
       "general-forum": "unset",
-      "judgment-channel": "deny",
+      "judgment-channel": "allow",
     },
   );
 });
@@ -273,6 +302,7 @@ test("new and updated channels reapply member-specific isolation", async () => {
     "new-forum",
     ChannelType.GuildForum,
     "allow",
+    "allow",
   );
   fixture.channels.set(newChannel.id, newChannel);
   await handlers.get(Events.ChannelCreate)!(newChannel);
@@ -287,12 +317,49 @@ test("new and updated channels reapply member-specific isolation", async () => {
   assert.equal(stateFor(newChannel, fixture.member.id), "allow");
   await handlers.get(Events.ChannelUpdate)!(newChannel, newChannel);
   assert.equal(stateFor(newChannel, fixture.member.id), "deny");
+
+  const judgmentChannel = makeChannel(
+    fixture.guild,
+    "judgment-channel",
+    ChannelType.GuildText,
+    "allow",
+    "allow",
+  );
+  fixture.channels.set(judgmentChannel.id, judgmentChannel);
+  fixture.member.roles.cache.set(
+    fixture.judgmentRole.id,
+    fixture.judgmentRole,
+  );
+  let leakedMessageDeleted = false;
+  await handlers.get(Events.MessageCreate)!({
+    inGuild: () => true,
+    author: {
+      bot: false,
+      id: fixture.member.id,
+      tag: "punished#0001",
+    },
+    guildId: fixture.guild.id,
+    guild: fixture.guild,
+    member: fixture.member,
+    channelId: judgmentChannel.id,
+    channel: judgmentChannel,
+    deletable: true,
+    delete: async () => {
+      leakedMessageDeleted = true;
+    },
+  });
+  assert.equal(
+    leakedMessageDeleted,
+    true,
+    "the configured Judgment channel must not be a message leak exception",
+  );
+  assert.equal(stateFor(judgmentChannel, fixture.member.id), "deny");
 });
 
 test("release restores the user's prior per-channel view permissions", async () => {
   const fixture = makeFixture([
     { id: "general-text", type: ChannelType.GuildText, memberState: "allow" },
-    { id: "judgment-channel", type: ChannelType.GuildText, memberState: "deny" },
+    { id: "judgment-channel", type: ChannelType.GuildText, memberState: "allow" },
   ]);
   await fixture.module.applyOverwritesToAllChannels(
     fixture.guild,
@@ -314,7 +381,7 @@ test("release restores the user's prior per-channel view permissions", async () 
   }
 
   assert.equal(stateFor(fixture.channels.get("general-text")!, fixture.member.id), "allow");
-  assert.equal(stateFor(fixture.channels.get("judgment-channel")!, fixture.member.id), "deny");
+  assert.equal(stateFor(fixture.channels.get("judgment-channel")!, fixture.member.id), "allow");
   assert.equal(
     fixture.config.activeJudgments[fixture.member.id],
     undefined,

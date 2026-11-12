@@ -97,7 +97,7 @@ export class GodsJudgment extends BaseSecurityModule {
   }
 
   get description() {
-    return "Strips all roles from a user and confines them to a judgment channel.";
+    return "Strips manageable roles from a user and denies all server channel access until release.";
   }
 
   // ─── Channel-level overwrite helpers ─────────────────────────────────────
@@ -105,11 +105,10 @@ export class GodsJudgment extends BaseSecurityModule {
   /**
    * Apply the correct judgment-role permission overwrite to a single channel.
    *
-   * Judgment channel  → ALLOW ViewChannel, ReadMessageHistory, SendMessages
-   *                      DENY  AddReactions, threads
+   * Judgment channel  → DENY  ViewChannel, ReadMessageHistory, SendMessages
    * Voice channel      → DENY  ViewChannel, Connect, Speak
    * Text/category/etc. → DENY  ViewChannel, SendMessages, AddReactions, threads
-   * Thread / unknown   → skipped (inherits from parent / not manageable)
+   * Threads inherit the denied parent-channel visibility.
    */
   private async applyOverwritesToChannel(
     channel: NonThreadGuildBasedChannel,
@@ -122,23 +121,6 @@ export class GodsJudgment extends BaseSecurityModule {
     }
 
     try {
-      if (kind === "judgment") {
-        await channel.permissionOverwrites.edit(
-          judgmentRoleId,
-          {
-            ViewChannel: true,
-            ReadMessageHistory: true,
-            SendMessages: true,
-            AddReactions: false,
-            CreatePublicThreads: false,
-            CreatePrivateThreads: false,
-            SendMessagesInThreads: false,
-          },
-          { reason: "God's Judgment: confined channel access" }
-        );
-        return "applied";
-      }
-
       if (kind === "voice") {
         await channel.permissionOverwrites.edit(
           judgmentRoleId,
@@ -186,15 +168,6 @@ export class GodsJudgment extends BaseSecurityModule {
     judgmentChannelId: string
   ): boolean {
     const ow = channel.permissionOverwrites.cache.get(judgmentRoleId);
-
-    if (channel.id === judgmentChannelId) {
-      return (
-        ow?.allow.has(PermissionFlagsBits.ViewChannel) === true &&
-        ow.allow.has(PermissionFlagsBits.ReadMessageHistory) &&
-        ow.allow.has(PermissionFlagsBits.SendMessages) &&
-        !ow.deny.has(PermissionFlagsBits.ViewChannel)
-      );
-    }
 
     if (!ow) return false;
 
@@ -278,7 +251,7 @@ export class GodsJudgment extends BaseSecurityModule {
     member: GuildMember,
     judgmentChannelId: string,
   ): Promise<MemberOverwriteOutcome> {
-    const shouldAllow = channel.id === judgmentChannelId;
+    const shouldAllow = false;
     if (hasCorrectViewOverwrite(channel, member.id, shouldAllow)) {
       return { status: "skipped" };
     }
@@ -287,9 +260,10 @@ export class GodsJudgment extends BaseSecurityModule {
         member,
         { ViewChannel: shouldAllow },
         {
-          reason: shouldAllow
-            ? "God's Judgment: preserve access to the confinement channel"
-            : "God's Judgment: isolate this member from other channels",
+          reason:
+            channel.id === judgmentChannelId
+              ? "God's Judgment: members cannot view any server channel"
+              : "God's Judgment: isolate this member from server channels",
         },
       );
       return { status: "applied" };
@@ -879,14 +853,11 @@ export class GodsJudgment extends BaseSecurityModule {
       const record = cfg.activeJudgments[message.author.id];
       if (!record || !message.member?.roles.cache.has(cfg.judgmentRoleId)) return;
 
-      // Judged user is sending a message — if it's in the judgment channel, that's fine
-      if (message.channelId === cfg.judgmentChannelId) return;
-
-      // !! LEAK — a judged member got through somewhere they shouldn't be !!
+      // A judged member must not be able to send messages in any server channel.
       logger.error(
         `GodsJudgment: ‼ PERMISSION LEAK — ${message.author.tag} (${message.author.id}) ` +
           `sent a message in channel ${message.channelId} ` +
-          `which is NOT the judgment channel. Deleting + repairing now.`
+          `while under Judgment. Deleting + repairing now.`
       );
 
       // 1. Delete the message
@@ -1007,19 +978,19 @@ export class GodsJudgment extends BaseSecurityModule {
       logger.info(
         `GodsJudgment.setup: found existing judgment channel #${judgmentChannel.name} (${judgmentChannel.id})`
       );
-      // Re-apply the correct allow overwrite in case it was changed
+      // The configured Judgment channel is also hidden from judged members.
       await judgmentChannel.permissionOverwrites.edit(
         judgmentRole.id,
         {
-          ViewChannel: true,
-          ReadMessageHistory: true,
-          SendMessages: true,
+          ViewChannel: false,
+          ReadMessageHistory: false,
+          SendMessages: false,
           AddReactions: false,
           CreatePublicThreads: false,
           CreatePrivateThreads: false,
           SendMessagesInThreads: false,
         },
-        { reason: "God's Judgment setup — ensuring correct overwrites" }
+        { reason: "God's Judgment setup — deny all judged-member channel access" }
       ).catch((e) => logger.warn(`GodsJudgment.setup: could not update judgment channel overwrite — ${e instanceof Error ? e.message : String(e)}`));
     } else {
       logger.info("GodsJudgment.setup: creating judgment channel...");
@@ -1027,7 +998,7 @@ export class GodsJudgment extends BaseSecurityModule {
         judgmentChannel = (await guild.channels.create({
           name: "gods-judgment",
           type: ChannelType.GuildText,
-          topic: "Users placed under God's Judgment are confined here.",
+          topic: "Staff management channel. Members under God's Judgment cannot view server channels.",
           permissionOverwrites: [
             // @everyone cannot see the channel at all
             {
@@ -1035,16 +1006,14 @@ export class GodsJudgment extends BaseSecurityModule {
               type: OverwriteType.Role,
               deny: [PermissionFlagsBits.ViewChannel],
             },
-            // Judged users can view and SEND messages here only
+            // The Judgment role cannot view any server channel.
             {
               id: judgmentRole.id,
               type: OverwriteType.Role,
-              allow: [
+              deny: [
                 PermissionFlagsBits.ViewChannel,
                 PermissionFlagsBits.ReadMessageHistory,
                 PermissionFlagsBits.SendMessages,
-              ],
-              deny: [
                 PermissionFlagsBits.AddReactions,
                 PermissionFlagsBits.CreatePublicThreads,
                 PermissionFlagsBits.CreatePrivateThreads,

@@ -122,14 +122,14 @@ test("confirmed webhook raids need at least two events from the same executor", 
   assert.equal(isConfirmedWebhookRaid("channel-delete", 2, 2), false);
 });
 
-test("confirmed webhook raids force Judgment for people and kick for bots", () => {
+test("confirmed webhook raids force Judgment for known human and bot executors", () => {
   assert.equal(
     resolveIncidentResponse("webhook-create", "human", "log", true),
     "judgement",
   );
   assert.equal(
     resolveIncidentResponse("webhook-delete", "bot", "log", true),
-    "kick",
+    "judgement",
   );
   assert.equal(
     resolveIncidentResponse("webhook-update", "unknown", "judgement", true),
