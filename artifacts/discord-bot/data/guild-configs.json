@@ -138,6 +138,7 @@
             "1565303394720284682": "unset",
             "1521121964012470333": "unset",
             "1560297710480003173": "unset",
+            "1570622327153238037": "deny",
             "1558505044028952616": "unset",
             "1565299973413933156": "unset",
             "1519269174420050033": "unset",
@@ -164,13 +165,10 @@
             "1560711359526862940": "unset",
             "1566037028045328496": "unset"
           },
-          "judgedAt": "2026-11-13T01:13:55.198Z",
+          "judgedAt": "2026-11-13T11:17:31.658Z",
           "reason": "No reason provided",
-          "judgedBy": "1539247898678525973",
-          "partial": true,
-          "failureDetails": [
-            "Some quarantine channel overwrites could not be verified."
-          ]
+          "judgedBy": "1402982249833435271",
+          "partial": false
         }
       }
     },
@@ -201,7 +199,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-11-13T01:17:34.881Z",
+    "updatedAt": "2026-11-13T11:17:41.952Z",
     "heatEngine": {
       "enabled": true
     },

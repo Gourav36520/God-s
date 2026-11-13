@@ -24,6 +24,11 @@ import {
 } from "@workspace/db";
 import { getBackupConfig, setBackupConfig } from "./backup-service.js";
 import {
+  listAuditRecoveryCandidates,
+  restoreAuditLogResources,
+  validAuditRecoveryCandidates,
+} from "./audit-recovery.js";
+import {
   previewBackup,
   restoreArchivedChannelMessages,
   restoreServerBackup,
@@ -240,6 +245,53 @@ async function handleTargetSelect(
     return;
   }
 
+  if (target === "audit") {
+    const result = await listAuditRecoveryCandidates(interaction.guild);
+    if (!result.ok) {
+      await interaction.update({
+        content: result.reason,
+        components: [],
+      });
+      return;
+    }
+    if (!result.candidates.length) {
+      await interaction.update({
+        content: [
+          "No recoverable deleted channels or roles were found in the available audit logs.",
+          ...result.warnings,
+        ].join("\n"),
+        components: [],
+      });
+      return;
+    }
+    await updateBackupInteractionSession(interaction.guild.id, sessionId, {
+      step: "audit-list",
+      auditWarnings: result.warnings,
+    });
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`gods:recover:audit:${sessionId}`)
+      .setPlaceholder("Select deleted channels or roles")
+      .setMinValues(1)
+      .setMaxValues(result.candidates.length)
+      .addOptions(
+        result.candidates.map((candidate) => ({
+          label: `${candidate.data.kind === "role" ? "Role" : "Channel"} · ${candidate.data.name}`.slice(0, 100),
+          value: candidate.auditEntryId,
+          description: `Deleted ${candidate.deletedAt.slice(0, 16)} UTC${candidate.executorId ? ` · executor ${candidate.executorId}` : " · executor unavailable"}`.slice(0, 100),
+        })),
+      );
+    await interaction.update(
+      rows(
+        [
+          "Select audit-log entries to preview. This recovery does not require a saved backup.",
+          ...result.warnings,
+        ].join("\n"),
+        menu,
+      ),
+    );
+    return;
+  }
+
   if (target === "kicks") {
     let kicks;
     try {
@@ -345,6 +397,76 @@ async function handleBackupSelect(
       "Select one or more data types, then preview the changes before confirming.",
     ].join("\n"),
     components: scopesMenu(sessionId, RECOVERY_BACKUP_SCOPES),
+  });
+}
+
+async function handleAuditSelect(
+  interaction: StringSelectMenuInteraction,
+  sessionId: string,
+): Promise<void> {
+  const session = await authorizedSession(interaction, sessionId);
+  if (!session || !interaction.guild) return;
+  const result = await listAuditRecoveryCandidates(interaction.guild);
+  if (!result.ok) {
+    await interaction.update({ content: result.reason, components: [] });
+    return;
+  }
+  const selectedIds = new Set(interaction.values);
+  const selected = result.candidates.filter((candidate) =>
+    selectedIds.has(candidate.auditEntryId),
+  );
+  if (!selected.length || selected.length !== selectedIds.size) {
+    await interaction.update({
+      content: "One or more audit entries are no longer available. Run `/recover` again.",
+      components: [],
+    });
+    return;
+  }
+  await updateBackupInteractionSession(interaction.guild.id, sessionId, {
+    step: "audit-preview",
+    auditCandidates: selected,
+    auditWarnings: result.warnings,
+  });
+
+  const roleCount = selected.filter((candidate) => candidate.data.kind === "role").length;
+  const channelCount = selected.length - roleCount;
+  const details = selected.map((candidate) => {
+    const kind = candidate.data.kind === "role" ? "Role" : "Channel";
+    const executor = candidate.executorId
+      ? `executor ID \`${candidate.executorId}\``
+      : "executor not recorded";
+    const unavailable =
+      candidate.data.warnings.length > 0
+        ? `; ${candidate.data.warnings.join("; ")}`
+        : "";
+    return `• ${kind} **${candidate.data.name}** · deleted <t:${Math.floor(new Date(candidate.deletedAt).getTime() / 1000)}:f> · ${executor}${unavailable}`;
+  });
+  const embed = new EmbedBuilder()
+    .setTitle("Audit-log recovery preview")
+    .setDescription(
+      [
+        `${roleCount} role(s) · ${channelCount} channel(s) selected.`,
+        ...details,
+        ...result.warnings.map((warning) => `Note: ${warning}`),
+        "Only new resources will be created. Existing roles and channels will not be changed or deleted.",
+        "Discord may not retain every original setting. Review the report after confirmation.",
+      ]
+        .join("\n")
+        .slice(0, 4000),
+    );
+  await interaction.update({
+    content: "",
+    embeds: [embed],
+    components: recoveryButtons([
+      new ButtonBuilder()
+        .setCustomId(`gods:recover:confirm-audit:${sessionId}`)
+        .setLabel("Confirm recovery")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`gods:recover:cancel:${sessionId}`)
+        .setLabel("Cancel")
+        .setStyle(ButtonStyle.Secondary),
+    ]),
   });
 }
 
@@ -552,6 +674,45 @@ async function completeArchiveRestore(
   }).catch(() => undefined);
   await interaction.editReply({
     content: `Archived-message recovery report\n${reportText(report)}`,
+    embeds: [],
+    components: [],
+  });
+}
+
+async function completeAuditRecovery(
+  interaction: ButtonInteraction,
+  sessionId: string,
+): Promise<void> {
+  const session = await authorizedSession(interaction, sessionId);
+  if (!session || !interaction.guild) return;
+  if (session.state.step !== "audit-preview") {
+    await deny(interaction, "This confirmation is no longer active.");
+    return;
+  }
+  const candidates = validAuditRecoveryCandidates(session.state.auditCandidates);
+  if (!candidates.length) {
+    await deny(interaction, "The audit recovery selection is empty. Run `/recover` again.");
+    return;
+  }
+  const claimed = await claimBackupInteractionSession(
+    interaction.guild.id,
+    sessionId,
+    interaction.user.id,
+    "audit-preview",
+    { ...session.state, step: "processing" },
+  );
+  if (!claimed) {
+    await deny(interaction, "This recovery is expired or already being processed.");
+    return;
+  }
+  await interaction.deferUpdate();
+  const report = await restoreAuditLogResources(interaction.guild, candidates);
+  await updateBackupInteractionSession(interaction.guild.id, sessionId, {
+    ...session.state,
+    step: "complete",
+  }).catch(() => undefined);
+  await interaction.editReply({
+    content: `Audit-log recovery report\n${reportText(report)}`,
     embeds: [],
     components: [],
   });
@@ -812,6 +973,9 @@ async function handleRecoveryButton(
   if (action === "confirm-archive") {
     return completeArchiveRestore(interaction, sessionId);
   }
+  if (action === "confirm-audit") {
+    return completeAuditRecovery(interaction, sessionId);
+  }
   if (action === "kick-dm") {
     return completeKickRecovery(interaction, sessionId, "dm");
   }
@@ -865,6 +1029,8 @@ export async function handleBackupComponent(
         await handleBackupSelect(interaction, sessionId);
       } else if (action === "archive") {
         await handleArchiveSelect(interaction, sessionId);
+      } else if (action === "audit") {
+        await handleAuditSelect(interaction, sessionId);
       } else if (action === "scopes") {
         await handleScopeSelect(interaction, sessionId);
       } else if (action === "kick") {

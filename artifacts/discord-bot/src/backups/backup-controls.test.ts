@@ -81,14 +81,33 @@ test("autobackup controls render the saved state with the requested ON/OFF emoji
 test("administrator backup commands and component routes are registered", () => {
   assert.equal(autobackupCommand.toJSON().name, "autobackup");
   assert.equal(recoverCommand.toJSON().name, "recover");
-  assert.deepEqual(
-    recoveryTargets.map((target) => target.value),
-    ["backup", "archive", "kicks"],
-  );
+  assert.deepEqual(recoveryTargets, [
+    {
+      label: "Restore a saved server backup",
+      value: "backup",
+      description: "Preview and selectively restore saved data.",
+    },
+    {
+      label: "Recover archived messages",
+      value: "archive",
+      description: "Repost messages saved by the continuous archive.",
+    },
+    {
+      label: "Recover a kicked member",
+      value: "kicks",
+      description: "Review kick evidence and provide an invite after confirmation.",
+    },
+    {
+      label: "Recover deleted channels or roles",
+      value: "audit",
+      description: "Use available Discord audit-log details without a saved backup.",
+    },
+  ]);
   assert.equal(RECOVERY_BACKUP_SCOPES.includes("messages"), true);
   assert.equal(isBackupComponent("autobackup:toggle:archive"), true);
   assert.equal(isBackupComponent("gods:recover:confirm-backup:session"), true);
   assert.equal(isBackupComponent("gods:recover:archive:session"), true);
+  assert.equal(isBackupComponent("gods:recover:audit:session"), true);
   assert.equal(isBackupComponent("unrelated:component"), false);
 });
 

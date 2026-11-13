@@ -30,6 +30,11 @@ export const recoveryTargets = [
     value: "kicks",
     description: "Review kick evidence and provide an invite after confirmation.",
   },
+  {
+    label: "Recover deleted channels or roles",
+    value: "audit",
+    description: "Use available Discord audit-log details without a saved backup.",
+  },
 ] as const;
 
 export async function execute(

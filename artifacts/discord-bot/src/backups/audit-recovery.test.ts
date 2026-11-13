@@ -187,6 +187,9 @@ test("restored channels stay hidden if audit-log access settings are incomplete"
   let createOptions: Record<string, unknown> | undefined;
   const guild = {
     id: "guild-1",
+    roles: {
+      cache: { get: () => undefined },
+    },
     members: {
       me: { permissions: { has: () => true } },
       cache: { has: () => false },
@@ -236,4 +239,35 @@ test("audit recovery reports missing bot permissions without making Discord chan
   const auditLookup = await listAuditRecoveryCandidates(guild);
   assert.equal(auditLookup.ok, false);
   if (!auditLookup.ok) assert.match(auditLookup.reason, /View Audit Log/);
+});
+
+test("audit recovery safely returns no candidates when entries are unavailable or expired", async () => {
+  const guild = {
+    members: {
+      me: { permissions: { has: () => true } },
+    },
+    fetchAuditLogs: async () => ({ entries: new Map() }),
+  } as unknown as Guild;
+
+  const result = await listAuditRecoveryCandidates(guild);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.candidates, []);
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
+test("audit recovery reports unavailable Discord audit logs without throwing", async () => {
+  const guild = {
+    members: {
+      me: { permissions: { has: () => true } },
+    },
+    fetchAuditLogs: async () => {
+      throw new Error("audit log unavailable");
+    },
+  } as unknown as Guild;
+
+  const result = await listAuditRecoveryCandidates(guild);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.reason, /audit logs could not be read/i);
 });
