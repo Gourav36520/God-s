@@ -218,7 +218,7 @@ function profileMarkup(
   <text x="72" y="440" fill="#8991aa" font-family="DejaVu Sans, sans-serif" font-size="17">ID: ${escapeXml(profile.authorId)}</text>`;
 }
 
-async function loadAvatarDataUrl(avatarUrl?: string): Promise<string | undefined> {
+export async function loadAvatarDataUrl(avatarUrl?: string): Promise<string | undefined> {
   if (!avatarUrl) return undefined;
   let url: URL;
   try {
@@ -242,7 +242,7 @@ async function loadAvatarDataUrl(avatarUrl?: string): Promise<string | undefined
   return `data:${contentType};base64,${image.toString("base64")}`;
 }
 
-function renderSvgToPng(svg: string): Promise<Buffer> {
+export function renderSvgToPng(svg: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const renderer = spawn("magick", ["svg:-", "png:-"], {
       stdio: ["pipe", "pipe", "pipe"],

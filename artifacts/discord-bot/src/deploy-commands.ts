@@ -13,10 +13,13 @@ async function main(): Promise<void> {
   const backup = await import("./commands/backup.js");
   const autobackup = await import("./commands/autobackup.js");
   const recover = await import("./commands/recover.js");
+  const memberCards = await import("./commands/member-cards.js");
   const commandData = [
     backup.data,
     autobackup.data,
     recover.data,
+    memberCards.generateData,
+    memberCards.cardData,
   ].map((d) => d.toJSON());
   const rest = new REST().setToken(token);
   const current = (await rest.get(
@@ -39,7 +42,7 @@ async function main(): Promise<void> {
     added++;
   }
   logger.info(
-    `Backup command registration finished; added ${added} command(s) without replacing existing commands.`,
+    `Missing command registration finished; added ${added} command(s) without replacing existing commands.`,
   );
 }
 
@@ -48,6 +51,6 @@ main().catch((err) => {
     err && typeof err === "object" && "status" in err
       ? String((err as { status: unknown }).status)
       : "unknown";
-  logger.error(`Failed to add missing backup commands (status ${status}).`);
+  logger.error(`Failed to add missing commands (status ${status}).`);
   process.exit(1);
 });

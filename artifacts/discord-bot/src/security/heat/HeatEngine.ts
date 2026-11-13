@@ -14,6 +14,7 @@ import {
   type HeatViolationType,
 } from "./SeverityPolicy.js";
 import type { JudgmentExecutor } from "./PunishmentExecutor.js";
+import { memberCardService } from "../../member-cards/service.js";
 
 export interface HeatResult {
   record: HeatRecord;
@@ -77,6 +78,10 @@ export class HeatEngine {
     return this.result(record, { punishment: "none" });
   }
 
+  getViolationCount(guildId: string, userId: string): number {
+    return this.store.get(guildId, userId).violations;
+  }
+
   async add(
     member: GuildMember,
     amount: number,
@@ -114,6 +119,16 @@ export class HeatEngine {
     }
 
     const updatedRecord = await this.applyEscalationState(record, punishment);
+    if (violationType) {
+      void memberCardService
+        .refreshMemberById(member.guild.id, member.id)
+        .catch((error) =>
+          logger.warn(
+            `Could not refresh violation card for ${member.id}:`,
+            error instanceof Error ? error.message : "unknown error",
+          ),
+        );
+    }
     logger.info(
       `HeatEngine: added ${amount} heat to ${member.user.tag} — ` +
         `${current.record.heat} → ${updatedRecord.heat}`

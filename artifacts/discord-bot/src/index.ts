@@ -25,6 +25,9 @@ import { BadWordProtection } from "./security/modules/BadWordProtection.js";
 import { registerLoggingHandlers } from "./logging/handlers.js";
 import { voiceTracker } from "./trackers/voice-tracker.js";
 import { startBanExpirationProcessor } from "./moderation/ban-expiration.js";
+import { memberCardService } from "./member-cards/service.js";
+import { countModerationViolationCases } from "@workspace/db";
+import { welcomeGoodbyeStore } from "./welcome-goodbye/config-store.js";
 
 function envBool(key: string): boolean {
   return ["true", "1", "yes"].includes(
@@ -185,6 +188,7 @@ async function loadCommands(): Promise<void> {
   const backup = await import("./commands/backup.js");
   const autobackup = await import("./commands/autobackup.js");
   const recover = await import("./commands/recover.js");
+  const memberCards = await import("./commands/member-cards.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -289,6 +293,9 @@ async function loadCommands(): Promise<void> {
     execute: autobackup.execute,
   });
   commands.set(recover.data.name, { data: recover.data, execute: recover.execute });
+  for (const command of memberCards.memberCardCommands) {
+    commands.set(command.data.name, command);
+  }
 
   logger.info(`Loaded ${commands.size} command(s): ${[...commands.keys()].join(", ")}`);
 }
@@ -304,6 +311,8 @@ async function loadEvents(client: Client): Promise<void> {
     await import("./events/messageReactionAdd.js"),
     await import("./events/messageReactionRemove.js"),
   ];
+  const memberCardEvents = await import("./events/memberCards.js");
+  memberCardEvents.registerMemberCardEvents(client);
   for (const mod of mods) {
     if (mod.once) {
       client.once(mod.name, (...args) => mod.execute(...(args as [never])));
@@ -405,6 +414,43 @@ function scheduleStartupValidation(client: Client, godsJudgment: GodsJudgment): 
   });
 }
 
+async function registerMissingMemberCardCommands(client: Client): Promise<void> {
+  const application = client.application;
+  if (!application) {
+    throw new Error("Discord application is not available after gateway login.");
+  }
+  const memberCards = await import("./commands/member-cards.js");
+  const requested = [memberCards.generateData, memberCards.cardData];
+  const existing = await application.commands.fetch();
+
+  for (const command of requested) {
+    if (existing.some((registered) => registered.name === command.name)) {
+      logger.info(
+        `[SLASH COMMANDS] Keeping existing /${command.name} registration unchanged.`,
+      );
+      continue;
+    }
+    await application.commands.create(command.toJSON());
+    logger.info(`[SLASH COMMANDS] Added /${command.name}.`);
+  }
+}
+
+function scheduleMemberCardCommandRegistration(client: Client): void {
+  const register = (readyClient: Client) => {
+    void registerMissingMemberCardCommands(readyClient).catch((error) =>
+      logger.error(
+        "[SLASH COMMANDS] Could not register the member-card commands:",
+        error instanceof Error ? error.stack ?? error.message : String(error),
+      ),
+    );
+  };
+  if (client.isReady()) {
+    register(client);
+  } else {
+    client.once(Events.ClientReady, register);
+  }
+}
+
 async function main(): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
@@ -425,12 +471,14 @@ async function main(): Promise<void> {
   );
 
   await loadCommands();
+  await memberCardService.init();
 
   const { client, messageContentGranted, guildMembersGranted } = await loginWithFallback(
     token,
     wantMessageContent,
     wantGuildMembers
   );
+  scheduleMemberCardCommandRegistration(client);
   const stopBanExpirationProcessor = startBanExpirationProcessor(client);
   const shutdown = (exitCode: number): void => {
     stopBanExpirationProcessor();
@@ -480,6 +528,28 @@ async function main(): Promise<void> {
   }
 
   await securityManager.init(client);
+  memberCardService.configure({
+    client,
+    violationCountProvider: async (guildId, userId) => {
+      const [heatViolations, moderationViolations] = await Promise.all([
+        Promise.resolve(
+          securityManager.getHeatEngine().getViolationCount(guildId, userId),
+        ),
+        countModerationViolationCases(guildId, userId),
+      ]);
+      return heatViolations + moderationViolations;
+    },
+    preferredChannelResolver: (guild) => {
+      const config = securityManager.getConfig(guild.id);
+      const welcomeChannel = welcomeGoodbyeStore.get(guild.id).welcome;
+      return [
+        config.logging.channelIds?.members,
+        config.logging.channelId,
+        config.logChannelId,
+        welcomeChannel.enabled ? welcomeChannel.channelId : null,
+      ].filter((channelId): channelId is string => Boolean(channelId));
+    },
+  });
   loggingService.init(client, securityManager);
   registerLoggingHandlers(client);
 

@@ -1,5 +1,15 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { and, asc, desc, eq, isNull, lte, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lte,
+  or,
+} from "drizzle-orm";
 import pg from "pg";
 import * as schema from "./schema/index.js";
 import {
@@ -10,6 +20,12 @@ import {
   moderationBanExpirations,
   moderationCases,
 } from "./schema/moderation.js";
+import {
+  memberCardMembers,
+  memberCardMessages,
+  memberCardSettings,
+  memberProfileChanges,
+} from "./schema/member-cards.js";
 
 const { Pool } = pg;
 
@@ -145,6 +161,171 @@ export async function createModerationCase(
   return created.id;
 }
 
+export async function getMemberCardChannel(guildId: string): Promise<string | null> {
+  const [settings] = await db
+    .select({ channelId: memberCardSettings.channelId })
+    .from(memberCardSettings)
+    .where(eq(memberCardSettings.guildId, guildId))
+    .limit(1);
+  return settings?.channelId ?? null;
+}
+
+export async function saveMemberCardChannel(
+  guildId: string,
+  channelId: string,
+): Promise<void> {
+  await db
+    .insert(memberCardSettings)
+    .values({ guildId, channelId })
+    .onConflictDoUpdate({
+      target: memberCardSettings.guildId,
+      set: { channelId, updatedAt: new Date() },
+    });
+}
+
+export async function isMemberCardTracked(
+  guildId: string,
+  userId: string,
+): Promise<boolean> {
+  const [member] = await db
+    .select({ userId: memberCardMembers.userId })
+    .from(memberCardMembers)
+    .where(
+      and(
+        eq(memberCardMembers.guildId, guildId),
+        eq(memberCardMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  return Boolean(member);
+}
+
+export async function ensureMemberCardTracked(
+  guildId: string,
+  userId: string,
+): Promise<void> {
+  await db
+    .insert(memberCardMembers)
+    .values({ guildId, userId, departedAt: null })
+    .onConflictDoUpdate({
+      target: [memberCardMembers.guildId, memberCardMembers.userId],
+      set: { departedAt: null },
+    });
+}
+
+export async function markMemberCardDeparted(
+  guildId: string,
+  userId: string,
+  departedAt: Date,
+): Promise<boolean> {
+  const [updated] = await db
+    .update(memberCardMembers)
+    .set({ departedAt })
+    .where(
+      and(
+        eq(memberCardMembers.guildId, guildId),
+        eq(memberCardMembers.userId, userId),
+      ),
+    )
+    .returning({ userId: memberCardMembers.userId });
+  return Boolean(updated);
+}
+
+export async function getMemberCardData(
+  guildId: string,
+  userId: string,
+): Promise<{
+  member: schema.MemberCardMember | null;
+  references: schema.MemberCardMessage[];
+  changes: schema.MemberProfileChangeRow[];
+}> {
+  const [members, references, changes] = await Promise.all([
+    db
+      .select()
+      .from(memberCardMembers)
+      .where(
+        and(
+          eq(memberCardMembers.guildId, guildId),
+          eq(memberCardMembers.userId, userId),
+        ),
+      )
+      .limit(1),
+    db
+      .select()
+      .from(memberCardMessages)
+      .where(
+        and(
+          eq(memberCardMessages.guildId, guildId),
+          eq(memberCardMessages.userId, userId),
+        ),
+      ),
+    db
+      .select()
+      .from(memberProfileChanges)
+      .where(
+        and(
+          eq(memberProfileChanges.guildId, guildId),
+          eq(memberProfileChanges.userId, userId),
+        ),
+      )
+      .orderBy(
+        desc(memberProfileChanges.occurredAt),
+        desc(memberProfileChanges.id),
+      ),
+  ]);
+  return {
+    member: members[0] ?? null,
+    references,
+    changes,
+  };
+}
+
+export async function saveMemberCardMessage(
+  values: schema.InsertMemberCardMessage,
+): Promise<void> {
+  await db
+    .insert(memberCardMembers)
+    .values({ guildId: values.guildId, userId: values.userId, departedAt: null })
+    .onConflictDoNothing();
+  await db
+    .insert(memberCardMessages)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [
+        memberCardMessages.guildId,
+        memberCardMessages.userId,
+        memberCardMessages.cardKind,
+      ],
+      set: {
+        channelId: values.channelId,
+        messageId: values.messageId,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+export async function deleteMemberCardMessage(
+  guildId: string,
+  userId: string,
+  cardKind: string,
+): Promise<void> {
+  await db
+    .delete(memberCardMessages)
+    .where(
+      and(
+        eq(memberCardMessages.guildId, guildId),
+        eq(memberCardMessages.userId, userId),
+        eq(memberCardMessages.cardKind, cardKind),
+      ),
+    );
+}
+
+export async function createMemberProfileChange(
+  values: schema.InsertMemberProfileChange,
+): Promise<void> {
+  await db.insert(memberProfileChanges).values(values);
+}
+
 export async function createModerationBanExpiration(
   values: schema.NewModerationBanExpiration,
 ): Promise<number> {
@@ -270,6 +451,31 @@ export async function listModerationCases(
     )
     .orderBy(desc(moderationCases.createdAt))
     .limit(limit);
+}
+
+export async function countModerationViolationCases(
+  guildId: string,
+  targetId: string,
+): Promise<number> {
+  const [result] = await db
+    .select({ total: count() })
+    .from(moderationCases)
+    .where(
+      and(
+        eq(moderationCases.guildId, guildId),
+        eq(moderationCases.targetId, targetId),
+        inArray(moderationCases.action, [
+          "warn",
+          "kick",
+          "ban",
+          "softban",
+          "softban-partial",
+          "timeout",
+          "server-mute",
+        ]),
+      ),
+    );
+  return Number(result?.total ?? 0);
 }
 
 export async function resolveModerationWarning(

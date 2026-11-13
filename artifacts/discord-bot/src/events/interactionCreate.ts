@@ -22,13 +22,19 @@ import {
   handleBackupComponent,
   isBackupComponent,
 } from "../backups/interactions.js";
+import {
+  handleMemberCardButton,
+  isMemberCardButton,
+} from "../commands/member-cards.js";
 
 export const name = Events.InteractionCreate;
 export const once = false;
 
 export async function execute(interaction: Interaction): Promise<void> {
   if (interaction.isButton()) {
-    if (isBackupComponent(interaction.customId)) {
+    if (isMemberCardButton(interaction.customId)) {
+      await handleMemberCardButton(interaction);
+    } else if (isBackupComponent(interaction.customId)) {
       await handleBackupComponent(interaction);
     } else if (isModerationConfirmation(interaction.customId)) {
       await handleModerationConfirmation(interaction);

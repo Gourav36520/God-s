@@ -10,6 +10,7 @@ import { sendMemberWelcome } from "../welcome-goodbye/service.js";
 import { logger } from "../lib/logger.js";
 import { antiNukeService, securityManager } from "../lib/registry.js";
 import { inviteTracker } from "../trackers/invite-tracker.js";
+import { memberCardService } from "../member-cards/service.js";
 
 export const name = Events.GuildMemberAdd;
 export const once = false;
@@ -119,7 +120,16 @@ async function recordJoinAndNotify(member: GuildMember): Promise<void> {
 
 export async function execute(member: GuildMember): Promise<void> {
   try {
-    if (await antiNukeService.handleMemberJoin(member)) return;
+    if (await antiNukeService.handleMemberJoin(member)) {
+      void memberCardService.generateNewMember(member).catch((error) =>
+        logger.error(
+          `New-member card generation failed for ${member.id}: ${
+            error instanceof Error ? error.stack ?? error.message : String(error)
+          }`,
+        ),
+      );
+      return;
+    }
   } catch (error) {
     logger.error(
       `Anti-Nuke join handling failed for ${member.id}: ${
@@ -135,5 +145,12 @@ export async function execute(member: GuildMember): Promise<void> {
     );
   });
   await assignAutoRole(member);
+  void memberCardService.generateNewMember(member).catch((error) =>
+    logger.error(
+      `New-member card generation failed for ${member.id}: ${
+        error instanceof Error ? error.stack ?? error.message : String(error)
+      }`,
+    ),
+  );
   await sendMemberWelcome(member);
 }

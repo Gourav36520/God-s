@@ -28,6 +28,7 @@ import type { ModerationCase } from "@workspace/db";
 import type { Command } from "../lib/registry.js";
 import { loggingService, securityManager } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
+import { memberCardService } from "../member-cards/service.js";
 import { arrowLine, createGodsEmbed } from "./ui.js";
 import {
   replyPrivate,
@@ -454,9 +455,10 @@ async function saveCase(options: {
   action: string;
   reason: string;
   durationSeconds?: number | null;
+  member?: Parameters<typeof memberCardService.refreshMember>[0];
 }): Promise<number | null> {
   try {
-    return await createModerationCase({
+    const caseId = await createModerationCase({
       guildId: options.guildId,
       targetId: options.targetId,
       moderatorId: options.moderatorId,
@@ -464,6 +466,32 @@ async function saveCase(options: {
       reason: options.reason,
       durationSeconds: options.durationSeconds ?? null,
     });
+    if (
+      [
+        "warn",
+        "kick",
+        "ban",
+        "softban",
+        "softban-partial",
+        "timeout",
+        "server-mute",
+      ].includes(options.action)
+    ) {
+      const refresh = options.member
+        ? memberCardService.refreshMember(options.member, ["roles"])
+        : memberCardService.refreshMemberById(
+            options.guildId,
+            options.targetId,
+          );
+      void refresh
+        .catch((error) =>
+          logger.warn(
+            `Could not refresh moderation card for target ${options.targetId}:`,
+            error instanceof Error ? error.message : "unknown error",
+          ),
+        );
+    }
+    return caseId;
   } catch (error) {
     logger.error(
       `Moderation case persistence failed for action=${options.action}:`,
@@ -882,6 +910,7 @@ async function executeKick(
       moderatorId: context.moderator.id,
       action: "kick",
       reason,
+      member: target,
     });
     await replyEmbed(
       interaction,
@@ -985,6 +1014,7 @@ async function executeBan(
     action: "ban",
     reason,
     durationSeconds: durationMs ? Math.floor(durationMs / 1_000) : null,
+    member: target,
   });
   const expiryNote = expiresAt
     ? ` The ban is scheduled to expire <t:${Math.floor(expiresAt.getTime() / 1_000)}:R>.`
@@ -1179,6 +1209,7 @@ async function executeSoftban(
         moderatorId: context.moderator.id,
         action: "softban-partial",
         reason,
+        member: target,
       });
       await replyEmbed(
         interaction,
@@ -1202,6 +1233,7 @@ async function executeSoftban(
       moderatorId: context.moderator.id,
       action: "softban",
       reason,
+      member: target,
     });
     await replyEmbed(
       interaction,

@@ -9,6 +9,7 @@ export interface HeatRecord {
   userId: string;
   heat: number;
   events: number;
+  violations: number;
   lastReason: string | null;
   lastViolationType: HeatViolationType | null;
   escalationCount: number;
@@ -59,6 +60,7 @@ export class HeatStore {
         userId,
         heat: 0,
         events: 0,
+        violations: 0,
         lastReason: null,
         lastViolationType: null,
         escalationCount: 0,
@@ -75,6 +77,7 @@ export class HeatStore {
       ...record,
       heat: Math.max(0, Math.round(record.heat)),
       events: Math.max(0, Math.round(record.events)),
+      violations: Math.max(0, Math.round(record.violations)),
       escalationCount: Math.max(0, Math.round(record.escalationCount)),
       updatedAt: new Date().toISOString(),
     };
@@ -95,6 +98,7 @@ export class HeatStore {
       ...current,
       heat: current.heat + amount,
       events: current.events + 1,
+      violations: current.violations + (violationType ? 1 : 0),
       lastReason: reason,
       lastViolationType: violationType ?? current.lastViolationType,
     });
@@ -136,6 +140,7 @@ export class HeatStore {
       ...record,
       heat: Math.max(0, Math.round(record.heat ?? 0)),
       events: Math.max(0, Math.round(record.events ?? 0)),
+      violations: Math.max(0, Math.round(record.violations ?? 0)),
       lastViolationType: record.lastViolationType ?? null,
       escalationCount: Math.max(0, Math.round(record.escalationCount ?? 0)),
       escalationWarningIssued: record.escalationWarningIssued ?? false,
