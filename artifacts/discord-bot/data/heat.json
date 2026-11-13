@@ -58,5 +58,17 @@
     "escalationWarningIssued": false,
     "lastEscalationAt": null,
     "updatedAt": "2026-09-27T07:18:19.468Z"
+  },
+  "1519269173937836084:1539247898678525973": {
+    "guildId": "1519269173937836084",
+    "userId": "1539247898678525973",
+    "heat": 15,
+    "events": 3,
+    "lastReason": "Spam detected: 3 messages in 5s (limit: 3)",
+    "lastViolationType": "spam",
+    "escalationCount": 0,
+    "escalationWarningIssued": false,
+    "lastEscalationAt": null,
+    "updatedAt": "2026-11-13T01:29:43.114Z"
   }
 }

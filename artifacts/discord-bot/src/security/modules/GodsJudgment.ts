@@ -35,6 +35,7 @@ export interface RepairStats {
   repaired: number;
   skipped: number;
   errors: number;
+  failures?: string[];
 }
 
 type OverwriteOutcome = "applied" | "skipped" | "error";
@@ -165,7 +166,8 @@ export class GodsJudgment extends BaseSecurityModule {
   private async applyOverwritesToChannel(
     channel: NonThreadGuildBasedChannel,
     judgmentRoleId: string,
-    judgmentChannelId: string
+    judgmentChannelId: string,
+    failureDetails?: string[],
   ): Promise<OverwriteOutcome> {
     const kind = channelKind(channel, judgmentChannelId);
     if (this.isOverwriteCorrect(channel, judgmentRoleId, judgmentChannelId)) {
@@ -201,10 +203,15 @@ export class GodsJudgment extends BaseSecurityModule {
       );
       return "applied";
     } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failureDetails?.push(
+        `Could not update the Judgment-role overwrite on ` +
+          `#${channel.name ?? channel.id} (${channel.id}): ${reason}`,
+      );
       logger.warn(
         `GodsJudgment: overwrite failed on #${channel.name ?? channel.id} ` +
           `(${ChannelType[channel.type] ?? channel.type}) — ` +
-          (err instanceof Error ? err.message : String(err))
+          reason
       );
       return "error";
     }
@@ -229,7 +236,8 @@ export class GodsJudgment extends BaseSecurityModule {
       return (
         ow.deny.has(PermissionFlagsBits.ViewChannel) &&
         !ow.allow.has(PermissionFlagsBits.ViewChannel) &&
-        ow.deny.has(PermissionFlagsBits.Connect)
+        ow.deny.has(PermissionFlagsBits.Connect) &&
+        !ow.allow.has(PermissionFlagsBits.Connect)
       );
     }
 
@@ -385,9 +393,12 @@ export class GodsJudgment extends BaseSecurityModule {
     skipped: number;
     errors: number;
     activeJudgments: Record<string, JudgmentRecord>;
+    failureDetails: string[];
   }> {
     const members = new Map<string, GuildMember>();
     const limitationDetails = new Map<string, string[]>();
+    const failureDetails: string[] = [];
+    const channelLabel = `#${channel.name ?? channel.id} (${channel.id})`;
     let updatedJudgments = activeJudgments;
     const judgmentRoleId =
       this.manager.getConfig(channel.guildId).godsJudgment.judgmentRoleId;
@@ -434,6 +445,7 @@ export class GodsJudgment extends BaseSecurityModule {
       }
       if (limitations.length > 0) {
         limitationDetails.set(memberId, limitations);
+        failureDetails.push(`${channelLabel}: ${limitations.join(" ")}`);
       }
 
       if (record.savedChannelViewPermissions?.[channel.id] !== undefined) continue;
@@ -480,17 +492,20 @@ export class GodsJudgment extends BaseSecurityModule {
         );
         updatedJudgments = saved.godsJudgment.activeJudgments;
       } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        failureDetails.push(
+          `Could not save original member channel permissions for ${channelLabel}: ${reason}`,
+        );
         logger.error(
           `GodsJudgment: could not save original member channel permissions ` +
-            `for channel=${channel.id} — ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `for channel=${channel.id} — ${reason}`,
         );
         return {
           applied: 0,
           skipped: 0,
           errors: Math.max(1, members.size),
           activeJudgments,
+          failureDetails,
         };
       }
     }
@@ -509,10 +524,13 @@ export class GodsJudgment extends BaseSecurityModule {
       else if (result.status === "skipped") skipped++;
       else {
         errors++;
+        const detail =
+          `Could not enforce member-specific ViewChannel isolation for ` +
+          `${member.user.tag} on ${channelLabel}: ${result.reason}`;
+        failureDetails.push(detail);
         failureDetailsByMember.set(member.id, [
           ...(failureDetailsByMember.get(member.id) ?? []),
-          `Could not enforce member-specific ViewChannel isolation in channel ` +
-            `${channel.name ?? channel.id}: ${result.reason}`,
+          detail,
         ]);
       }
     }
@@ -540,16 +558,24 @@ export class GodsJudgment extends BaseSecurityModule {
         );
         updatedJudgments = saved.godsJudgment.activeJudgments;
       } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        failureDetails.push(
+          `Could not save incomplete isolation details for ${channelLabel}: ${reason}`,
+        );
         logger.error(
           `GodsJudgment: failed to record incomplete channel isolation ` +
-            `for channel=${channel.id} — ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `for channel=${channel.id} — ${reason}`,
         );
       }
     }
 
-    return { applied, skipped, errors, activeJudgments: updatedJudgments };
+    return {
+      applied,
+      skipped,
+      errors,
+      activeJudgments: updatedJudgments,
+      failureDetails: [...new Set(failureDetails)],
+    };
   }
 
   // ─── Guild-wide overwrite application ────────────────────────────────────
@@ -621,9 +647,17 @@ export class GodsJudgment extends BaseSecurityModule {
    * judgment-role overwrites. Called on bot startup for every guild that
    * has God's Judgment configured.
    */
-  async validateAndRepair(guild: Guild): Promise<RepairStats> {
+  async validateAndRepair(
+    guild: Guild,
+    memberIdToVerify?: string,
+  ): Promise<RepairStats> {
     const cfg = this.manager.getConfig(guild.id).godsJudgment;
     const hasActiveJudgments = Object.keys(cfg.activeJudgments).length > 0;
+    const judgmentsToVerify: Record<string, JudgmentRecord> = memberIdToVerify
+      ? cfg.activeJudgments[memberIdToVerify]
+        ? { [memberIdToVerify]: cfg.activeJudgments[memberIdToVerify] }
+        : {}
+      : cfg.activeJudgments;
 
     if (
       hasActiveJudgments &&
@@ -655,7 +689,8 @@ export class GodsJudgment extends BaseSecurityModule {
     let repaired = 0;
     let skipped = 0;
     let errors = 0;
-    let activeJudgments = cfg.activeJudgments;
+    const failures: string[] = [];
+    let activeJudgments = judgmentsToVerify;
 
     try {
       await guild.channels.fetch();
@@ -664,7 +699,14 @@ export class GodsJudgment extends BaseSecurityModule {
         `GodsJudgment.validateAndRepair: could not fetch guild channels guild=${guild.id} — ` +
           (error instanceof Error ? error.message : String(error)),
       );
-      return { checked: 0, repaired: 0, skipped: 0, errors: 1 };
+      const reason = error instanceof Error ? error.message : String(error);
+      return {
+        checked: 0,
+        repaired: 0,
+        skipped: 0,
+        errors: 1,
+        failures: [`Could not fetch channels for isolation verification: ${reason}`],
+      };
     }
 
     const judgmentRole =
@@ -674,12 +716,19 @@ export class GodsJudgment extends BaseSecurityModule {
       logger.error(
         `GodsJudgment.validateAndRepair: configured role ${judgmentRoleId} is missing in guild=${guild.id}`,
       );
-      return { checked: 0, repaired: 0, skipped: 0, errors: 1 };
+      return {
+        checked: 0,
+        repaired: 0,
+        skipped: 0,
+        errors: 1,
+        failures: [`Configured Judgment role ${judgmentRoleId} is missing.`],
+      };
     }
     const roleSafetyError = await this.ensureJudgmentRoleHasNoPermissions(judgmentRole);
     if (roleSafetyError) {
       logger.error(`GodsJudgment.validateAndRepair: ${roleSafetyError}`);
       errors++;
+      failures.push(roleSafetyError);
     }
 
     for (const [, ch] of guild.channels.cache) {
@@ -689,6 +738,10 @@ export class GodsJudgment extends BaseSecurityModule {
       }
       if (!("permissionOverwrites" in ch)) {
         errors++;
+        failures.push(
+          `Could not verify isolation for ${ch.name ?? ch.id} (${ch.id}): ` +
+            `this channel type does not expose permission overwrites.`,
+        );
         continue;
       }
 
@@ -704,7 +757,8 @@ export class GodsJudgment extends BaseSecurityModule {
         roleResult = await this.applyOverwritesToChannel(
           channel,
           judgmentRoleId,
-          judgmentChannelId
+          judgmentChannelId,
+          failures,
         );
       }
 
@@ -718,7 +772,44 @@ export class GodsJudgment extends BaseSecurityModule {
       if (roleResult === "applied" || memberResult.applied > 0) repaired++;
       if (roleResult === "error") errors++;
       errors += memberResult.errors;
+      failures.push(...memberResult.failureDetails);
+      if (memberResult.errors > 0 && memberResult.failureDetails.length === 0) {
+        failures.push(
+          `Could not verify member isolation for #${channel.name ?? channel.id} (${channel.id}).`,
+        );
+      }
       skipped += memberResult.skipped;
+    }
+
+    if (memberIdToVerify) {
+      try {
+        await guild.channels.fetch();
+      } catch (error) {
+        errors++;
+        failures.push(
+          `Could not refresh channels for final isolation verification: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+
+      for (const ch of guild.channels.cache.values()) {
+        if (ch.isThread() || !("permissionOverwrites" in ch)) continue;
+        const channel = ch as NonThreadGuildBasedChannel;
+        const channelLabel = `#${channel.name ?? channel.id} (${channel.id})`;
+        if (!this.isOverwriteCorrect(channel, judgmentRoleId, judgmentChannelId)) {
+          errors++;
+          failures.push(
+            `Could not verify the Judgment-role deny on ${channelLabel} after refresh.`,
+          );
+        }
+        if (!hasCorrectViewOverwrite(channel, memberIdToVerify, false)) {
+          errors++;
+          failures.push(
+            `Could not verify the member-specific ViewChannel deny on ${channelLabel} after refresh.`,
+          );
+        }
+      }
     }
 
     logger.info(
@@ -742,7 +833,13 @@ export class GodsJudgment extends BaseSecurityModule {
       );
     }
 
-    return { checked, repaired, skipped, errors };
+    return {
+      checked,
+      repaired,
+      skipped,
+      errors,
+      failures: [...new Set(failures)],
+    };
   }
 
   private async reconcileChannel(
@@ -1521,7 +1618,7 @@ export class GodsJudgment extends BaseSecurityModule {
     // 4. Ensure all channel overwrites are present (full validation + repair)
     if (cfg.judgmentChannelId) {
       logger.info("GodsJudgment.placeInJudgment: verifying channel overwrites...");
-      const stats = await this.validateAndRepair(member.guild).catch((error: unknown) => {
+      const stats = await this.validateAndRepair(member.guild, member.id).catch((error: unknown) => {
         failures.push(
           `Could not verify quarantine channel overwrites: ${
             error instanceof Error ? error.message : String(error)
@@ -1869,7 +1966,7 @@ export class GodsJudgment extends BaseSecurityModule {
 
     // Re-validate all channel overwrites so the lockdown is complete
     if (cfg.judgmentChannelId) {
-      const stats = await this.validateAndRepair(member.guild).catch((error: unknown) => {
+      const stats = await this.validateAndRepair(member.guild, member.id).catch((error: unknown) => {
         failures.push(
           `Could not verify all quarantine channel overwrites: ${
             error instanceof Error ? error.message : String(error)
@@ -2016,13 +2113,16 @@ export class GodsJudgment extends BaseSecurityModule {
               `owner-authorized snapshot restore will remove roles not in the original snapshot.`,
           );
         } else {
-          const stats = await this.validateAndRepair(member.guild);
+          const stats = await this.validateAndRepair(member.guild, member.id);
           if (stats.errors > 0) {
             const latestRecord =
               this.manager.getConfig(member.guild.id).godsJudgment.activeJudgments[
                 member.id
               ] ?? record;
-            const limitations = latestRecord.failureDetails?.join(" ") ?? "";
+            const limitations =
+              stats.failures?.join(" ") ||
+              latestRecord.failureDetails?.join(" ") ||
+              "The required quarantine channel overwrites could not be verified.";
             return {
               success: false,
               partial: true,

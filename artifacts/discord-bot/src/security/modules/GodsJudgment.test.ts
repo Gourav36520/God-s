@@ -121,6 +121,8 @@ function makeFixture(
     type: ChannelType;
     memberState?: "allow" | "deny" | "unset";
     roleState?: "allow" | "deny" | "unset";
+    parentId?: string;
+    permissionsLocked?: boolean;
   }>,
   record?: Partial<JudgmentRecord>,
 ) {
@@ -203,16 +205,20 @@ function makeFixture(
   (guild.members.cache as Map<string, GuildMember>).set(member.id, member);
 
   for (const spec of channelSpecs) {
-    channels.set(
+    const channel = makeChannel(
+      guild,
       spec.id,
-      makeChannel(
-        guild,
-        spec.id,
-        spec.type,
-        spec.memberState ?? "unset",
-        spec.roleState ?? "unset",
-      ),
+      spec.type,
+      spec.memberState ?? "unset",
+      spec.roleState ?? "unset",
     );
+    if (spec.parentId) {
+      Object.assign(channel, {
+        parentId: spec.parentId,
+        permissionsLocked: spec.permissionsLocked ?? true,
+      });
+    }
+    channels.set(spec.id, channel);
   }
 
   const activeRecord: JudgmentRecord = {
@@ -269,10 +275,18 @@ test("all channel kinds, including the Judgment channel, are hidden from judged 
       memberState: "allow",
       roleState: "allow",
     },
+    {
+      id: "general-synced-text",
+      type: ChannelType.GuildText,
+      parentId: "general-category",
+      permissionsLocked: true,
+    },
     { id: "general-text", type: ChannelType.GuildText },
+    { id: "general-announcement", type: ChannelType.GuildAnnouncement },
     { id: "general-voice", type: ChannelType.GuildVoice },
     { id: "general-stage", type: ChannelType.GuildStageVoice },
     { id: "general-forum", type: ChannelType.GuildForum },
+    { id: "general-media", type: ChannelType.GuildMedia },
     {
       id: "judgment-channel",
       type: ChannelType.GuildText,
@@ -290,10 +304,13 @@ test("all channel kinds, including the Judgment channel, are hidden from judged 
   assert.equal(stats.errors, 0);
   for (const channelId of [
     "general-category",
+    "general-synced-text",
     "general-text",
+    "general-announcement",
     "general-voice",
     "general-stage",
     "general-forum",
+    "general-media",
     "judgment-channel",
   ]) {
     const channel = fixture.channels.get(channelId)!;
@@ -320,10 +337,13 @@ test("all channel kinds, including the Judgment channel, are hidden from judged 
     fixture.config.activeJudgments[fixture.member.id].savedChannelViewPermissions,
     {
       "general-category": "allow",
+      "general-synced-text": "unset",
       "general-text": "unset",
+      "general-announcement": "unset",
       "general-voice": "unset",
       "general-stage": "unset",
       "general-forum": "unset",
+      "general-media": "unset",
       "judgment-channel": "allow",
     },
   );
@@ -446,6 +466,134 @@ test("service-level release rejects non-owners before changing roles", async () 
   assert.equal(result.success, false);
   assert.match(result.reason, /actual owner/u);
   assert.equal(roleRestoreCalls, 0);
+});
+
+test("owner release ignores another active member's channel safety limitation", async () => {
+  const fixture = makeFixture(
+    Array.from({ length: 42 }, (_, index) => ({
+      id: `channel-${index}`,
+      type: ChannelType.GuildText,
+    })),
+  );
+  fixture.member.roles.cache.set(fixture.judgmentRole.id, fixture.judgmentRole);
+  await fixture.module.applyOverwritesToAllChannels(
+    fixture.guild,
+    fixture.judgmentRole.id,
+    "judgment-channel",
+  );
+
+  const otherMemberId = "other-judged-member";
+  const dangerousRole = makeRole(
+    "other-admin-role",
+    PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageChannels,
+  );
+  fixture.guild.roles.cache.set(dangerousRole.id, dangerousRole);
+  const otherMemberRoles = new Collection([
+    [fixture.guild.roles.everyone.id, fixture.guild.roles.everyone],
+    [dangerousRole.id, dangerousRole],
+  ]);
+  const otherMember = {
+    id: otherMemberId,
+    user: { tag: "other#0001" },
+    guild: fixture.guild,
+    roles: { cache: otherMemberRoles },
+    permissions: {
+      has: (permission: bigint) => dangerousRole.permissions.has(permission),
+    },
+  } as unknown as GuildMember;
+  const memberCache = fixture.guild.members.cache as Map<string, GuildMember>;
+  memberCache.set(otherMemberId, otherMember);
+  (
+    fixture.guild.members as unknown as {
+      fetch: (id: string) => Promise<GuildMember | null>;
+    }
+  ).fetch = async (id) => memberCache.get(id) ?? null;
+  fixture.config.activeJudgments[otherMemberId] = {
+    userId: otherMemberId,
+    savedRoles: [],
+    judgedAt: "2026-01-01T00:00:00.000Z",
+    reason: "existing incomplete judgment",
+    judgedBy: "server-owner",
+    partial: true,
+  };
+
+  const guildWideStats = await fixture.module.validateAndRepair(fixture.guild);
+  assert.equal(
+    guildWideStats.errors,
+    42,
+    "the unrelated member's safety limitation is counted once per channel in a guild-wide audit",
+  );
+  assert.equal(
+    fixture.config.activeJudgments[otherMemberId].partial,
+    true,
+    "the unrelated member remains under Judgment with its incomplete record intact",
+  );
+
+  const originalLogRelease = loggingService.logRelease;
+  loggingService.logRelease = async () => undefined;
+  try {
+    const result = await fixture.module.release(
+      fixture.member,
+      "owner release",
+      "server-owner",
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(
+      fixture.config.activeJudgments[fixture.member.id],
+      undefined,
+      "the verified member's snapshot is released",
+    );
+    assert.ok(
+      fixture.config.activeJudgments[otherMemberId],
+      "the other active Judgment record is preserved",
+    );
+  } finally {
+    loggingService.logRelease = originalLogRelease;
+  }
+});
+
+test("owner release remains blocked and names a channel when its overwrite update fails", async () => {
+  const fixture = makeFixture([
+    { id: "blocked-channel", type: ChannelType.GuildText },
+  ]);
+  fixture.member.roles.cache.set(fixture.judgmentRole.id, fixture.judgmentRole);
+  await fixture.module.applyOverwritesToAllChannels(
+    fixture.guild,
+    fixture.judgmentRole.id,
+    "judgment-channel",
+  );
+  const channel = fixture.channels.get("blocked-channel")!;
+  channel.permissionOverwrites.cache.delete(fixture.member.id);
+  channel.permissionOverwrites.edit = async () => {
+    throw new Error("Missing Permissions");
+  };
+
+  let roleRestoreCalls = 0;
+  fixture.member.roles.set = async () => {
+    roleRestoreCalls++;
+    return fixture.member;
+  };
+
+  const result = await fixture.module.release(
+    fixture.member,
+    "owner release",
+    "server-owner",
+  );
+
+  assert.equal(result.success, false);
+  assert.match(result.reason, /blocked-channel/u);
+  assert.match(result.reason, /Missing Permissions/u);
+  assert.equal(roleRestoreCalls, 0);
+  assert.ok(
+    fixture.config.activeJudgments[fixture.member.id],
+    "the active Judgment record remains when verification fails",
+  );
+  assert.equal(
+    fixture.member.roles.cache.has(fixture.judgmentRole.id),
+    true,
+    "the member remains under Judgment when verification fails",
+  );
 });
 
 test("Administrator members are isolated after snapshotting and removing dangerous roles", async () => {
