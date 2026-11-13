@@ -83,12 +83,12 @@ test("administrator backup commands and component routes are registered", () => 
   assert.equal(recoverCommand.toJSON().name, "recover");
   assert.deepEqual(
     recoveryTargets.map((target) => target.value),
-    ["backup", "audit", "kicks"],
+    ["backup", "archive", "kicks"],
   );
-  assert.equal(RECOVERY_BACKUP_SCOPES.includes("messages"), false);
+  assert.equal(RECOVERY_BACKUP_SCOPES.includes("messages"), true);
   assert.equal(isBackupComponent("autobackup:toggle:archive"), true);
   assert.equal(isBackupComponent("gods:recover:confirm-backup:session"), true);
-  assert.equal(isBackupComponent("gods:recover:audit:session"), true);
+  assert.equal(isBackupComponent("gods:recover:archive:session"), true);
   assert.equal(isBackupComponent("unrelated:component"), false);
 });
 

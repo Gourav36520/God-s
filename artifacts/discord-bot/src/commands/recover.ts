@@ -11,19 +11,19 @@ import type { Command } from "../lib/registry.js";
 
 export const data = new SlashCommandBuilder()
   .setName("recover")
-  .setDescription("Open saved-backup, audit-log, or kicked-member recovery.")
+  .setDescription("Open the guided server, message, or kicked-member recovery flow.")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 export const recoveryTargets = [
   {
     label: "Restore a saved server backup",
     value: "backup",
-    description: "Preview and selectively restore saved server data.",
+    description: "Preview and selectively restore saved data.",
   },
   {
-    label: "Recover deleted channels or roles",
-    value: "audit",
-    description: "Use available Discord audit-log details without a saved backup.",
+    label: "Recover archived messages",
+    value: "archive",
+    description: "Repost messages saved by the continuous archive.",
   },
   {
     label: "Recover a kicked member",
