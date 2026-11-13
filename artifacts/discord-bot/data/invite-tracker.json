@@ -47,7 +47,12 @@
       }
     },
     "1565321329757126778": {
-      "invites": {},
+      "invites": {
+        "95cTfdrRY": {
+          "uses": 0,
+          "inviterId": "1563848865432473636"
+        }
+      },
       "inviters": {},
       "joins": {}
     }
