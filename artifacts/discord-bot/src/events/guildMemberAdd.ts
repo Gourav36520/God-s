@@ -11,6 +11,7 @@ import { logger } from "../lib/logger.js";
 import { antiNukeService, securityManager } from "../lib/registry.js";
 import { inviteTracker } from "../trackers/invite-tracker.js";
 import { memberCardService } from "../member-cards/service.js";
+import { levelingService } from "../leveling/service.js";
 
 export const name = Events.GuildMemberAdd;
 export const once = false;
@@ -115,6 +116,17 @@ async function recordJoinAndNotify(member: GuildMember): Promise<void> {
       }`,
     );
   }
+  await levelingService
+    .recordVerifiedInviteJoin(member, {
+      inviterId: trackedJoin?.inviterId ?? null,
+      verified: trackedJoin?.verified ?? false,
+    })
+    .catch((error) =>
+      logger.warn(
+        `Leveling invite reward could not be recorded for ${member.id}:`,
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
   await sendInviteNotification(member, trackedJoin);
 }
 

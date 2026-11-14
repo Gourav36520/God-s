@@ -3,6 +3,7 @@ import type { Message } from "discord.js";
 import { commands, securityManager } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 import { messageTracker } from "../trackers/message-tracker.js";
+import { levelingService } from "../leveling/service.js";
 
 export const name = Events.MessageCreate;
 export const once = false;
@@ -11,6 +12,17 @@ export async function execute(message: Message): Promise<void> {
   if (!message.guildId || message.author.bot) return;
 
   messageTracker.recordMessage(message.guildId, message.author.id);
+  void levelingService
+    .handleMessage(
+      message,
+      securityManager.getConfig(message.guildId).prefix,
+    )
+    .catch((error) =>
+      logger.warn(
+        `Level XP could not be recorded for message ${message.id}:`,
+        error instanceof Error ? error.message : String(error),
+      ),
+    );
 
   const prefix = securityManager.getConfig(message.guildId).prefix;
   const content = message.content ?? "";

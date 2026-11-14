@@ -5,6 +5,8 @@ import {
   count,
   desc,
   eq,
+  gt,
+  lt,
   inArray,
   isNull,
   lte,
@@ -25,6 +27,14 @@ import {
   memberCardMembers,
   memberProfileChanges,
 } from "./schema/member-cards.js";
+import {
+  levelingGuildSettings,
+  levelingInviteRewards,
+  levelingMembers,
+  levelingMessageSignatures,
+  levelingRoleRewards,
+  levelingXpEvents,
+} from "./schema/leveling.js";
 
 const { Pool } = pg;
 
@@ -488,4 +498,488 @@ export async function resolveAllModerationWarnings(
     .returning({ id: moderationCases.id });
 
   return updated.length;
+}
+
+export interface LevelXpAwardResult {
+  previousXp: bigint;
+  totalXp: bigint;
+  amount: bigint;
+  duplicate: boolean;
+}
+
+export async function ensureLevelingMember(
+  guildId: string,
+  userId: string,
+): Promise<schema.LevelingMember> {
+  await db
+    .insert(levelingMembers)
+    .values({ guildId, userId, departedAt: null })
+    .onConflictDoUpdate({
+      target: [levelingMembers.guildId, levelingMembers.userId],
+      set: { departedAt: null },
+    });
+  const [member] = await db
+    .select()
+    .from(levelingMembers)
+    .where(
+      and(
+        eq(levelingMembers.guildId, guildId),
+        eq(levelingMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  if (!member) throw new Error("Leveling member could not be loaded.");
+  return member;
+}
+
+export async function getLevelingMember(
+  guildId: string,
+  userId: string,
+): Promise<schema.LevelingMember | null> {
+  const [member] = await db
+    .select()
+    .from(levelingMembers)
+    .where(
+      and(
+        eq(levelingMembers.guildId, guildId),
+        eq(levelingMembers.userId, userId),
+      ),
+    )
+    .limit(1);
+  return member ?? null;
+}
+
+export async function getLevelingMemberRank(
+  guildId: string,
+  userId: string,
+  totalXp: bigint,
+): Promise<number> {
+  const [result] = await db
+    .select({ ahead: count() })
+    .from(levelingMembers)
+    .where(
+      and(
+        eq(levelingMembers.guildId, guildId),
+        isNull(levelingMembers.departedAt),
+        or(
+          gt(levelingMembers.totalXp, totalXp),
+          and(
+            eq(levelingMembers.totalXp, totalXp),
+            lt(levelingMembers.userId, userId),
+          ),
+        ),
+      ),
+    );
+  return Number(result?.ahead ?? 0) + 1;
+}
+
+export async function addLevelXp(
+  guildId: string,
+  userId: string,
+  source: "message" | "voice" | "invite",
+  sourceKey: string,
+  amount: bigint,
+  now = new Date(),
+): Promise<LevelXpAwardResult> {
+  if (amount <= 0n) throw new Error("XP awards must be positive.");
+  return db.transaction(async (tx) => {
+    await tx
+      .insert(levelingMembers)
+      .values({ guildId, userId, departedAt: null })
+      .onConflictDoNothing();
+    const [member] = await tx
+      .select()
+      .from(levelingMembers)
+      .where(
+        and(
+          eq(levelingMembers.guildId, guildId),
+          eq(levelingMembers.userId, userId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!member) throw new Error("Leveling member could not be loaded.");
+
+    const [event] = await tx
+      .insert(levelingXpEvents)
+      .values({ guildId, userId, source, sourceKey, amount, createdAt: now })
+      .onConflictDoNothing()
+      .returning({ id: levelingXpEvents.id });
+    if (!event) {
+      return {
+        previousXp: member.totalXp,
+        totalXp: member.totalXp,
+        amount: 0n,
+        duplicate: true,
+      };
+    }
+
+    const totalXp = member.totalXp + amount;
+    await tx
+      .update(levelingMembers)
+      .set({ totalXp, recentXp: amount, recentXpAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(levelingMembers.guildId, guildId),
+          eq(levelingMembers.userId, userId),
+        ),
+      );
+    return {
+      previousXp: member.totalXp,
+      totalXp,
+      amount,
+      duplicate: false,
+    };
+  });
+}
+
+export async function awardLevelMessageXp(input: {
+  guildId: string;
+  userId: string;
+  messageId: string;
+  signature: string;
+  amount: bigint;
+  cooldownMs: number;
+  signatureLifetimeMs: number;
+  now?: Date;
+}): Promise<LevelXpAwardResult | null> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    await tx
+      .insert(levelingMembers)
+      .values({
+        guildId: input.guildId,
+        userId: input.userId,
+        departedAt: null,
+      })
+      .onConflictDoNothing();
+    const [member] = await tx
+      .select()
+      .from(levelingMembers)
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!member) throw new Error("Leveling member could not be loaded.");
+    if (
+      member.lastMessageXpAt &&
+      now.getTime() - member.lastMessageXpAt.getTime() < input.cooldownMs
+    ) {
+      return null;
+    }
+
+    await tx
+      .delete(levelingMessageSignatures)
+      .where(
+        and(
+          eq(levelingMessageSignatures.guildId, input.guildId),
+          eq(levelingMessageSignatures.userId, input.userId),
+          lte(levelingMessageSignatures.expiresAt, now),
+        ),
+      );
+    const [signature] = await tx
+      .insert(levelingMessageSignatures)
+      .values({
+        guildId: input.guildId,
+        userId: input.userId,
+        signature: input.signature,
+        expiresAt: new Date(now.getTime() + input.signatureLifetimeMs),
+      })
+      .onConflictDoNothing()
+      .returning({ signature: levelingMessageSignatures.signature });
+    if (!signature) return null;
+
+    const [event] = await tx
+      .insert(levelingXpEvents)
+      .values({
+        guildId: input.guildId,
+        userId: input.userId,
+        source: "message",
+        sourceKey: input.messageId,
+        amount: input.amount,
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: levelingXpEvents.id });
+    if (!event) {
+      return {
+        previousXp: member.totalXp,
+        totalXp: member.totalXp,
+        amount: 0n,
+        duplicate: true,
+      };
+    }
+
+    const totalXp = member.totalXp + input.amount;
+    await tx
+      .update(levelingMembers)
+      .set({
+        totalXp,
+        recentXp: input.amount,
+        recentXpAt: now,
+        lastMessageXpAt: now,
+        departedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      );
+    return {
+      previousXp: member.totalXp,
+      totalXp,
+      amount: input.amount,
+      duplicate: false,
+    };
+  });
+}
+
+export async function awardLevelVoiceXp(input: {
+  guildId: string;
+  userId: string;
+  sourceKey: string;
+  dayKey: string;
+  amount: bigint;
+  intervalMs: number;
+  intervalMinutes: number;
+  dailyLimitMinutes: number;
+  now?: Date;
+}): Promise<LevelXpAwardResult | null> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    await tx
+      .insert(levelingMembers)
+      .values({ guildId: input.guildId, userId: input.userId, departedAt: null })
+      .onConflictDoNothing();
+    const [member] = await tx
+      .select()
+      .from(levelingMembers)
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!member) throw new Error("Leveling member could not be loaded.");
+    if (
+      member.lastVoiceXpAt &&
+      now.getTime() - member.lastVoiceXpAt.getTime() < input.intervalMs
+    ) {
+      return null;
+    }
+    const sameDay = member.voiceXpDayKey === input.dayKey;
+    const voiceXpMinutes = sameDay ? member.voiceXpMinutes : 0;
+    if (voiceXpMinutes >= input.dailyLimitMinutes) return null;
+
+    const [event] = await tx
+      .insert(levelingXpEvents)
+      .values({
+        guildId: input.guildId,
+        userId: input.userId,
+        source: "voice",
+        sourceKey: input.sourceKey,
+        amount: input.amount,
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: levelingXpEvents.id });
+    if (!event) {
+      return {
+        previousXp: member.totalXp,
+        totalXp: member.totalXp,
+        amount: 0n,
+        duplicate: true,
+      };
+    }
+
+    const totalXp = member.totalXp + input.amount;
+    await tx
+      .update(levelingMembers)
+      .set({
+        totalXp,
+        recentXp: input.amount,
+        recentXpAt: now,
+        lastVoiceXpAt: now,
+        voiceXpDayKey: input.dayKey,
+        voiceXpMinutes: voiceXpMinutes + input.intervalMinutes,
+        departedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      );
+    return {
+      previousXp: member.totalXp,
+      totalXp,
+      amount: input.amount,
+      duplicate: false,
+    };
+  });
+}
+
+export async function getLevelingSettings(
+  guildId: string,
+): Promise<schema.LevelingGuildSettings | null> {
+  const [settings] = await db
+    .select()
+    .from(levelingGuildSettings)
+    .where(eq(levelingGuildSettings.guildId, guildId))
+    .limit(1);
+  return settings ?? null;
+}
+
+export async function setLevelingAnnouncementChannel(
+  guildId: string,
+  channelId: string,
+): Promise<void> {
+  await db
+    .insert(levelingGuildSettings)
+    .values({ guildId, announcementChannelId: channelId })
+    .onConflictDoUpdate({
+      target: levelingGuildSettings.guildId,
+      set: { announcementChannelId: channelId, updatedAt: new Date() },
+    });
+}
+
+export async function getLevelingRoleRewards(
+  guildId: string,
+): Promise<schema.LevelingRoleReward[]> {
+  return db
+    .select()
+    .from(levelingRoleRewards)
+    .where(eq(levelingRoleRewards.guildId, guildId))
+    .orderBy(asc(levelingRoleRewards.level));
+}
+
+export async function setLevelingRoleReward(
+  guildId: string,
+  level: number,
+  roleId: string,
+): Promise<void> {
+  await db
+    .insert(levelingRoleRewards)
+    .values({ guildId, level, roleId })
+    .onConflictDoUpdate({
+      target: [levelingRoleRewards.guildId, levelingRoleRewards.level],
+      set: { roleId, createdAt: new Date() },
+    });
+}
+
+export async function removeLevelingRoleReward(
+  guildId: string,
+  level: number,
+): Promise<boolean> {
+  const [deleted] = await db
+    .delete(levelingRoleRewards)
+    .where(
+      and(
+        eq(levelingRoleRewards.guildId, guildId),
+        eq(levelingRoleRewards.level, level),
+      ),
+    )
+    .returning({ level: levelingRoleRewards.level });
+  return Boolean(deleted);
+}
+
+export async function addPendingLevelingInviteReward(input: {
+  guildId: string;
+  inviteeId: string;
+  inviterId: string;
+  joinedAt: Date;
+  eligibleAt: Date;
+  status?: "pending" | "forfeited";
+  reason?: string | null;
+}): Promise<boolean> {
+  const [created] = await db
+    .insert(levelingInviteRewards)
+    .values({
+      guildId: input.guildId,
+      inviteeId: input.inviteeId,
+      inviterId: input.inviterId,
+      joinedAt: input.joinedAt,
+      eligibleAt: input.eligibleAt,
+      status: input.status ?? "pending",
+      reason: input.reason ?? null,
+    })
+    .onConflictDoNothing()
+    .returning({ inviteeId: levelingInviteRewards.inviteeId });
+  return Boolean(created);
+}
+
+export async function listDueLevelingInviteRewards(
+  now = new Date(),
+  limit = 100,
+): Promise<schema.LevelingInviteReward[]> {
+  return db
+    .select()
+    .from(levelingInviteRewards)
+    .where(
+      and(
+        eq(levelingInviteRewards.status, "pending"),
+        lte(levelingInviteRewards.eligibleAt, now),
+      ),
+    )
+    .orderBy(asc(levelingInviteRewards.eligibleAt))
+    .limit(limit);
+}
+
+export async function setLevelingInviteRewardStatus(
+  guildId: string,
+  inviteeId: string,
+  status: "awarded" | "forfeited",
+  reason: string | null,
+  awardedAt: Date | null = null,
+): Promise<boolean> {
+  const [updated] = await db
+    .update(levelingInviteRewards)
+    .set({ status, reason, awardedAt })
+    .where(
+      and(
+        eq(levelingInviteRewards.guildId, guildId),
+        eq(levelingInviteRewards.inviteeId, inviteeId),
+        eq(levelingInviteRewards.status, "pending"),
+      ),
+    )
+    .returning({ inviteeId: levelingInviteRewards.inviteeId });
+  return Boolean(updated);
+}
+
+export async function forfeitPendingLevelingInviteReward(
+  guildId: string,
+  inviteeId: string,
+  reason: string,
+): Promise<boolean> {
+  return setLevelingInviteRewardStatus(
+    guildId,
+    inviteeId,
+    "forfeited",
+    reason,
+  );
+}
+
+export async function markLevelingMemberDeparted(
+  guildId: string,
+  userId: string,
+  departedAt = new Date(),
+): Promise<void> {
+  await db
+    .update(levelingMembers)
+    .set({ departedAt, updatedAt: departedAt })
+    .where(
+      and(
+        eq(levelingMembers.guildId, guildId),
+        eq(levelingMembers.userId, userId),
+      ),
+    );
 }
