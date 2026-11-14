@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { renderSvgToPng } from "./profileAndDeleteCards.js";
 
 export interface MessageEditCardOptions {
   authorName: string;
@@ -15,7 +15,6 @@ const MAX_INPUT_CHARS = 12_000;
 const MAX_LINE_CHARS = 54;
 const MAX_CONTENT_LINES = 5;
 const MAX_AVATAR_BYTES = 1_000_000;
-const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 function escapeXml(value: string): string {
   let sanitized = "";
@@ -251,75 +250,11 @@ async function fetchAvatarDataUrl(avatarUrl?: string): Promise<string | undefine
   return `data:${contentType};base64,${image.toString("base64")}`;
 }
 
-function convertSvgToPng(svg: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const renderer = spawn("magick", ["svg:-", "png:-"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const output: Buffer[] = [];
-    const errors: Buffer[] = [];
-    let outputSize = 0;
-    let errorSize = 0;
-    let settled = false;
-
-    const finish = (error?: Error, png?: Buffer) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) reject(error);
-      else if (png) resolve(png);
-      else reject(new Error("Message edit card renderer returned no image"));
-    };
-
-    const timeout = setTimeout(() => {
-      renderer.kill("SIGKILL");
-      finish(new Error("Message edit card rendering timed out"));
-    }, 8_000);
-
-    renderer.stdout.on("data", (chunk: Buffer) => {
-      outputSize += chunk.length;
-      if (outputSize > 2_000_000) {
-        renderer.kill("SIGKILL");
-        finish(new Error("Message edit card image exceeded the size limit"));
-      } else {
-        output.push(chunk);
-      }
-    });
-    renderer.stderr.on("data", (chunk: Buffer) => {
-      if (errorSize >= 4_000) return;
-      const remaining = 4_000 - errorSize;
-      const kept = chunk.subarray(0, remaining);
-      errors.push(kept);
-      errorSize += kept.length;
-    });
-    renderer.once("error", (error) => finish(error));
-    renderer.once("close", (code) => {
-      if (code !== 0) {
-        finish(
-          new Error(
-            `Message edit card renderer exited with code ${code}: ${Buffer.concat(errors).toString("utf8")}`,
-          ),
-        );
-        return;
-      }
-
-      const png = Buffer.concat(output);
-      if (!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-        finish(new Error("Message edit card renderer did not return a PNG"));
-        return;
-      }
-      finish(undefined, png);
-    });
-    renderer.stdin.on("error", () => {});
-    renderer.stdin.end(svg);
-  });
-}
-
 export async function renderMessageEditCard(
   options: MessageEditCardOptions,
 ): Promise<Buffer> {
   const avatarDataUrl = await fetchAvatarDataUrl(options.avatarUrl).catch(
     () => undefined,
   );
-  return convertSvgToPng(createMessageEditCardSvg(options, avatarDataUrl));
+  return renderSvgToPng(createMessageEditCardSvg(options, avatarDataUrl));
 }

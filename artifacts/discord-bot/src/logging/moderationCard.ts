@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
 import { normalizeSeverity, severityColor } from "./presentation.js";
+import { renderSvgToPng } from "./profileAndDeleteCards.js";
 
 export interface ModerationCardDetail {
   label: string;
@@ -28,8 +28,6 @@ export interface ModerationCardOptions {
 const CARD_WIDTH = 1_200;
 const CARD_HEIGHT = 760;
 const MAX_AVATAR_BYTES = 1_000_000;
-const MAX_OUTPUT_BYTES = 2_000_000;
-const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const UNRATED_COLOR = "#5865f2";
 
 function escapeXml(value: string): string {
@@ -369,67 +367,6 @@ async function fetchAvatarDataUrl(
   const image = Buffer.from(await response.arrayBuffer());
   if (!image.length || image.length > MAX_AVATAR_BYTES) return undefined;
   return `data:${contentType};base64,${image.toString("base64")}`;
-}
-
-function renderSvgToPng(svg: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const renderer = spawn("magick", ["svg:-", "png:-"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const chunks: Buffer[] = [];
-    const errors: Buffer[] = [];
-    let byteCount = 0;
-    let errorByteCount = 0;
-    let settled = false;
-
-    const finish = (error?: Error, png?: Buffer) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (error) reject(error);
-      else if (png) resolve(png);
-      else reject(new Error("Moderation card renderer returned no image"));
-    };
-    const timeout = setTimeout(() => {
-      renderer.kill("SIGKILL");
-      finish(new Error("Moderation card rendering timed out"));
-    }, 8_000);
-
-    renderer.stdout.on("data", (chunk: Buffer) => {
-      byteCount += chunk.length;
-      if (byteCount > MAX_OUTPUT_BYTES) {
-        renderer.kill("SIGKILL");
-        finish(new Error("Moderation card image exceeded the size limit"));
-      } else {
-        chunks.push(chunk);
-      }
-    });
-    renderer.stderr.on("data", (chunk: Buffer) => {
-      if (errorByteCount >= 4_000) return;
-      const kept = chunk.subarray(0, 4_000 - errorByteCount);
-      errors.push(kept);
-      errorByteCount += kept.length;
-    });
-    renderer.once("error", (error) => finish(error));
-    renderer.once("close", (code) => {
-      if (code !== 0) {
-        finish(
-          new Error(
-            `Moderation card renderer exited with code ${code}: ${Buffer.concat(errors).toString("utf8")}`,
-          ),
-        );
-        return;
-      }
-      const png = Buffer.concat(chunks);
-      if (!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-        finish(new Error("Moderation card renderer did not return a PNG"));
-        return;
-      }
-      finish(undefined, png);
-    });
-    renderer.stdin.on("error", () => {});
-    renderer.stdin.end(svg);
-  });
 }
 
 export async function renderModerationCard(

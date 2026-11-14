@@ -12,12 +12,16 @@ import type {
 } from "discord.js";
 import {
   getLevelingRoleRewards,
+  getLevelingMember,
+  getLevelingMemberRank,
+  getLevelingSettings,
   removeLevelingRoleReward,
   setLevelingAnnouncementChannel,
   setLevelingRoleReward,
 } from "@workspace/db";
 import type { Command } from "../lib/registry.js";
 import { LEVEL_CLASSES, classNameForLevel } from "../leveling/progression.js";
+import { renderLevelCard } from "../leveling/render.js";
 import { levelingService } from "../leveling/service.js";
 
 const GOLD = 0xffd94f;
@@ -94,6 +98,15 @@ export const moneyData: SharedSlashCommand = new SlashCommandBuilder()
       .setName("member")
       .setDescription("The member whose card you want to view")
       .setRequired(false),
+  );
+
+export const testData: SharedSlashCommand = new SlashCommandBuilder()
+  .setName("test")
+  .setDescription("Test configured bot outputs")
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("money")
+      .setDescription("Send a preview money card to the level channel"),
   );
 
 function isGuildManager(
@@ -369,7 +382,134 @@ export async function executeMoney(
   });
 }
 
+function describeFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code: unknown }).code)
+      : null;
+  return `${code ? `Error code ${code}: ` : ""}${message}`.slice(0, 500);
+}
+
+async function executeMoneyTest(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (!(await requireGuild(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+
+  const guild = interaction.guild!;
+  let configuredChannelId: string | null = null;
+  try {
+    const settings = await getLevelingSettings(guild.id);
+    const channelId = settings?.announcementChannelId;
+    if (!channelId) {
+      await interaction.editReply(
+        "No level channel is configured, so the test card was not sent. Configure one with `/level channel`.",
+      );
+      return;
+    }
+    configuredChannelId = channelId;
+
+    let fetchFailure: unknown = null;
+    const target = await guild.channels.fetch(channelId).catch((error: unknown) => {
+      fetchFailure = error;
+      return null;
+    });
+    if (!target) {
+      await interaction.editReply({
+        content: fetchFailure
+          ? `The configured level channel <#${channelId}> could not be fetched. The test card was not sent. Actual failure: ${describeFailure(fetchFailure)}`
+          : `The configured level channel <#${channelId}> no longer exists. The test card was not sent.`,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+    if (
+      target.type !== ChannelType.GuildText &&
+      target.type !== ChannelType.GuildAnnouncement
+    ) {
+      await interaction.editReply({
+        content: `The configured level channel <#${channelId}> is not a text or announcement channel. The test card was not sent.`,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    let botMemberFailure: unknown = null;
+    const botMember =
+      guild.members.me ??
+      (await guild.members.fetchMe().catch((error: unknown) => {
+        botMemberFailure = error;
+        return null;
+      }));
+    const channelPermissions = botMember
+      ? target.permissionsFor(botMember)
+      : null;
+    const requiredPermissions = [
+      [PermissionFlagsBits.ViewChannel, "View Channel"],
+      [PermissionFlagsBits.SendMessages, "Send Messages"],
+      [PermissionFlagsBits.AttachFiles, "Attach Files"],
+    ] as const;
+    const missingPermissions = requiredPermissions
+      .filter(([permission]) => !channelPermissions?.has(permission))
+      .map(([, label]) => label);
+    if (!botMember || missingPermissions.length > 0) {
+      await interaction.editReply({
+        content: botMember
+          ? `The test card was not sent to <#${channelId}>. Missing channel permission${missingPermissions.length === 1 ? "" : "s"}: ${missingPermissions.join(", ")}.`
+          : `The test card was not sent to <#${channelId}>. I could not load my server member permissions. Actual failure: ${botMemberFailure ? describeFailure(botMemberFailure) : "The bot is not present in the server member cache."}`,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const member = await guild.members.fetch(interaction.user.id).catch(
+      (error: unknown) => {
+        throw new Error(
+          `Could not load the command invoker in this server: ${describeFailure(error)}`,
+        );
+      },
+    );
+    const record = await getLevelingMember(guild.id, member.id);
+    const totalXp = record?.totalXp ?? 0n;
+    const image = await renderLevelCard(member, {
+      totalXp,
+      recentXp: record?.recentXp ?? 0n,
+      rank: await getLevelingMemberRank(guild.id, member.id, totalXp),
+    });
+
+    try {
+      await target.send({
+        files: [
+          new AttachmentBuilder(image, {
+            name: `money-preview-${member.id}.png`,
+          }),
+        ],
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await interaction.editReply({
+        content: `The test card could not be delivered to the configured level channel <#${channelId}>. Actual failure: ${describeFailure(error)}`,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: `The test card was delivered successfully to the configured level channel <#${channelId}>.`,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    await interaction.editReply(
+      configuredChannelId
+        ? `The money test failed before delivery to the configured level channel <#${configuredChannelId}>. Actual failure: ${describeFailure(error)}`
+        : `The configured level channel could not be checked, and no test card was delivered. Actual failure: ${describeFailure(error)}`,
+    );
+  }
+}
+
 export const levelingCommands: Command[] = [
   { data: levelData, execute: executeLevel },
   { data: moneyData, execute: executeMoney },
+  { data: testData, execute: executeMoneyTest },
 ];

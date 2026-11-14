@@ -430,6 +430,7 @@ async function registerMissingBotCommands(client: Client): Promise<void> {
     memberCards.cardData,
     leveling.levelData,
     leveling.moneyData,
+    leveling.testData,
   ];
   const existing = await application.commands.fetch();
 

@@ -30,6 +30,41 @@ const MAX_LINE_UNITS = 52;
 const MAX_AVATAR_BYTES = 1_000_000;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
+function getSvgCanvasSize(svg: string): { width: number; height: number } {
+  const root = svg.match(/<svg\b([^>]*)>/i)?.[1];
+  if (!root) throw new Error("Card SVG is missing its root element.");
+
+  const readDimension = (name: "width" | "height"): number | null => {
+    const value = root.match(
+      new RegExp(`\\b${name}\\s*=\\s*["']\\s*([\\d.]+)(?:px)?\\s*["']`, "i"),
+    )?.[1];
+    if (!value) return null;
+    const dimension = Number(value);
+    return Number.isFinite(dimension) && dimension > 0 ? dimension : null;
+  };
+
+  const viewBox = root.match(/\bviewBox\s*=\s*["']([^"']+)["']/i)?.[1];
+  const viewBoxParts = viewBox
+    ?.trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  const viewBoxWidth =
+    viewBoxParts?.length === 4 && Number.isFinite(viewBoxParts[2])
+      ? viewBoxParts[2]
+      : null;
+  const viewBoxHeight =
+    viewBoxParts?.length === 4 && Number.isFinite(viewBoxParts[3])
+      ? viewBoxParts[3]
+      : null;
+
+  const width = Math.round(readDimension("width") ?? viewBoxWidth ?? 0);
+  const height = Math.round(readDimension("height") ?? viewBoxHeight ?? 0);
+  if (width < 1 || height < 1 || width > 4_096 || height > 4_096) {
+    throw new Error("Card SVG has invalid canvas dimensions.");
+  }
+  return { width, height };
+}
+
 function escapeXml(value: string): string {
   let safe = "";
   for (const character of value) {
@@ -243,10 +278,29 @@ export async function loadAvatarDataUrl(avatarUrl?: string): Promise<string | un
 }
 
 export function renderSvgToPng(svg: string): Promise<Buffer> {
+  const { width, height } = getSvgCanvasSize(svg);
+  const canvasSize = `${width}x${height}`;
   return new Promise((resolve, reject) => {
-    const renderer = spawn("magick", ["svg:-", "png:-"], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const renderer = spawn(
+      "magick",
+      [
+        "-size",
+        canvasSize,
+        "svg:-",
+        "-resize",
+        canvasSize,
+        "-background",
+        "none",
+        "-gravity",
+        "center",
+        "-extent",
+        canvasSize,
+        "png:-",
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     const chunks: Buffer[] = [];
     const errors: Buffer[] = [];
     let bytes = 0;
@@ -291,8 +345,15 @@ export function renderSvgToPng(svg: string): Promise<Buffer> {
         return;
       }
       const png = Buffer.concat(chunks);
-      if (!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      if (
+        png.length < 24 ||
+        !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+      ) {
         finish(new Error("Card renderer did not return a PNG"));
+        return;
+      }
+      if (png.readUInt32BE(16) !== width || png.readUInt32BE(20) !== height) {
+        finish(new Error("Card renderer returned an unexpected canvas size"));
         return;
       }
       finish(undefined, png);
