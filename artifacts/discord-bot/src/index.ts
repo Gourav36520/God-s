@@ -26,6 +26,7 @@ import { registerLoggingHandlers } from "./logging/handlers.js";
 import { voiceTracker } from "./trackers/voice-tracker.js";
 import { startBanExpirationProcessor } from "./moderation/ban-expiration.js";
 import { memberCardService } from "./member-cards/service.js";
+import { levelingService } from "./leveling/service.js";
 import { countModerationViolationCases } from "@workspace/db";
 
 function envBool(key: string): boolean {
@@ -188,6 +189,7 @@ async function loadCommands(): Promise<void> {
   const autobackup = await import("./commands/autobackup.js");
   const recover = await import("./commands/recover.js");
   const memberCards = await import("./commands/member-cards.js");
+  const leveling = await import("./commands/leveling.js");
 
   commands.set(ping.data.name, {
     data: ping.data,
@@ -293,6 +295,9 @@ async function loadCommands(): Promise<void> {
   });
   commands.set(recover.data.name, { data: recover.data, execute: recover.execute });
   for (const command of memberCards.memberCardCommands) {
+    commands.set(command.data.name, command);
+  }
+  for (const command of leveling.levelingCommands) {
     commands.set(command.data.name, command);
   }
 
@@ -413,13 +418,19 @@ function scheduleStartupValidation(client: Client, godsJudgment: GodsJudgment): 
   });
 }
 
-async function registerMissingMemberCardCommands(client: Client): Promise<void> {
+async function registerMissingBotCommands(client: Client): Promise<void> {
   const application = client.application;
   if (!application) {
     throw new Error("Discord application is not available after gateway login.");
   }
   const memberCards = await import("./commands/member-cards.js");
-  const requested = [memberCards.generateData, memberCards.cardData];
+  const leveling = await import("./commands/leveling.js");
+  const requested = [
+    memberCards.generateData,
+    memberCards.cardData,
+    leveling.levelData,
+    leveling.moneyData,
+  ];
   const existing = await application.commands.fetch();
 
   for (const command of requested) {
@@ -434,11 +445,11 @@ async function registerMissingMemberCardCommands(client: Client): Promise<void> 
   }
 }
 
-function scheduleMemberCardCommandRegistration(client: Client): void {
+function scheduleMissingBotCommandRegistration(client: Client): void {
   const register = (readyClient: Client) => {
-    void registerMissingMemberCardCommands(readyClient).catch((error) =>
+    void registerMissingBotCommands(readyClient).catch((error) =>
       logger.error(
-        "[SLASH COMMANDS] Could not register the member-card commands:",
+        "[SLASH COMMANDS] Could not register new bot commands:",
         error instanceof Error ? error.stack ?? error.message : String(error),
       ),
     );
@@ -477,11 +488,12 @@ async function main(): Promise<void> {
     wantMessageContent,
     wantGuildMembers
   );
-  scheduleMemberCardCommandRegistration(client);
+  scheduleMissingBotCommandRegistration(client);
   const stopBanExpirationProcessor = startBanExpirationProcessor(client);
   const shutdown = (exitCode: number): void => {
     stopBanExpirationProcessor();
     voiceTracker.shutdown();
+    levelingService.shutdown();
     client.destroy();
     process.exit(exitCode);
   };

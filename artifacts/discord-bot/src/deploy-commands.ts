@@ -14,12 +14,15 @@ async function main(): Promise<void> {
   const autobackup = await import("./commands/autobackup.js");
   const recover = await import("./commands/recover.js");
   const memberCards = await import("./commands/member-cards.js");
+  const leveling = await import("./commands/leveling.js");
   const commandData = [
     backup.data,
     autobackup.data,
     recover.data,
     memberCards.generateData,
     memberCards.cardData,
+    leveling.levelData,
+    leveling.moneyData,
   ].map((d) => d.toJSON());
   const rest = new REST().setToken(token);
   const current = (await rest.get(

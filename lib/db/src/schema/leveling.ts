@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   index,
@@ -15,8 +16,8 @@ export const levelingMembers = pgTable(
   {
     guildId: text("guild_id").notNull(),
     userId: text("user_id").notNull(),
-    totalXp: bigint("total_xp", { mode: "bigint" }).notNull().default(0n),
-    recentXp: bigint("recent_xp", { mode: "bigint" }).notNull().default(0n),
+    totalXp: bigint("total_xp", { mode: "bigint" }).notNull().default(sql`0`),
+    recentXp: bigint("recent_xp", { mode: "bigint" }).notNull().default(sql`0`),
     recentXpAt: timestamp("recent_xp_at", { withTimezone: true }),
     lastMessageXpAt: timestamp("last_message_xp_at", { withTimezone: true }),
     lastVoiceXpAt: timestamp("last_voice_xp_at", { withTimezone: true }),

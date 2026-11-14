@@ -736,10 +736,11 @@ export class GodsJudgment extends BaseSecurityModule {
         skipped++;
         continue;
       }
+      const channelInfo = ch as { id: string; name?: string };
       if (!("permissionOverwrites" in ch)) {
         errors++;
         failures.push(
-          `Could not verify isolation for ${ch.name ?? ch.id} (${ch.id}): ` +
+          `Could not verify isolation for ${channelInfo.name ?? channelInfo.id} (${channelInfo.id}): ` +
             `this channel type does not expose permission overwrites.`,
         );
         continue;
