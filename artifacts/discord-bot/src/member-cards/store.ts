@@ -1,25 +1,18 @@
 import {
-  createMemberProfileChange,
-  deleteMemberCardMessage,
   ensureMemberCardTracked,
-  getMemberCardChannel,
   getMemberCardData,
+  getMemberCardImage,
   isMemberCardTracked,
   markMemberCardDeparted,
-  saveMemberCardChannel,
-  saveMemberCardMessage,
+  saveMemberCardImage,
+  createMemberProfileChange,
 } from "@workspace/db";
 import type {
   MemberCardKind,
   MemberCardRecord,
-  MemberCardReference,
   MemberProfileChange,
   NewMemberProfileChange,
 } from "./types.js";
-
-function isCardKind(value: string): value is MemberCardKind {
-  return value === "member" || value === "history" || value === "roles";
-}
 
 function mapChange(
   change: Awaited<ReturnType<typeof getMemberCardData>>["changes"][number],
@@ -60,8 +53,8 @@ export class MemberCardStore {
   async init(): Promise<void> {
     const schemaCheckId = "__member_card_schema_check__";
     await Promise.all([
-      getMemberCardChannel(schemaCheckId),
       getMemberCardData(schemaCheckId, schemaCheckId),
+      getMemberCardImage(schemaCheckId, schemaCheckId, "member"),
     ]);
     this.initialized = true;
   }
@@ -70,16 +63,6 @@ export class MemberCardStore {
     if (!this.initialized) {
       throw new Error("Member card storage has not been initialized");
     }
-  }
-
-  async setGuildChannelId(guildId: string, channelId: string): Promise<void> {
-    this.assertInitialized();
-    await saveMemberCardChannel(guildId, channelId);
-  }
-
-  async getGuildChannelId(guildId: string): Promise<string | null> {
-    this.assertInitialized();
-    return getMemberCardChannel(guildId);
   }
 
   async isTracked(guildId: string, userId: string): Promise<boolean> {
@@ -109,50 +92,30 @@ export class MemberCardStore {
     const data = await getMemberCardData(guildId, userId);
     if (!data.member) return null;
 
-    const references: Partial<Record<MemberCardKind, MemberCardReference>> = {};
-    for (const reference of data.references) {
-      if (!isCardKind(reference.cardKind)) {
-        throw new Error(
-          `Invalid member card kind ${reference.cardKind} for ${guildId}/${userId}`,
-        );
-      }
-      references[reference.cardKind] = {
-        channelId: reference.channelId,
-        messageId: reference.messageId,
-      };
-    }
-
     return {
       createdAt: data.member.createdAt.toISOString(),
       departedAt: data.member.departedAt?.toISOString() ?? null,
-      references,
       changes: data.changes.map(mapChange),
     };
   }
 
-  async setReference(
+  async getCardImage(
     guildId: string,
     userId: string,
     kind: MemberCardKind,
-    reference: MemberCardReference,
-  ): Promise<void> {
+  ): Promise<Buffer | null> {
     this.assertInitialized();
-    await saveMemberCardMessage({
-      guildId,
-      userId,
-      cardKind: kind,
-      channelId: reference.channelId,
-      messageId: reference.messageId,
-    });
+    return getMemberCardImage(guildId, userId, kind);
   }
 
-  async clearReference(
+  async saveCardImage(
     guildId: string,
     userId: string,
     kind: MemberCardKind,
+    image: Buffer,
   ): Promise<void> {
     this.assertInitialized();
-    await deleteMemberCardMessage(guildId, userId, kind);
+    await saveMemberCardImage(guildId, userId, kind, image);
   }
 
   async addChange(

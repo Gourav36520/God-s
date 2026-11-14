@@ -1,4 +1,5 @@
 import {
+  customType,
   index,
   pgTable,
   primaryKey,
@@ -8,6 +9,10 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 export const memberCardSettings = pgTable("member_card_settings", {
   guildId: text("guild_id").primaryKey(),
@@ -59,6 +64,28 @@ export const memberCardMessages = pgTable(
   ],
 );
 
+export const memberCardImages = pgTable(
+  "member_card_images",
+  {
+    guildId: text("guild_id").notNull(),
+    userId: text("user_id").notNull(),
+    cardKind: text("card_kind").notNull(),
+    imageData: bytea("image_data").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.guildId, table.userId, table.cardKind],
+    }),
+    index("member_card_images_guild_user_idx").on(
+      table.guildId,
+      table.userId,
+    ),
+  ],
+);
+
 export const memberProfileChanges = pgTable(
   "member_profile_changes",
   {
@@ -91,6 +118,9 @@ export const insertMemberCardMemberSchema = createInsertSchema(
 export const insertMemberCardMessageSchema = createInsertSchema(
   memberCardMessages,
 ).omit({ updatedAt: true });
+export const insertMemberCardImageSchema = createInsertSchema(
+  memberCardImages,
+).omit({ updatedAt: true });
 export const insertMemberProfileChangeSchema = createInsertSchema(
   memberProfileChanges,
 ).omit({ id: true });
@@ -104,10 +134,14 @@ export type InsertMemberCardMember = z.infer<
 export type InsertMemberCardMessage = z.infer<
   typeof insertMemberCardMessageSchema
 >;
+export type InsertMemberCardImage = z.infer<
+  typeof insertMemberCardImageSchema
+>;
 export type InsertMemberProfileChange = z.infer<
   typeof insertMemberProfileChangeSchema
 >;
 export type MemberCardSetting = typeof memberCardSettings.$inferSelect;
 export type MemberCardMember = typeof memberCardMembers.$inferSelect;
 export type MemberCardMessage = typeof memberCardMessages.$inferSelect;
+export type MemberCardImage = typeof memberCardImages.$inferSelect;
 export type MemberProfileChangeRow = typeof memberProfileChanges.$inferSelect;

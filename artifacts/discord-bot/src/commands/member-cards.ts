@@ -3,7 +3,6 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ChannelType,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
@@ -12,7 +11,6 @@ import type {
   ChatInputCommandInteraction,
   GuildMember,
   SharedSlashCommand,
-  TextChannel,
 } from "discord.js";
 import { logger } from "../lib/logger.js";
 import { memberCardService, formatGenerationProgress } from "../member-cards/service.js";
@@ -78,20 +76,6 @@ function cardAttachment(kind: MemberCardKind, image: Buffer): AttachmentBuilder 
   return new AttachmentBuilder(image, { name: filename });
 }
 
-function textChannelForGeneration(
-  interaction: ChatInputCommandInteraction,
-): TextChannel | null {
-  const channel = interaction.channel;
-  if (
-    !channel ||
-    (channel.type !== ChannelType.GuildText &&
-      channel.type !== ChannelType.GuildAnnouncement)
-  ) {
-    return null;
-  }
-  return channel as TextChannel;
-}
-
 async function executeGenerate(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -102,39 +86,9 @@ async function executeGenerate(
     });
     return;
   }
-  const destination = textChannelForGeneration(interaction);
-  if (!destination) {
-    await interaction.reply({
-      content: "Use this command in a server text or announcement channel.",
-      ephemeral: true,
-    });
-    return;
-  }
-  if (!(await memberCardService.canUseChannel(destination, interaction.guild))) {
-    await interaction.reply({
-      content:
-        "I need View Channel, Read Message History, Send Messages, and Attach Files in this channel to create the cards.",
-      ephemeral: true,
-    });
-    return;
-  }
 
   await interaction.deferReply({ ephemeral: true });
-  let progressCanBeUpdated = true;
-  const task = memberCardService.startGenerateAll(
-    interaction.guild,
-    destination,
-    async (progress) => {
-      if (!progressCanBeUpdated) return;
-      try {
-        await interaction.editReply(
-          `Generating or refreshing member cards…\n\n${formatGenerationProgress(progress)}`,
-        );
-      } catch {
-        progressCanBeUpdated = false;
-      }
-    },
-  );
+  const task = memberCardService.startGenerateAll(interaction.guild);
   if (!task) {
     await interaction.editReply(
       "A member-card generation pass is already running for this server.",
@@ -197,7 +151,7 @@ async function executeCard(
     return;
   }
 
-  const image = await memberCardService.renderCurrentCard(member, "member");
+  const image = await memberCardService.getStoredCard(member, "member");
   await interaction.editReply({
     files: [cardAttachment("member", image)],
     components: [
@@ -287,7 +241,7 @@ export async function handleMemberCardButton(
       });
       return;
     }
-    const image = await memberCardService.renderCurrentCard(member, context.kind);
+    const image = await memberCardService.getStoredCard(member, context.kind);
     await interaction.editReply({
       content: "",
       files: [cardAttachment(context.kind, image)],

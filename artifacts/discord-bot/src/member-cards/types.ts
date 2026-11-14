@@ -1,10 +1,5 @@
 export type MemberCardKind = "member" | "history" | "roles";
 
-export interface MemberCardReference {
-  channelId: string;
-  messageId: string;
-}
-
 export type MemberProfileChange =
   | {
       id: string;
@@ -33,6 +28,5 @@ export type NewMemberProfileChange =
 export interface MemberCardRecord {
   createdAt: string;
   departedAt: string | null;
-  references: Partial<Record<MemberCardKind, MemberCardReference>>;
   changes: MemberProfileChange[];
 }

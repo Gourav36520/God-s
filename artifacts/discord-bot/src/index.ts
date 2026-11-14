@@ -27,7 +27,6 @@ import { voiceTracker } from "./trackers/voice-tracker.js";
 import { startBanExpirationProcessor } from "./moderation/ban-expiration.js";
 import { memberCardService } from "./member-cards/service.js";
 import { countModerationViolationCases } from "@workspace/db";
-import { welcomeGoodbyeStore } from "./welcome-goodbye/config-store.js";
 
 function envBool(key: string): boolean {
   return ["true", "1", "yes"].includes(
@@ -538,16 +537,6 @@ async function main(): Promise<void> {
         countModerationViolationCases(guildId, userId),
       ]);
       return heatViolations + moderationViolations;
-    },
-    preferredChannelResolver: (guild) => {
-      const config = securityManager.getConfig(guild.id);
-      const welcomeChannel = welcomeGoodbyeStore.get(guild.id).welcome;
-      return [
-        config.logging.channelIds?.members,
-        config.logging.channelId,
-        config.logChannelId,
-        welcomeChannel.enabled ? welcomeChannel.channelId : null,
-      ].filter((channelId): channelId is string => Boolean(channelId));
     },
   });
   loggingService.init(client, securityManager);

@@ -1,14 +1,7 @@
-import {
-  AttachmentBuilder,
-  ChannelType,
-  PermissionFlagsBits,
-} from "discord.js";
 import type {
   Client,
   Guild,
   GuildMember,
-  Message,
-  TextChannel,
 } from "discord.js";
 import { logger } from "../lib/logger.js";
 import { renderMemberHistoryCard, renderMemberProfileCard, renderMemberRolesCard } from "./render.js";
@@ -16,7 +9,6 @@ import { memberCardStore } from "./store.js";
 import type {
   MemberCardRecord,
   MemberCardKind,
-  MemberCardReference,
 } from "./types.js";
 
 const MEMBER_PAGE_SIZE = 1_000;
@@ -39,17 +31,7 @@ type ViolationCountProvider = (
   guildId: string,
   userId: string,
 ) => Promise<number>;
-type PreferredChannelResolver = (guild: Guild) => string[];
 type CardKinds = readonly MemberCardKind[];
-
-function errorCode(error: unknown): number | null {
-  return typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "number"
-    ? error.code
-    : null;
-}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -73,7 +55,6 @@ export function formatGenerationProgress(progress: GenerationProgress): string {
 export class MemberCardService {
   private client: Client | null = null;
   private violationCountProvider: ViolationCountProvider | null = null;
-  private preferredChannelResolver: PreferredChannelResolver | null = null;
   private readonly memberQueues = new Map<string, Promise<void>>();
   private readonly runningGuilds = new Set<string>();
 
@@ -84,50 +65,41 @@ export class MemberCardService {
   configure(options: {
     client: Client;
     violationCountProvider: ViolationCountProvider;
-    preferredChannelResolver: PreferredChannelResolver;
   }): void {
     this.client = options.client;
     this.violationCountProvider = options.violationCountProvider;
-    this.preferredChannelResolver = options.preferredChannelResolver;
   }
 
   async isTracked(guildId: string, userId: string): Promise<boolean> {
     return memberCardStore.isTracked(guildId, userId);
   }
 
-  async canUseChannel(channel: TextChannel, guild: Guild): Promise<boolean> {
-    return this.hasCardPermissions(channel, guild);
-  }
-
-  async renderCurrentCard(
+  async getStoredCard(
     member: GuildMember,
     kind: MemberCardKind,
   ): Promise<Buffer> {
-    const record =
-      (await memberCardStore.getMember(member.guild.id, member.id)) ?? {
-      createdAt: new Date().toISOString(),
-      departedAt: null,
-      references: {},
-      changes: [],
-      };
-    return this.renderCard(member, kind, record);
+    let image = await memberCardStore.getCardImage(
+      member.guild.id,
+      member.id,
+      kind,
+    );
+    if (image) return image;
+    await this.generateMember(member);
+    image = await memberCardStore.getCardImage(
+      member.guild.id,
+      member.id,
+      kind,
+    );
+    if (!image) {
+      throw new Error(`Stored ${kind} card is unavailable for member ${member.id}.`);
+    }
+    return image;
   }
 
-  async rememberGenerationChannel(
-    guildId: string,
-    channelId: string,
-  ): Promise<void> {
-    await memberCardStore.setGuildChannelId(guildId, channelId);
-  }
-
-  startGenerateAll(
-    guild: Guild,
-    destination: TextChannel,
-    onProgress: (progress: GenerationProgress) => Promise<void> | void,
-  ): Promise<GenerationResult> | null {
+  startGenerateAll(guild: Guild): Promise<GenerationResult> | null {
     if (this.runningGuilds.has(guild.id)) return null;
     this.runningGuilds.add(guild.id);
-    const task = this.generateAll(guild, destination, onProgress).finally(() => {
+    const task = this.generateAll(guild).finally(() => {
       this.runningGuilds.delete(guild.id);
     });
     return task;
@@ -139,14 +111,14 @@ export class MemberCardService {
       .fetch(member.id)
       .catch(() => null);
     if (!currentMember) return;
-    const destination = await this.resolveJoinDestination(currentMember.guild);
-    if (!destination) {
-      throw new Error(
-        `No text channel with the required card permissions is available in guild ${member.guild.id}.`,
-      );
-    }
-    await memberCardStore.setGuildChannelId(member.guild.id, destination.id);
-    await this.upsertMember(currentMember, destination, ["member", "history", "roles"]);
+    await this.generateMember(currentMember);
+  }
+
+  async generateMember(
+    member: GuildMember,
+    kinds: CardKinds = ["member", "history", "roles"],
+  ): Promise<void> {
+    await this.upsertMember(member, kinds);
   }
 
   async recordNameChange(
@@ -197,14 +169,7 @@ export class MemberCardService {
     await this.withMemberLock(member.guild.id, member.id, async () => {
       const current =
         (await member.guild.members.fetch(member.id).catch(() => null)) ?? member;
-      const destination = await this.resolveExistingDestination(current.guild);
-      if (!destination) {
-        logger.warn(
-          `Member cards cannot be refreshed: no writable card channel in guild ${member.guild.id}.`,
-        );
-        return;
-      }
-      await this.upsertCardsUnlocked(current, destination, kinds);
+      await this.upsertCardsUnlocked(current, kinds);
     });
   }
 
@@ -225,22 +190,14 @@ export class MemberCardService {
     );
     if (!updated) return;
     await this.withMemberLock(member.guild.id, member.id, async () => {
-      const destination = await this.resolveExistingDestination(member.guild);
-      if (!destination) return;
       await this.upsertCardsUnlocked(
         member,
-        destination,
         ["member", "roles"],
       );
     });
   }
 
-  private async generateAll(
-    guild: Guild,
-    destination: TextChannel,
-    onProgress: (progress: GenerationProgress) => Promise<void> | void,
-  ): Promise<GenerationResult> {
-    await memberCardStore.setGuildChannelId(guild.id, destination.id);
+  private async generateAll(guild: Guild): Promise<GenerationResult> {
     const progress: GenerationProgress = {
       membersProcessed: 0,
       membersTotal: guild.memberCount,
@@ -263,11 +220,11 @@ export class MemberCardService {
         );
         for (const member of members) {
           try {
-            const outcome = await this.upsertMember(
-              member,
-              destination,
-              ["member", "history", "roles"],
-            );
+            const outcome = await this.upsertMember(member, [
+              "member",
+              "history",
+              "roles",
+            ]);
             progress.cardsCreated += outcome.created;
             progress.cardsUpdated += outcome.updated;
           } catch (error) {
@@ -279,9 +236,6 @@ export class MemberCardService {
           }
           progress.membersProcessed += 1;
           sincePause += 1;
-          if (progress.membersProcessed % GENERATION_BATCH_SIZE === 0) {
-            await onProgress({ ...progress });
-          }
           if (sincePause >= GENERATION_BATCH_SIZE) {
             sincePause = 0;
             await delay(GENERATION_BATCH_PAUSE_MS);
@@ -291,34 +245,30 @@ export class MemberCardService {
         if (!lastId || page.size < MEMBER_PAGE_SIZE) break;
         after = lastId;
       }
-      await onProgress({ ...progress });
       return { ...progress, complete: progress.memberFailures === 0 };
     } catch (error) {
       logger.error(
         `Member pagination failed in guild ${guild.id}:`,
         error instanceof Error ? error.stack ?? error.message : String(error),
       );
-      await onProgress({ ...progress });
       return { ...progress, complete: false };
     }
   }
 
   private async upsertMember(
     member: GuildMember,
-    destination: TextChannel,
     kinds: CardKinds,
   ): Promise<{ created: number; updated: number }> {
     return this.withMemberLock(member.guild.id, member.id, async () => {
       await memberCardStore.markTracked(member.guild.id, member.id);
       const current =
         (await member.guild.members.fetch(member.id).catch(() => null)) ?? member;
-      return this.upsertCardsUnlocked(current, destination, kinds);
+      return this.upsertCardsUnlocked(current, kinds);
     });
   }
 
   private async upsertCardsUnlocked(
     member: GuildMember,
-    destination: TextChannel,
     kinds: CardKinds,
   ): Promise<{ created: number; updated: number }> {
     const record = await memberCardStore.getMember(
@@ -331,16 +281,18 @@ export class MemberCardService {
     let created = 0;
     let updated = 0;
     for (const kind of kinds) {
+      const existed = Boolean(
+        await memberCardStore.getCardImage(member.guild.id, member.id, kind),
+      );
       const image = await this.renderCard(member, kind, record);
-      const result = await this.upsertMessage(
-        member,
+      await memberCardStore.saveCardImage(
+        member.guild.id,
+        member.id,
         kind,
         image,
-        destination,
-        record.references[kind] ?? null,
       );
-      if (result === "created") created += 1;
-      else updated += 1;
+      if (existed) updated += 1;
+      else created += 1;
     }
     return { created, updated };
   }
@@ -377,170 +329,6 @@ export class MemberCardService {
       );
     }
     return renderMemberRolesCard(member, violationCount, record.departedAt);
-  }
-
-  private async upsertMessage(
-    member: GuildMember,
-    kind: MemberCardKind,
-    image: Buffer,
-    destination: TextChannel,
-    reference: MemberCardReference | null,
-  ): Promise<"created" | "updated"> {
-    const guildId = member.guild.id;
-    if (reference) {
-      const savedChannel = await this.fetchTextChannel(
-        member.guild,
-        reference.channelId,
-      );
-      if (savedChannel) {
-        try {
-          const message = await savedChannel.messages.fetch(reference.messageId);
-          await this.editMessage(message, kind, image);
-          return "updated";
-        } catch (error) {
-          const code = errorCode(error);
-          if (code !== 10003 && code !== 10008 && code !== 50013) {
-            throw error;
-          }
-          logger.info(
-            `Member card ${kind} reference unavailable for ${member.id} in guild ${guildId}; replacing it.`,
-          );
-          if (code === 10003 || code === 10008) {
-            await memberCardStore.clearReference(guildId, member.id, kind);
-          }
-        }
-      } else {
-        logger.info(
-          `Member card channel ${reference.channelId} is unavailable in guild ${guildId}; moving ${kind} card to the active card channel.`,
-        );
-      }
-    }
-
-    const target = await this.requireWritableChannel(member.guild, destination);
-    const message = await target.send(this.messagePayload(kind, image));
-    await memberCardStore.setReference(guildId, member.id, kind, {
-      channelId: target.id,
-      messageId: message.id,
-    });
-    return "created";
-  }
-
-  private async editMessage(
-    message: Message,
-    kind: MemberCardKind,
-    image: Buffer,
-  ): Promise<void> {
-    await message.edit({
-      content: "",
-      files: [this.attachment(kind, image)],
-      attachments: [],
-      components: [],
-      allowedMentions: { parse: [] },
-    });
-  }
-
-  private messagePayload(kind: MemberCardKind, image: Buffer) {
-    return {
-      files: [this.attachment(kind, image)],
-      allowedMentions: { parse: [] as const },
-    };
-  }
-
-  private attachment(kind: MemberCardKind, image: Buffer): AttachmentBuilder {
-    const filename =
-      kind === "member"
-        ? "member-profile.png"
-        : kind === "history"
-          ? "member-history.png"
-          : "member-roles.png";
-    return new AttachmentBuilder(image, { name: filename });
-  }
-
-  private async resolveJoinDestination(guild: Guild): Promise<TextChannel | null> {
-    const savedChannel = await memberCardStore.getGuildChannelId(guild.id);
-    const preferred = [
-      savedChannel,
-      ...(this.preferredChannelResolver?.(guild) ?? []),
-    ].filter((value): value is string => Boolean(value));
-    for (const channelId of [...new Set(preferred)]) {
-      const channel = await this.fetchTextChannel(guild, channelId);
-      if (channel && (await this.hasCardPermissions(channel, guild))) return channel;
-    }
-
-    const system = guild.systemChannel;
-    if (system && (await this.hasCardPermissions(system, guild))) return system;
-
-    const channels = [...guild.channels.cache.values()]
-      .filter(
-        (channel): channel is TextChannel =>
-          channel.type === ChannelType.GuildText ||
-          channel.type === ChannelType.GuildAnnouncement,
-      )
-      .sort((left, right) => left.rawPosition - right.rawPosition);
-    for (const channel of channels) {
-      if (await this.hasCardPermissions(channel, guild)) return channel;
-    }
-    return null;
-  }
-
-  private async resolveExistingDestination(
-    guild: Guild,
-  ): Promise<TextChannel | null> {
-    const saved = await memberCardStore.getGuildChannelId(guild.id);
-    if (saved) {
-      const channel = await this.fetchTextChannel(guild, saved);
-      if (channel && (await this.hasCardPermissions(channel, guild))) {
-        return channel;
-      }
-    }
-    return this.resolveJoinDestination(guild);
-  }
-
-  private async fetchTextChannel(
-    guild: Guild,
-    channelId: string,
-  ): Promise<TextChannel | null> {
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (
-      !channel ||
-      channel.guildId !== guild.id ||
-      (channel.type !== ChannelType.GuildText &&
-        channel.type !== ChannelType.GuildAnnouncement)
-    ) {
-      return null;
-    }
-    return channel as TextChannel;
-  }
-
-  private async requireWritableChannel(
-    guild: Guild,
-    preferred: TextChannel,
-  ): Promise<TextChannel> {
-    const saved = await this.fetchTextChannel(guild, preferred.id);
-    if (saved && (await this.hasCardPermissions(saved, guild))) return saved;
-    const fallback = await this.resolveJoinDestination(guild);
-    if (fallback) return fallback;
-    throw new Error(
-      "No text channel is available with View Channel, Read Message History, Send Messages, and Attach Files permissions.",
-    );
-  }
-
-  private async hasCardPermissions(
-    channel: TextChannel,
-    guild: Guild,
-  ): Promise<boolean> {
-    const botMember =
-      guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-    if (!botMember) return false;
-    const permissions = channel.permissionsFor(botMember);
-    return Boolean(
-      permissions?.has([
-        PermissionFlagsBits.ViewChannel,
-        PermissionFlagsBits.ReadMessageHistory,
-        PermissionFlagsBits.SendMessages,
-        PermissionFlagsBits.AttachFiles,
-      ]),
-    );
   }
 
   private async withMemberLock<T>(
