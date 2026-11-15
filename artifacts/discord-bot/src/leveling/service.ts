@@ -1,8 +1,6 @@
 import { createHash, randomInt } from "node:crypto";
 import {
-  AttachmentBuilder,
   ChannelType,
-  EmbedBuilder,
   PermissionFlagsBits,
 } from "discord.js";
 import type {
@@ -27,11 +25,9 @@ import {
   setLevelingInviteRewardStatus,
 } from "@workspace/db";
 import { logger } from "../lib/logger.js";
-import {
-  calculateLevelProgress,
-  formatCompactXp,
-} from "./progression.js";
+import { calculateLevelProgress } from "./progression.js";
 import { renderLevelCard } from "./render.js";
+import { buildMoneyRankUpPayload } from "./rankUpAnnouncement.js";
 import { kolkataDateKey } from "../trackers/time.js";
 
 const MESSAGE_XP_COOLDOWN_MS = 60_000;
@@ -47,7 +43,6 @@ const VOICE_TICK_MS = 60_000;
 const INVITE_ACCOUNT_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
 const INVITE_MEMBER_STAY_MS = 7 * 24 * 60 * 60_000;
 const INVITE_XP = 500n;
-const GOLD = 0xffd94f;
 
 export interface LevelCardData {
   totalXp: bigint;
@@ -451,32 +446,17 @@ export class LevelingService {
         recentXp,
         rank,
       });
-      const fileName = `money-${member.id}.png`;
-      const embed = new EmbedBuilder()
-        .setColor(GOLD)
-        .setTitle("💰 MONEY UP!")
-        .setDescription(
-          [
-            "━━━━━━━━━━━━━━",
-            "",
-            `🎉 <@${member.id}> has ranked up!`,
-            `${previousClass} ➜ ${currentClass}`,
-            "",
-            `💸 Money: ${formatCompactXp(recentXp)}`,
-            `📊 Money Progress: ${progressBar}`,
-            "",
-            "Keep earning and climb to the next rank! 🚀",
-            "",
-            "━━━━━━━━━━━━━━",
-          ].join("\n"),
-        )
-        .setImage(`attachment://${fileName}`);
 
-      await channel.send({
-        embeds: [embed],
-        files: [new AttachmentBuilder(card, { name: fileName })],
-        allowedMentions: { parse: [], users: [member.id] },
-      });
+      await channel.send(
+        buildMoneyRankUpPayload({
+          userId: member.id,
+          previousClass,
+          currentClass,
+          recentXp,
+          progressBar,
+          card,
+        }),
+      );
     } catch (error) {
       logger.warn(
         `Could not announce Money rank-up for ${member.id} in guild ${guild.id}:`,
