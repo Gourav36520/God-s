@@ -23,6 +23,7 @@ async function main(): Promise<void> {
     memberCards.cardData,
     leveling.levelData,
     leveling.moneyData,
+    leveling.moneyLeaderboardData,
     leveling.testData,
   ].map((d) => d.toJSON());
   const rest = new REST().setToken(token);

@@ -573,6 +573,37 @@ export async function getLevelingMemberRank(
   return Number(result?.ahead ?? 0) + 1;
 }
 
+export async function getLevelingLeaderboardMembers(
+  guildId: string,
+  offset: number,
+  limit: number,
+): Promise<Array<{ userId: string; totalXp: bigint }>> {
+  if (
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1
+  ) {
+    throw new RangeError("Leaderboard offset and limit must be valid integers.");
+  }
+
+  return db
+    .select({
+      userId: levelingMembers.userId,
+      totalXp: levelingMembers.totalXp,
+    })
+    .from(levelingMembers)
+    .where(
+      and(
+        eq(levelingMembers.guildId, guildId),
+        isNull(levelingMembers.departedAt),
+      ),
+    )
+    .orderBy(desc(levelingMembers.totalXp), asc(levelingMembers.userId))
+    .offset(offset)
+    .limit(limit);
+}
+
 export async function addLevelXp(
   guildId: string,
   userId: string,

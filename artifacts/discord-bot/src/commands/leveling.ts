@@ -1,16 +1,22 @@
 import {
+  ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
+  ComponentType,
   EmbedBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
 import type {
   ChatInputCommandInteraction,
+  Guild,
   GuildMember,
   SharedSlashCommand,
 } from "discord.js";
 import {
+  getLevelingLeaderboardMembers,
   getLevelingRoleRewards,
   getLevelingMember,
   getLevelingMemberRank,
@@ -20,12 +26,19 @@ import {
   setLevelingRoleReward,
 } from "@workspace/db";
 import type { Command } from "../lib/registry.js";
-import { LEVEL_CLASSES, classNameForLevel } from "../leveling/progression.js";
+import {
+  LEVEL_CLASSES,
+  calculateLevelProgress,
+  classNameForLevel,
+  formatCompactXp,
+} from "../leveling/progression.js";
 import { renderLevelCard } from "../leveling/render.js";
 import { levelingService } from "../leveling/service.js";
 
 const GOLD = 0xffd94f;
 const MAX_CONFIGURED_LEVEL = 2_147_483_647;
+const LEADERBOARD_PAGE_SIZE = 10;
+const LEADERBOARD_COLLECTOR_MS = 15 * 60_000;
 
 export const levelData: SharedSlashCommand = new SlashCommandBuilder()
   .setName("level")
@@ -99,6 +112,10 @@ export const moneyData: SharedSlashCommand = new SlashCommandBuilder()
       .setDescription("The member whose card you want to view")
       .setRequired(false),
   );
+
+export const moneyLeaderboardData: SharedSlashCommand = new SlashCommandBuilder()
+  .setName("money-leaderboard")
+  .setDescription("View this server's Money leaderboard");
 
 export const testData: SharedSlashCommand = new SlashCommandBuilder()
   .setName("test")
@@ -382,6 +399,140 @@ export async function executeMoney(
   });
 }
 
+interface LeaderboardPage {
+  embed: EmbedBuilder;
+  hasEntries: boolean;
+  hasNextPage: boolean;
+}
+
+async function createLeaderboardPage(
+  guild: Guild,
+  page: number,
+): Promise<LeaderboardPage> {
+  const rows = await getLevelingLeaderboardMembers(
+    guild.id,
+    page * LEADERBOARD_PAGE_SIZE,
+    LEADERBOARD_PAGE_SIZE + 1,
+  );
+  const members = rows.slice(0, LEADERBOARD_PAGE_SIZE);
+  const description =
+    members.length > 0
+      ? members
+          .map((member, index) => {
+            const rank = page * LEADERBOARD_PAGE_SIZE + index + 1;
+            const medal = rank === 1 ? "🥇 " : rank === 2 ? "🥈 " : rank === 3 ? "🥉 " : "";
+            const className = calculateLevelProgress(member.totalXp).className;
+            return `${medal}**#${rank}** · <@${member.userId}>\n└ **${className}** · **${formatCompactXp(member.totalXp)} XP**`;
+          })
+          .join("\n\n")
+      : "No members have earned Money XP in this server yet.";
+
+  return {
+    embed: new EmbedBuilder()
+      .setColor(GOLD)
+      .setTitle("💰 MONEY LEADERBOARD")
+      .setDescription(description)
+      .setFooter({
+        text: members.length > 0
+          ? `Page ${page + 1} · Ranked by combined lifetime XP`
+          : "Server-wide Money rankings",
+      }),
+    hasEntries: members.length > 0,
+    hasNextPage: rows.length > LEADERBOARD_PAGE_SIZE,
+  };
+}
+
+function leaderboardButtons(
+  prefix: string,
+  page: number,
+  hasNextPage: boolean,
+  disabled = false,
+): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:previous`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled || page === 0),
+    new ButtonBuilder()
+      .setCustomId(`${prefix}:next`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled || !hasNextPage),
+  );
+}
+
+export async function executeMoneyLeaderboard(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (!(await requireGuild(interaction))) return;
+  const guild = interaction.guild!;
+  let page = 0;
+  const pageData = await createLeaderboardPage(guild, page);
+  const prefix = `money-leaderboard:${interaction.id}`;
+
+  await interaction.reply({
+    embeds: [pageData.embed],
+    components: pageData.hasEntries
+      ? [leaderboardButtons(prefix, page, pageData.hasNextPage)]
+      : [],
+    allowedMentions: { parse: [] },
+  });
+
+  if (!pageData.hasEntries) return;
+  const message = await interaction.fetchReply();
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: LEADERBOARD_COLLECTOR_MS,
+    filter: (button) => button.customId.startsWith(`${prefix}:`),
+  });
+
+  let hasNextPage = pageData.hasNextPage;
+  collector.on("collect", async (button) => {
+    const previousPage = page;
+    page += button.customId.endsWith(":next") ? 1 : -1;
+    page = Math.max(0, page);
+    try {
+      const nextPage = await createLeaderboardPage(guild, page);
+      if (!nextPage.hasEntries && page > 0) {
+        page -= 1;
+        await button.deferUpdate();
+        return;
+      }
+      hasNextPage = nextPage.hasNextPage;
+      await button.update({
+        embeds: [nextPage.embed],
+        components: [
+          leaderboardButtons(prefix, page, hasNextPage),
+        ],
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      page = previousPage;
+      await button.update({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(GOLD)
+            .setTitle("💰 MONEY LEADERBOARD")
+            .setDescription(
+              `This leaderboard page could not be loaded: ${describeFailure(error)}`,
+            ),
+        ],
+        components: [],
+        allowedMentions: { parse: [] },
+      }).catch(() => null);
+    }
+  });
+
+  collector.on("end", () => {
+    void message.edit({
+      components: [
+        leaderboardButtons(prefix, page, hasNextPage, true),
+      ],
+    }).catch(() => null);
+  });
+}
+
 function describeFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const code =
@@ -511,5 +662,6 @@ async function executeMoneyTest(
 export const levelingCommands: Command[] = [
   { data: levelData, execute: executeLevel },
   { data: moneyData, execute: executeMoney },
+  { data: moneyLeaderboardData, execute: executeMoneyLeaderboard },
   { data: testData, execute: executeMoneyTest },
 ];

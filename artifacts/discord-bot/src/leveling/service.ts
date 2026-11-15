@@ -1,6 +1,8 @@
 import { createHash, randomInt } from "node:crypto";
 import {
+  AttachmentBuilder,
   ChannelType,
+  EmbedBuilder,
   PermissionFlagsBits,
 } from "discord.js";
 import type {
@@ -25,7 +27,10 @@ import {
   setLevelingInviteRewardStatus,
 } from "@workspace/db";
 import { logger } from "../lib/logger.js";
-import { calculateLevelProgress } from "./progression.js";
+import {
+  calculateLevelProgress,
+  formatCompactXp,
+} from "./progression.js";
 import { renderLevelCard } from "./render.js";
 import { kolkataDateKey } from "../trackers/time.js";
 
@@ -42,6 +47,7 @@ const VOICE_TICK_MS = 60_000;
 const INVITE_ACCOUNT_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
 const INVITE_MEMBER_STAY_MS = 7 * 24 * 60 * 60_000;
 const INVITE_XP = 500n;
+const GOLD = 0xffd94f;
 
 export interface LevelCardData {
   totalXp: bigint;
@@ -330,12 +336,17 @@ export class LevelingService {
   private async handleAward(
     guildId: string,
     userId: string,
-    award: { previousXp: bigint; totalXp: bigint; duplicate: boolean },
+    award: {
+      previousXp: bigint;
+      totalXp: bigint;
+      amount: bigint;
+      duplicate: boolean;
+    },
   ): Promise<void> {
     if (award.duplicate) return;
-    const previousLevel = calculateLevelProgress(award.previousXp).level;
+    const previousProgress = calculateLevelProgress(award.previousXp);
     const currentProgress = calculateLevelProgress(award.totalXp);
-    if (currentProgress.level <= previousLevel) return;
+    if (currentProgress.level <= previousProgress.level) return;
 
     const guild = this.client?.guilds.cache.get(guildId);
     if (!guild) return;
@@ -345,16 +356,20 @@ export class LevelingService {
     if (member) {
       await this.applyLevelRewards(
         member,
-        previousLevel,
+        previousProgress.level,
         currentProgress.level,
       );
+      if (previousProgress.className !== currentProgress.className) {
+        await this.announceMoneyRankUp(
+          guild,
+          member,
+          previousProgress.className,
+          currentProgress.className,
+          award.totalXp,
+          award.amount,
+        );
+      }
     }
-    await this.announceLevelUp(
-      guild,
-      userId,
-      currentProgress.level,
-      currentProgress.className,
-    );
   }
 
   private async applyLevelRewards(
@@ -390,39 +405,84 @@ export class LevelingService {
     }
   }
 
-  private async announceLevelUp(
+  private async announceMoneyRankUp(
     guild: Guild,
-    userId: string,
-    level: number,
-    className: string,
+    member: GuildMember,
+    previousClass: string,
+    currentClass: string,
+    totalXp: bigint,
+    recentXp: bigint,
   ): Promise<void> {
-    const settings = await getLevelingSettings(guild.id);
-    if (!settings?.announcementChannelId) return;
-    const channel = await guild.channels
-      .fetch(settings.announcementChannelId)
-      .catch(() => null);
-    if (
-      !channel ||
-      (channel.type !== ChannelType.GuildText &&
-        channel.type !== ChannelType.GuildAnnouncement)
-    ) {
-      return;
-    }
-    const botMember =
-      guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-    const permissions = botMember ? channel.permissionsFor(botMember) : null;
-    if (!permissions?.has(PermissionFlagsBits.SendMessages)) return;
-    await channel
-      .send({
-        content: `<@${userId}> reached level ${level.toLocaleString()} · **${className}**!`,
-        allowedMentions: { parse: [], users: [userId] },
-      })
-      .catch((error) =>
-        logger.warn(
-          `Could not announce level ${level} for ${userId} in guild ${guild.id}:`,
-          error instanceof Error ? error.message : String(error),
-        ),
+    try {
+      const settings = await getLevelingSettings(guild.id);
+      const channelId = settings?.announcementChannelId;
+      if (!channelId) return;
+
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (
+        !channel ||
+        (channel.type !== ChannelType.GuildText &&
+          channel.type !== ChannelType.GuildAnnouncement)
+      ) {
+        return;
+      }
+
+      const botMember =
+        guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+      const permissions = botMember ? channel.permissionsFor(botMember) : null;
+      if (
+        !permissions?.has(PermissionFlagsBits.ViewChannel) ||
+        !permissions.has(PermissionFlagsBits.SendMessages) ||
+        !permissions.has(PermissionFlagsBits.AttachFiles)
+      ) {
+        return;
+      }
+
+      const progress = calculateLevelProgress(totalXp);
+      const percent = Number(
+        (progress.xpIntoLevel * 100n) /
+          (progress.xpRequiredForNextLevel || 1n),
       );
+      const filledSegments = Math.min(10, Math.floor(percent / 10));
+      const progressBar = `${"🟨".repeat(filledSegments)}${"⬛".repeat(10 - filledSegments)} ${percent}%`;
+      const rank = await getLevelingMemberRank(guild.id, member.id, totalXp);
+      const card = await renderLevelCard(member, {
+        totalXp,
+        recentXp,
+        rank,
+      });
+      const fileName = `money-${member.id}.png`;
+      const embed = new EmbedBuilder()
+        .setColor(GOLD)
+        .setTitle("💰 MONEY UP!")
+        .setDescription(
+          [
+            "━━━━━━━━━━━━━━",
+            "",
+            `🎉 <@${member.id}> has ranked up!`,
+            `${previousClass} ➜ ${currentClass}`,
+            "",
+            `💸 Money: ${formatCompactXp(recentXp)}`,
+            `📊 Money Progress: ${progressBar}`,
+            "",
+            "Keep earning and climb to the next rank! 🚀",
+            "",
+            "━━━━━━━━━━━━━━",
+          ].join("\n"),
+        )
+        .setImage(`attachment://${fileName}`);
+
+      await channel.send({
+        embeds: [embed],
+        files: [new AttachmentBuilder(card, { name: fileName })],
+        allowedMentions: { parse: [], users: [member.id] },
+      });
+    } catch (error) {
+      logger.warn(
+        `Could not announce Money rank-up for ${member.id} in guild ${guild.id}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
 }
