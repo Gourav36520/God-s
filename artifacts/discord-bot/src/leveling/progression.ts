@@ -65,6 +65,23 @@ export function calculateLevelProgress(totalXp: bigint): LevelProgress {
   };
 }
 
+export function xpAnnouncementThresholdForPercent(
+  xpRequiredForNextLevel: bigint,
+  percentage: number,
+): bigint {
+  if (
+    xpRequiredForNextLevel <= 0n ||
+    !Number.isInteger(percentage) ||
+    percentage < 40 ||
+    percentage > 60
+  ) {
+    throw new RangeError("XP announcement threshold inputs are invalid.");
+  }
+  const threshold =
+    (xpRequiredForNextLevel * BigInt(percentage)) / 100n;
+  return threshold > 0n ? threshold : 1n;
+}
+
 export function formatCompactXp(xp: bigint): string {
   const absoluteXp = xp < 0n ? -xp : xp;
   for (const [unit, suffix] of [

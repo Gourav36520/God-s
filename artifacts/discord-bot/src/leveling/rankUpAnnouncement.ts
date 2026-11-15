@@ -4,33 +4,54 @@ import { formatCompactXp } from "./progression.js";
 
 const GOLD = 0xffd94f;
 
-export function buildMoneyRankUpPayload(input: {
+export function buildLevelingAnnouncementPayload(input: {
   userId: string;
+  previousLevel: number;
+  currentLevel: number;
   previousClass: string;
   currentClass: string;
-  recentXp: bigint;
+  accumulatedXp: bigint;
   progressBar: string;
   card: Buffer;
 }): MessageCreateOptions {
   const fileName = `money-${input.userId}.png`;
+  const levelUp = input.currentLevel > input.previousLevel;
+  const moneyTierUp = input.currentClass !== input.previousClass;
+  const title = moneyTierUp
+    ? "💰 MONEY UP!"
+    : levelUp
+      ? "📈 LEVEL UP!"
+      : "✨ XP GAIN!";
+  const announcementLine = moneyTierUp
+    ? `🎉 <@${input.userId}> has ranked up!`
+    : levelUp
+      ? `🎉 <@${input.userId}> reached a new level!`
+      : `🎉 <@${input.userId}> earned XP!`;
+  const details = [
+    ...(levelUp
+      ? [`📈 Level: ${input.previousLevel} ➜ ${input.currentLevel}`]
+      : []),
+    ...(moneyTierUp
+      ? [`${input.previousClass} ➜ ${input.currentClass}`]
+      : []),
+  ];
+  const description = [
+    "━━━━━━━━━━━━━━",
+    "",
+    announcementLine,
+    ...details,
+    "",
+    `💸 Money: ${formatCompactXp(input.accumulatedXp)}`,
+    `📊 Money Progress: ${input.progressBar}`,
+    "",
+    "Keep earning and climb to the next rank! 🚀",
+    "",
+    "━━━━━━━━━━━━━━",
+  ].join("\n");
   const embed = new EmbedBuilder()
     .setColor(GOLD)
-    .setTitle("💰 MONEY UP!")
-    .setDescription(
-      [
-        "━━━━━━━━━━━━━━",
-        "",
-        `🎉 <@${input.userId}> has ranked up!`,
-        `${input.previousClass} ➜ ${input.currentClass}`,
-        "",
-        `💸 Money: ${formatCompactXp(input.recentXp)}`,
-        `📊 Money Progress: ${input.progressBar}`,
-        "",
-        "Keep earning and climb to the next rank! 🚀",
-        "",
-        "━━━━━━━━━━━━━━",
-      ].join("\n"),
-    )
+    .setTitle(title)
+    .setDescription(description)
     .setImage(`attachment://${fileName}`);
 
   return {

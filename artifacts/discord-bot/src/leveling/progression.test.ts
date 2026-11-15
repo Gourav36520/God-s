@@ -4,6 +4,7 @@ import {
   LEVEL_CLASSES,
   calculateLevelProgress,
   formatCompactXp,
+  xpAnnouncementThresholdForPercent,
   xpToReachLevel,
 } from "./progression.js";
 
@@ -54,5 +55,12 @@ describe("level progression", () => {
     assert.equal(formatCompactXp(20_800n), "20.8K");
     assert.equal(formatCompactXp(8_400n), "8.4K");
     assert.equal(formatCompactXp(800n), "800");
+  });
+
+  it("scales random announcement thresholds with the next-level XP requirement", () => {
+    assert.equal(xpAnnouncementThresholdForPercent(100n, 50), 50n);
+    assert.equal(xpAnnouncementThresholdForPercent(200n, 50), 100n);
+    assert.equal(xpAnnouncementThresholdForPercent(500n, 40), 200n);
+    assert.equal(xpAnnouncementThresholdForPercent(1_000n, 60), 600n);
   });
 });

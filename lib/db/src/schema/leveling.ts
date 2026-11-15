@@ -19,6 +19,16 @@ export const levelingMembers = pgTable(
     totalXp: bigint("total_xp", { mode: "bigint" }).notNull().default(sql`0`),
     recentXp: bigint("recent_xp", { mode: "bigint" }).notNull().default(sql`0`),
     recentXpAt: timestamp("recent_xp_at", { withTimezone: true }),
+    announcementXpProgress: bigint("announcement_xp_progress", {
+      mode: "bigint",
+    })
+      .notNull()
+      .default(sql`0`),
+    nextXpAnnouncementThreshold: bigint("next_xp_announcement_threshold", {
+      mode: "bigint",
+    }),
+    announcementThresholdLevel: integer("announcement_threshold_level"),
+    lastAnnouncedLevel: integer("last_announced_level"),
     lastMessageXpAt: timestamp("last_message_xp_at", { withTimezone: true }),
     lastVoiceXpAt: timestamp("last_voice_xp_at", { withTimezone: true }),
     voiceXpDayKey: text("voice_xp_day_key"),

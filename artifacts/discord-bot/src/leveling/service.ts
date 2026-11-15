@@ -16,18 +16,24 @@ import {
   awardLevelMessageXp,
   awardLevelVoiceXp,
   ensureLevelingMember,
+  getLevelingMember,
   getLevelingMemberRank,
   getLevelingRoleRewards,
   getLevelingSettings,
+  processLevelingAnnouncementProgress,
   forfeitPendingLevelingInviteReward,
   listDueLevelingInviteRewards,
   markLevelingMemberDeparted,
   setLevelingInviteRewardStatus,
 } from "@workspace/db";
 import { logger } from "../lib/logger.js";
-import { calculateLevelProgress } from "./progression.js";
+import {
+  calculateLevelProgress,
+  classNameForLevel,
+  xpAnnouncementThresholdForPercent,
+} from "./progression.js";
 import { renderLevelCard } from "./render.js";
-import { buildMoneyRankUpPayload } from "./rankUpAnnouncement.js";
+import { buildLevelingAnnouncementPayload } from "./rankUpAnnouncement.js";
 import { kolkataDateKey } from "../trackers/time.js";
 
 const MESSAGE_XP_COOLDOWN_MS = 60_000;
@@ -43,6 +49,13 @@ const VOICE_TICK_MS = 60_000;
 const INVITE_ACCOUNT_MIN_AGE_MS = 7 * 24 * 60 * 60_000;
 const INVITE_MEMBER_STAY_MS = 7 * 24 * 60 * 60_000;
 const INVITE_XP = 500n;
+
+function randomAnnouncementThreshold(xpRequiredForNextLevel: bigint): bigint {
+  return xpAnnouncementThresholdForPercent(
+    xpRequiredForNextLevel,
+    randomInt(40, 61),
+  );
+}
 
 export interface LevelCardData {
   totalXp: bigint;
@@ -340,31 +353,30 @@ export class LevelingService {
   ): Promise<void> {
     if (award.duplicate) return;
     const previousProgress = calculateLevelProgress(award.previousXp);
-    const currentProgress = calculateLevelProgress(award.totalXp);
-    if (currentProgress.level <= previousProgress.level) return;
+    const currentMemberRecord = await getLevelingMember(guildId, userId);
+    const currentTotalXp = currentMemberRecord?.totalXp ?? award.totalXp;
+    const currentProgress = calculateLevelProgress(currentTotalXp);
 
     const guild = this.client?.guilds.cache.get(guildId);
     if (!guild) return;
     const member =
       guild.members.cache.get(userId) ??
       (await guild.members.fetch(userId).catch(() => null));
-    if (member) {
+    if (member && currentProgress.level > previousProgress.level) {
       await this.applyLevelRewards(
         member,
         previousProgress.level,
         currentProgress.level,
       );
-      if (previousProgress.className !== currentProgress.className) {
-        await this.announceMoneyRankUp(
-          guild,
-          member,
-          previousProgress.className,
-          currentProgress.className,
-          award.totalXp,
-          award.amount,
-        );
-      }
     }
+    await this.announceLevelingProgress(
+      guild,
+      member,
+      userId,
+      previousProgress,
+      currentProgress,
+      currentTotalXp,
+    );
   }
 
   private async applyLevelRewards(
@@ -400,66 +412,162 @@ export class LevelingService {
     }
   }
 
-  private async announceMoneyRankUp(
+  private async announceLevelingProgress(
     guild: Guild,
-    member: GuildMember,
-    previousClass: string,
-    currentClass: string,
+    member: GuildMember | null,
+    userId: string,
+    previousProgress: ReturnType<typeof calculateLevelProgress>,
+    currentProgress: ReturnType<typeof calculateLevelProgress>,
     totalXp: bigint,
-    recentXp: bigint,
   ): Promise<void> {
     try {
       const settings = await getLevelingSettings(guild.id);
       const channelId = settings?.announcementChannelId;
-      if (!channelId) return;
-
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      if (
-        !channel ||
-        (channel.type !== ChannelType.GuildText &&
-          channel.type !== ChannelType.GuildAnnouncement)
-      ) {
-        return;
-      }
+      const channel = channelId
+        ? guild.channels.cache.get(channelId) ??
+          (await guild.channels.fetch(channelId).catch(() => null))
+        : null;
+      const isAnnouncementTextChannel =
+        channel?.type === ChannelType.GuildText ||
+        channel?.type === ChannelType.GuildAnnouncement;
 
       const botMember =
-        guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-      const permissions = botMember ? channel.permissionsFor(botMember) : null;
+        guild.members.me ??
+        (await guild.members.fetchMe().catch(() => null));
+      const permissions =
+        botMember && isAnnouncementTextChannel && channel
+          ? channel.permissionsFor(botMember)
+          : null;
+      const canAnnounce = Boolean(
+        member &&
+          isAnnouncementTextChannel &&
+          permissions?.has(PermissionFlagsBits.ViewChannel) &&
+          permissions.has(PermissionFlagsBits.SendMessages) &&
+          permissions.has(PermissionFlagsBits.EmbedLinks) &&
+          permissions.has(PermissionFlagsBits.AttachFiles),
+      );
+      const thresholdForCurrentLevel = randomAnnouncementThreshold(
+        currentProgress.xpRequiredForNextLevel,
+      );
+      const decision = await processLevelingAnnouncementProgress({
+        guildId: guild.id,
+        userId,
+        previousLevel: previousProgress.level,
+        currentLevel: currentProgress.level,
+        thresholdForCurrentLevel,
+        thresholdAfterAnnouncement: randomAnnouncementThreshold(
+          currentProgress.xpRequiredForNextLevel,
+        ),
+        canAnnounce,
+      });
       if (
-        !permissions?.has(PermissionFlagsBits.ViewChannel) ||
-        !permissions.has(PermissionFlagsBits.SendMessages) ||
-        !permissions.has(PermissionFlagsBits.AttachFiles)
+        !decision.shouldAnnounce ||
+        !member ||
+        !channel ||
+        !isAnnouncementTextChannel
       ) {
         return;
       }
 
-      const progress = calculateLevelProgress(totalXp);
+      const previousClass = classNameForLevel(decision.previousLevel);
+      const currentClass = classNameForLevel(decision.currentLevel);
+      const currentAnnouncementProgress = calculateLevelProgress(totalXp);
       const percent = Number(
-        (progress.xpIntoLevel * 100n) /
-          (progress.xpRequiredForNextLevel || 1n),
+        (currentAnnouncementProgress.xpIntoLevel * 100n) /
+          (currentAnnouncementProgress.xpRequiredForNextLevel || 1n),
       );
       const filledSegments = Math.min(10, Math.floor(percent / 10));
       const progressBar = `${"🟨".repeat(filledSegments)}${"⬛".repeat(10 - filledSegments)} ${percent}%`;
       const rank = await getLevelingMemberRank(guild.id, member.id, totalXp);
       const card = await renderLevelCard(member, {
         totalXp,
-        recentXp,
+        recentXp: decision.accumulatedXp,
         rank,
       });
-
-      await channel.send(
-        buildMoneyRankUpPayload({
-          userId: member.id,
-          previousClass,
-          currentClass,
-          recentXp,
-          progressBar,
-          card,
-        }),
+      const payload = buildLevelingAnnouncementPayload({
+        userId: member.id,
+        previousLevel: decision.previousLevel,
+        currentLevel: decision.currentLevel,
+        previousClass,
+        currentClass,
+        accumulatedXp: decision.accumulatedXp,
+        progressBar,
+        card,
+      });
+      const sentMessage = await channel.send(payload);
+      const sentEmbeds = sentMessage.embeds;
+      const sentAttachments = [...sentMessage.attachments.values()];
+      const cardFileName = `money-${member.id}.png`;
+      const cardAttachment = sentAttachments.find(
+        (attachment) => attachment.name === cardFileName,
       );
+      const messageEmbed = sentEmbeds[0];
+      const imageUrl = messageEmbed?.image?.url ?? "";
+      let imageReferencesUploadedCard = imageUrl === `attachment://${cardFileName}`;
+      try {
+        const imagePath = decodeURIComponent(new URL(imageUrl).pathname);
+        imageReferencesUploadedCard ||= imagePath.endsWith(`/${cardFileName}`);
+      } catch {
+        // A serialized attachment:// URL is checked above.
+      }
+      const description = messageEmbed?.description ?? "";
+      const descriptionContainsAnnouncement =
+        description.startsWith("━━━━━━━━━━━━━━") &&
+        description.includes("🎉") &&
+        description.includes("💸 Money:") &&
+        description.includes("📊 Money Progress:") &&
+        description.includes("Keep earning and climb to the next rank! 🚀") &&
+        description.endsWith("━━━━━━━━━━━━━━");
+      // Discord omits files referenced by an embed from Message.attachments.
+      const unexpectedAttachments = sentAttachments.filter(
+        (attachment) => attachment.name !== cardFileName,
+      );
+      const titleIsAnnouncement = [
+        "💰 MONEY UP!",
+        "📈 LEVEL UP!",
+        "✨ XP GAIN!",
+      ].includes(messageEmbed?.title ?? "");
+      const layoutVerified =
+        sentMessage.content.length === 0 &&
+        sentEmbeds.length === 1 &&
+        titleIsAnnouncement &&
+        descriptionContainsAnnouncement &&
+        imageReferencesUploadedCard &&
+        sentAttachments.length === 0 &&
+        unexpectedAttachments.length === 0;
+      const embedAudit = sentEmbeds
+        .map(
+          (embed, index) =>
+            `#${index + 1}[title=${embed.title ? "set" : "missing"},description=${embed.description ? "set" : "missing"},image=${embed.image?.url ? "set" : "missing"}]`,
+        )
+        .join(",");
+      const attachmentAudit = sentAttachments
+        .map(
+          (attachment, index) =>
+            `#${index + 1}[name=${attachment.name ? "set" : "missing"},type=${attachment.contentType ?? "unknown"}]`,
+        )
+        .join(",");
+      const receivedLayout = [
+        `embedAudit=${embedAudit || "none"}`,
+        `attachmentAudit=${attachmentAudit || "none"}`,
+        `announcementTitle=${titleIsAnnouncement}`,
+        `cardImageReferencesUpload=${imageReferencesUploadedCard}`,
+        `referencedCardListedSeparately=${Boolean(cardAttachment)}`,
+        `announcementDescription=${descriptionContainsAnnouncement}`,
+        `separateText=${sentMessage.content.length > 0}`,
+      ].join(" ");
+      if (layoutVerified) {
+        logger.info(
+          `[LEVEL ANNOUNCEMENT] Discord response verified in message ${sentMessage.id}: ${receivedLayout}`,
+        );
+      } else {
+        logger.warn(
+          `[LEVEL ANNOUNCEMENT] Discord response did not retain the expected single-embed layout in message ${sentMessage.id}: ${receivedLayout}`,
+        );
+      }
     } catch (error) {
       logger.warn(
-        `Could not announce Money rank-up for ${member.id} in guild ${guild.id}:`,
+        `Could not send leveling announcement for ${userId} in guild ${guild.id}:`,
         error instanceof Error ? error.message : String(error),
       );
     }

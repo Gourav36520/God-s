@@ -11,6 +11,7 @@ import {
   isNull,
   lte,
   or,
+  sql,
 } from "drizzle-orm";
 import pg from "pg";
 import * as schema from "./schema/index.js";
@@ -573,6 +574,111 @@ export async function getLevelingMemberRank(
   return Number(result?.ahead ?? 0) + 1;
 }
 
+export interface LevelingAnnouncementProgressDecision {
+  shouldAnnounce: boolean;
+  accumulatedXp: bigint;
+  previousLevel: number;
+  currentLevel: number;
+}
+
+export async function processLevelingAnnouncementProgress(input: {
+  guildId: string;
+  userId: string;
+  previousLevel: number;
+  currentLevel: number;
+  thresholdForCurrentLevel: bigint;
+  thresholdAfterAnnouncement: bigint;
+  canAnnounce: boolean;
+}): Promise<LevelingAnnouncementProgressDecision> {
+  if (
+    !Number.isSafeInteger(input.previousLevel) ||
+    input.previousLevel < 1 ||
+    !Number.isSafeInteger(input.currentLevel) ||
+    input.currentLevel < 1 ||
+    input.thresholdForCurrentLevel <= 0n ||
+    input.thresholdAfterAnnouncement <= 0n
+  ) {
+    throw new RangeError("Level announcement progress inputs are invalid.");
+  }
+
+  return db.transaction(async (tx) => {
+    const [member] = await tx
+      .select()
+      .from(levelingMembers)
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!member) throw new Error("Leveling member could not be loaded.");
+
+    const previousLevel = member.lastAnnouncedLevel ?? input.previousLevel;
+    const currentLevel = Math.max(previousLevel, input.currentLevel);
+    const thresholdLevel = Math.max(
+      member.announcementThresholdLevel ?? 1,
+      currentLevel,
+    );
+    const thresholdIsCurrent =
+      member.announcementThresholdLevel === thresholdLevel &&
+      member.nextXpAnnouncementThreshold !== null;
+    const threshold =
+      thresholdIsCurrent
+        ? member.nextXpAnnouncementThreshold!
+        : input.thresholdForCurrentLevel;
+    const levelUp = currentLevel > previousLevel;
+    const milestoneReached = member.announcementXpProgress >= threshold;
+    const shouldAnnounce =
+      input.canAnnounce && (levelUp || milestoneReached);
+
+    if (!shouldAnnounce) {
+      await tx
+        .update(levelingMembers)
+        .set({
+          lastAnnouncedLevel:
+            member.lastAnnouncedLevel ?? input.previousLevel,
+          nextXpAnnouncementThreshold: threshold,
+          announcementThresholdLevel: thresholdLevel,
+        })
+        .where(
+          and(
+            eq(levelingMembers.guildId, input.guildId),
+            eq(levelingMembers.userId, input.userId),
+          ),
+        );
+      return {
+        shouldAnnounce: false,
+        accumulatedXp: member.announcementXpProgress,
+        previousLevel,
+        currentLevel,
+      };
+    }
+
+    await tx
+      .update(levelingMembers)
+      .set({
+        announcementXpProgress: 0n,
+        nextXpAnnouncementThreshold: input.thresholdAfterAnnouncement,
+        announcementThresholdLevel: currentLevel,
+        lastAnnouncedLevel: currentLevel,
+      })
+      .where(
+        and(
+          eq(levelingMembers.guildId, input.guildId),
+          eq(levelingMembers.userId, input.userId),
+        ),
+      );
+    return {
+      shouldAnnounce: true,
+      accumulatedXp: member.announcementXpProgress,
+      previousLevel,
+      currentLevel,
+    };
+  });
+}
+
 export async function getLevelingLeaderboardMembers(
   guildId: string,
   offset: number,
@@ -648,7 +754,13 @@ export async function addLevelXp(
     const totalXp = member.totalXp + amount;
     await tx
       .update(levelingMembers)
-      .set({ totalXp, recentXp: amount, recentXpAt: now, updatedAt: now })
+      .set({
+        totalXp,
+        recentXp: amount,
+        recentXpAt: now,
+        announcementXpProgress: sql`${levelingMembers.announcementXpProgress} + ${amount}`,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(levelingMembers.guildId, guildId),
@@ -752,6 +864,7 @@ export async function awardLevelMessageXp(input: {
         totalXp,
         recentXp: input.amount,
         recentXpAt: now,
+        announcementXpProgress: sql`${levelingMembers.announcementXpProgress} + ${input.amount}`,
         lastMessageXpAt: now,
         departedAt: null,
         updatedAt: now,
@@ -838,6 +951,7 @@ export async function awardLevelVoiceXp(input: {
         totalXp,
         recentXp: input.amount,
         recentXpAt: now,
+        announcementXpProgress: sql`${levelingMembers.announcementXpProgress} + ${input.amount}`,
         lastVoiceXpAt: now,
         voiceXpDayKey: input.dayKey,
         voiceXpMinutes: voiceXpMinutes + input.intervalMinutes,
