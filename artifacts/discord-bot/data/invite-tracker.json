@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "guilds": {
+    "1519269173937836084": {
+      "invites": {
+        "CFJxQkD7J": {
+          "uses": 0,
+          "inviterId": "1563848865432473636"
+        },
+        "Pd9KEzcPb2": {
+          "uses": 0,
+          "inviterId": "1502665998254342246"
+        },
+        "Uf59QABxZ": {
+          "uses": 6,
+          "inviterId": "1563848865432473636"
+        },
+        "VKxED7KqU": {
+          "uses": 1,
+          "inviterId": "1503035025330012252"
+        },
+        "uWhuhYaJ5": {
+          "uses": 1,
+          "inviterId": "1563848865432473636"
+        },
+        "wSQjXGjffy": {
+          "uses": 1,
+          "inviterId": "1563848865432473636"
+        }
+      },
+      "inviters": {},
+      "joins": {}
+    },
+    "1565321329757126778": {
+      "invites": {
+        "95cTfdrRY": {
+          "uses": 1,
+          "inviterId": "1563848865432473636"
+        }
+      },
+      "inviters": {},
+      "joins": {}
+    }
+  }
+}
