@@ -1,0 +1,76 @@
+import {
+  ChatInputCommandInteraction,
+  Events,
+  Interaction,
+} from "discord.js";
+import { handleHelpInteraction, isHelpComponent } from "../commands/help.js";
+import {
+  handleReactionRoleListButton,
+  isReactionRoleListButton,
+} from "../commands/reactionrole.js";
+import { commands } from "../lib/registry.js";
+import { logger } from "../lib/logger.js";
+import {
+  handleVerificationButton,
+  isVerificationButton,
+} from "../verification/interaction.js";
+
+export const name = Events.InteractionCreate;
+export const once = false;
+
+export async function execute(interaction: Interaction): Promise<void> {
+  if (interaction.isButton()) {
+    if (isVerificationButton(interaction.customId)) {
+      await handleVerificationButton(interaction);
+    } else if (isHelpComponent(interaction.customId)) {
+      await handleHelpInteraction(interaction);
+    } else if (isReactionRoleListButton(interaction.customId)) {
+      await handleReactionRoleListButton(interaction);
+    }
+    return;
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    if (isHelpComponent(interaction.customId)) {
+      await handleHelpInteraction(interaction);
+    }
+    return;
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+
+  const cmd = interaction as ChatInputCommandInteraction;
+  const group = cmd.options.getSubcommandGroup(false);
+  const sub = cmd.options.getSubcommand(false);
+  const route = [group, sub].filter((part): part is string => Boolean(part)).join(" ");
+  const label = route ? `/${cmd.commandName} ${route}` : `/${cmd.commandName}`;
+
+  const command = commands.get(cmd.commandName);
+
+  if (!command) {
+    logger.warn(`Unknown command received: ${label} from ${interaction.user.tag}`);
+    await cmd.reply({ content: "Unknown command.", ephemeral: true }).catch(() => null);
+    return;
+  }
+
+  logger.info(`CMD START  ${label}  user=${interaction.user.tag} (${interaction.user.id})  guild=${interaction.guildId ?? "DM"}`);
+
+  try {
+    await command.execute(cmd);
+    logger.info(`CMD OK     ${label}  user=${interaction.user.tag}`);
+  } catch (err) {
+    const stack = err instanceof Error ? err.stack : String(err);
+    logger.error(`CMD ERROR  ${label}  user=${interaction.user.tag}\n${stack}`);
+
+    try {
+      const isAcknowledged = cmd.replied || cmd.deferred;
+      if (isAcknowledged) {
+        await cmd.followUp({ content: "⚠️ An unexpected error occurred. Check the bot logs.", ephemeral: true });
+      } else {
+        await cmd.reply({ content: "⚠️ An unexpected error occurred. Check the bot logs.", ephemeral: true });
+      }
+    } catch (replyErr) {
+      logger.error(`CMD ERROR  Failed to send error reply for ${label}:`, replyErr instanceof Error ? replyErr.message : replyErr);
+    }
+  }
+}
