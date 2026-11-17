@@ -8,7 +8,9 @@
     "autoRoleRoleId": null,
     "reactionRolePanels": [],
     "reactionRoleAssignments": {},
-    "exemptRoles": [],
+    "exemptRoles": [
+      "1543110308762099743"
+    ],
     "exemptChannels": [],
     "antiSpam": {
       "enabled": true,
@@ -146,7 +148,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-11-17T14:24:58.871Z",
+    "updatedAt": "2026-11-17T14:25:46.938Z",
     "heatEngine": {
       "enabled": true
     },
