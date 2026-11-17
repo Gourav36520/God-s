@@ -62,9 +62,29 @@ export const moderationBanExpirations = pgTable(
   ],
 );
 
+export const moderationRoleConfigs = pgTable("moderation_role_configs", {
+  guildId: text("guild_id").primaryKey(),
+  adminRoleId: text("admin_role_id"),
+  managerRoleId: text("manager_role_id"),
+  warnRoleId: text("warn_role_id"),
+  timeoutRoleId: text("timeout_role_id"),
+  staffRequestRoleId: text("staff_request_role_id"),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export type ModerationCase = typeof moderationCases.$inferSelect;
 export type NewModerationCase = typeof moderationCases.$inferInsert;
 export type ModerationBanExpiration =
   typeof moderationBanExpirations.$inferSelect;
 export type NewModerationBanExpiration =
   typeof moderationBanExpirations.$inferInsert;
+export type ModerationRoleConfig = typeof moderationRoleConfigs.$inferSelect;
+export type NewModerationRoleConfig = typeof moderationRoleConfigs.$inferInsert;
+export type ModerationRoleField =
+  | "adminRoleId"
+  | "managerRoleId"
+  | "warnRoleId"
+  | "timeoutRoleId"
+  | "staffRequestRoleId";

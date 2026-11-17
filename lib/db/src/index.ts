@@ -22,6 +22,7 @@ import {
 import {
   moderationBanExpirations,
   moderationCases,
+  moderationRoleConfigs,
 } from "./schema/moderation.js";
 import {
   memberCardImages,
@@ -169,6 +170,37 @@ export async function createModerationCase(
     throw new Error("The moderation case was not saved.");
   }
   return created.id;
+}
+
+export async function getModerationRoleConfig(
+  guildId: string,
+): Promise<schema.ModerationRoleConfig | null> {
+  const [config] = await db
+    .select()
+    .from(moderationRoleConfigs)
+    .where(eq(moderationRoleConfigs.guildId, guildId))
+    .limit(1);
+  return config ?? null;
+}
+
+export async function setModerationRoleConfig(
+  guildId: string,
+  field: schema.ModerationRoleField,
+  roleId: string | null,
+): Promise<void> {
+  const values: schema.NewModerationRoleConfig = { guildId };
+  values[field] = roleId;
+  const update: Partial<schema.NewModerationRoleConfig> = {
+    [field]: roleId,
+    updatedAt: new Date(),
+  };
+  await db
+    .insert(moderationRoleConfigs)
+    .values(values)
+    .onConflictDoUpdate({
+      target: moderationRoleConfigs.guildId,
+      set: update,
+    });
 }
 
 export async function isMemberCardTracked(
@@ -412,6 +444,24 @@ export async function listModerationWarnings(
     )
     .orderBy(desc(moderationCases.createdAt))
     .limit(limit);
+}
+
+export async function countActiveModerationWarnings(
+  guildId: string,
+  targetId: string,
+): Promise<number> {
+  const [result] = await db
+    .select({ total: count() })
+    .from(moderationCases)
+    .where(
+      and(
+        eq(moderationCases.guildId, guildId),
+        eq(moderationCases.targetId, targetId),
+        eq(moderationCases.action, "warn"),
+        isNull(moderationCases.resolvedAt),
+      ),
+    );
+  return Number(result?.total ?? 0);
 }
 
 export async function listModerationCases(

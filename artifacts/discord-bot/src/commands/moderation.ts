@@ -16,6 +16,7 @@ import {
   type TextChannel,
 } from "discord.js";
 import {
+  countActiveModerationWarnings,
   createModerationBanExpiration,
   createModerationCase,
   listModerationCases,
@@ -31,12 +32,15 @@ import { logger } from "../lib/logger.js";
 import { memberCardService } from "../member-cards/service.js";
 import { arrowLine, createGodsEmbed } from "./ui.js";
 import {
+  getConfiguredModerationRoleAccess,
+  requireConfiguredModerationContext,
   replyPrivate,
   requireModerationContext,
   roleHierarchyError,
   targetHierarchyError,
   type ModerationContext,
 } from "../moderation/permissions.js";
+import { moderationRoleConfigCommands } from "./moderation-role-config.js";
 
 const memberOption = (name = "member", description = "The server member") =>
   (option: SlashCommandUserOption) =>
@@ -54,14 +58,14 @@ const optionalReason = (required = false) =>
 const kickData = new SlashCommandBuilder()
   .setName("kick")
   .setDescription("Remove a member from this server")
-  .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+  .setDefaultMemberPermissions(null)
   .addUserOption(memberOption())
   .addStringOption(optionalReason());
 
 const banData = new SlashCommandBuilder()
   .setName("ban")
   .setDescription("Ban a member from this server")
-  .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+  .setDefaultMemberPermissions(null)
   .addUserOption(memberOption())
   .addStringOption((option) =>
     option
@@ -77,7 +81,7 @@ const banData = new SlashCommandBuilder()
 const unbanData = new SlashCommandBuilder()
   .setName("unban")
   .setDescription("Remove a server ban by user ID")
-  .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+  .setDefaultMemberPermissions(null)
   .addStringOption((option) =>
     option
       .setName("user_id")
@@ -91,7 +95,7 @@ const unbanData = new SlashCommandBuilder()
 const timeoutData = new SlashCommandBuilder()
   .setName("timeout")
   .setDescription("Temporarily prevent a member from messaging or speaking")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+  .setDefaultMemberPermissions(null)
   .addUserOption(memberOption())
   .addStringOption((option) =>
     option
@@ -120,7 +124,7 @@ const softbanData = new SlashCommandBuilder()
 const warnData = new SlashCommandBuilder()
   .setName("warn")
   .setDescription("Save a persistent warning for a member")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+  .setDefaultMemberPermissions(null)
   .addUserOption(memberOption())
   .addStringOption(optionalReason());
 
@@ -154,7 +158,7 @@ const clearWarningsData = new SlashCommandBuilder()
 const purgeData = new SlashCommandBuilder()
   .setName("purge")
   .setDescription("Delete recent messages from this channel")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
+  .setDefaultMemberPermissions(null)
   .addIntegerOption((option) =>
     option
       .setName("amount")
@@ -168,13 +172,13 @@ const purgeData = new SlashCommandBuilder()
 const lockData = new SlashCommandBuilder()
   .setName("lock")
   .setDescription("Prevent members from sending messages in this channel")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+  .setDefaultMemberPermissions(null)
   .addStringOption(optionalReason());
 
 const unlockData = new SlashCommandBuilder()
   .setName("unlock")
   .setDescription("Remove this channel's send-message lock")
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+  .setDefaultMemberPermissions(null)
   .addStringOption(optionalReason());
 
 const slowmodeData = new SlashCommandBuilder()
@@ -221,6 +225,47 @@ const nicknameData = new SlashCommandBuilder()
   .setName("nickname")
   .setDescription("Change or reset a member's server nickname")
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageNicknames)
+  .addUserOption(memberOption())
+  .addStringOption((option) =>
+    option
+      .setName("nickname")
+      .setDescription("New nickname; leave blank to reset")
+      .setMaxLength(32),
+  )
+  .addStringOption(optionalReason());
+
+const roleData = new SlashCommandBuilder()
+  .setName("role")
+  .setDescription("Add or remove a role from a member")
+  .setDefaultMemberPermissions(null)
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("add")
+      .setDescription("Add a role to a member")
+      .addUserOption(memberOption())
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to add").setRequired(true),
+      )
+      .addStringOption(optionalReason()),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("remove")
+      .setDescription("Remove a role from a member")
+      .addUserOption(memberOption())
+      .addRoleOption((option) =>
+        option
+          .setName("role")
+          .setDescription("Role to remove")
+          .setRequired(true),
+      )
+      .addStringOption(optionalReason()),
+  );
+
+const nickData = new SlashCommandBuilder()
+  .setName("nick")
+  .setDescription("Change or reset a member's server nickname")
+  .setDefaultMemberPermissions(null)
   .addUserOption(memberOption())
   .addStringOption((option) =>
     option
@@ -281,7 +326,9 @@ const commandData: SharedSlashCommand[] = [
   slowmodeData,
   roleAddData,
   roleRemoveData,
+  roleData,
   nicknameData,
+  nickData,
   serverMuteData,
   serverUnmuteData,
   serverDeafenData,
@@ -578,6 +625,10 @@ async function requestConfirmation(
 async function requireButtonContext(
   interaction: ButtonInteraction,
   permission: bigint,
+  roleAccess?: {
+    roleFields: ("adminRoleId" | "managerRoleId")[];
+    ownerBypass?: boolean;
+  },
 ): Promise<ModerationContext | null> {
   const guild = interaction.guild;
   if (!guild) {
@@ -613,7 +664,63 @@ async function requireButtonContext(
     });
     return null;
   }
-  if (!moderator.permissions.has(permission) || !botMember.permissions.has(permission)) {
+  if (roleAccess) {
+    const ownerBypass = roleAccess.ownerBypass && moderator.id === guild.ownerId;
+    if (!ownerBypass) {
+      let access: { configured: boolean; hasRole: boolean };
+      try {
+        access = await getConfiguredModerationRoleAccess(
+          guild,
+          moderator,
+          roleAccess.roleFields,
+        );
+      } catch {
+        await interaction.update({
+          embeds: [
+            createGodsEmbed({
+              title: "Role Settings Unavailable",
+              description:
+                "The configured role permissions could not be verified, so this action was denied.",
+              tone: "error",
+            }),
+          ],
+          components: [],
+        });
+        return null;
+      }
+      if (!access.configured || !access.hasRole) {
+        await interaction.update({
+          embeds: [
+            createGodsEmbed({
+              title: access.configured ? "Role Required" : "Role Not Configured",
+              description: access.configured
+                ? "You no longer have a configured role required for this action."
+                : "The server owner must configure a required role before this action can be completed.",
+              tone: "error",
+            }),
+          ],
+          components: [],
+        });
+        return null;
+      }
+    }
+    if (!botMember.permissions.has(permission)) {
+      await interaction.update({
+        embeds: [
+          createGodsEmbed({
+            title: "Bot Permission Missing",
+            description: "Gods Bot is missing the permission required for this action.",
+            tone: "error",
+          }),
+        ],
+        components: [],
+      });
+      return null;
+    }
+  } else if (
+    !moderator.permissions.has(permission) ||
+    !botMember.permissions.has(permission)
+  ) {
     await interaction.update({
       embeds: [
         createGodsEmbed({
@@ -690,7 +797,16 @@ export async function handleModerationConfirmation(
     pending.kind === "purge"
       ? PermissionFlagsBits.ManageMessages
       : PermissionFlagsBits.ModerateMembers;
-  const context = await requireButtonContext(interaction, permission);
+  const context = await requireButtonContext(
+    interaction,
+    permission,
+    pending.kind === "purge"
+      ? {
+          roleFields: ["adminRoleId", "managerRoleId"],
+          ownerBypass: true,
+        }
+      : undefined,
+  );
   if (!context) return;
   await interaction.deferUpdate();
 
@@ -717,12 +833,8 @@ export async function handleModerationConfirmation(
 
     try {
       const textChannel = channel as TextChannel;
-      const moderatorChannelPermissions =
-        textChannel.permissionsFor(context.moderator);
       const channelPermissions = textChannel.permissionsFor(context.botMember);
       if (
-        !moderatorChannelPermissions?.has(PermissionFlagsBits.ManageMessages) ||
-        !moderatorChannelPermissions.has(PermissionFlagsBits.ReadMessageHistory) ||
         !channelPermissions?.has(PermissionFlagsBits.ManageMessages) ||
         !channelPermissions.has(PermissionFlagsBits.ReadMessageHistory)
       ) {
@@ -730,7 +842,7 @@ export async function handleModerationConfirmation(
           embeds: [
             createGodsEmbed({
               title: "Channel Permission Missing",
-              description: "Both you and Gods Bot need Manage Messages and Read Message History in this channel.",
+              description: "Gods Bot needs Manage Messages and Read Message History in this channel.",
               tone: "error",
             }),
           ],
@@ -896,7 +1008,11 @@ export async function handleModerationConfirmation(
 async function executeKick(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.KickMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.KickMembers,
+    { ownerOnly: true },
+  );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -935,7 +1051,11 @@ async function executeKick(
 async function executeBan(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.BanMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.BanMembers,
+    { ownerOnly: true },
+  );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -1039,7 +1159,11 @@ async function executeBan(
 async function executeUnban(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.BanMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.BanMembers,
+    { ownerOnly: true },
+  );
   if (!context) return;
   const targetId = interaction.options.getString("user_id", true).trim();
   if (!SNOWFLAKE_PATTERN.test(targetId)) {
@@ -1103,7 +1227,11 @@ async function executeUnban(
 async function executeTimeout(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ModerateMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.ModerateMembers,
+    { roleFields: ["timeoutRoleId"] },
+  );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -1188,7 +1316,11 @@ async function executeUntimeout(
 async function executeSoftban(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.BanMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.BanMembers,
+    { ownerOnly: true },
+  );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -1258,11 +1390,47 @@ async function executeSoftban(
 async function executeWarn(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ModerateMembers);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    null,
+    { roleFields: ["warnRoleId"] },
+  );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
   const reason = reasonFor(interaction);
+  let activeWarningsBefore: number;
+  try {
+    activeWarningsBefore = await countActiveModerationWarnings(
+      context.guild.id,
+      target.id,
+    );
+  } catch (error) {
+    logger.warn(
+      `Warning count lookup failed in guild=${context.guild.id}:`,
+      error instanceof Error ? error.name : "unknown error",
+    );
+    await replyPrivate(
+      interaction,
+      "Warning Not Issued",
+      "The active warning count could not be verified, so no warning was issued.",
+    );
+    return;
+  }
+
+  const appliesThirdWarningTimeout = (activeWarningsBefore + 1) % 3 === 0;
+  if (
+    appliesThirdWarningTimeout &&
+    !context.botMember.permissions.has(PermissionFlagsBits.ModerateMembers)
+  ) {
+    await replyPrivate(
+      interaction,
+      "Warning Not Issued",
+      "This would be the third active warning, but Gods Bot cannot apply the required 10-minute timeout.",
+    );
+    return;
+  }
+
   const caseId = await saveCase({
     guildId: context.guild.id,
     targetId: target.id,
@@ -1273,6 +1441,30 @@ async function executeWarn(
   if (!caseId) {
     await replyPrivate(interaction, "Warning Not Saved", "The warning could not be stored, so no warning was issued. Try again later.");
     return;
+  }
+
+  let automaticTimeoutApplied = false;
+  let automaticTimeoutCaseId: number | null = null;
+  if (appliesThirdWarningTimeout) {
+    const timeoutReason = "Automatic 10-minute timeout after the third active warning";
+    try {
+      await target.timeout(10 * 60 * 1_000, timeoutReason);
+      automaticTimeoutApplied = true;
+      automaticTimeoutCaseId = await saveCase({
+        guildId: context.guild.id,
+        targetId: target.id,
+        moderatorId: context.moderator.id,
+        action: "timeout",
+        reason: timeoutReason,
+        durationSeconds: 600,
+        member: target,
+      });
+    } catch (error) {
+      logger.warn(
+        `Third-warning timeout failed in guild=${context.guild.id}:`,
+        error instanceof Error ? error.name : "unknown error",
+      );
+    }
   }
 
   await logModeration({
@@ -1293,6 +1485,11 @@ async function executeWarn(
       moderatorId: context.moderator.id,
       reason,
       caseId,
+      note: !appliesThirdWarningTimeout
+        ? "The warning was recorded."
+        : automaticTimeoutApplied
+          ? `This was the third active warning; a fixed 10-minute timeout was applied${automaticTimeoutCaseId ? ` and recorded as case #${automaticTimeoutCaseId}` : ", but its case could not be saved"}.`
+          : "This was the third active warning. The warning was recorded, but Discord could not apply the required 10-minute timeout; please review it manually.",
     }),
   );
 }
@@ -1417,7 +1614,14 @@ async function executeClearWarnings(
 async function executePurge(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ManageMessages);
+  const context = await requireConfiguredModerationContext(
+    interaction,
+    PermissionFlagsBits.ManageMessages,
+    {
+      roleFields: ["adminRoleId", "managerRoleId"],
+      ownerBypass: true,
+    },
+  );
   if (!context) return;
   const channel = interaction.channel;
   if (
@@ -1456,7 +1660,20 @@ async function channelCommand(
   interaction: ChatInputCommandInteraction,
   action: "lock" | "unlock" | "slowmode",
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ManageChannels);
+  const context =
+    action === "slowmode"
+      ? await requireModerationContext(
+          interaction,
+          PermissionFlagsBits.ManageChannels,
+        )
+      : await requireConfiguredModerationContext(
+          interaction,
+          PermissionFlagsBits.ManageChannels,
+          {
+            roleFields: ["adminRoleId", "managerRoleId"],
+            ownerBypass: true,
+          },
+        );
   if (!context) return;
   const selectedChannel =
     action === "slowmode"
@@ -1476,10 +1693,17 @@ async function channelCommand(
   const moderatorChannelPermissions = channel.permissionsFor(context.moderator);
   const botChannelPermissions = channel.permissionsFor(context.botMember);
   if (
-    !moderatorChannelPermissions?.has(PermissionFlagsBits.ManageChannels) ||
+    (action === "slowmode" &&
+      !moderatorChannelPermissions?.has(PermissionFlagsBits.ManageChannels)) ||
     !botChannelPermissions?.has(PermissionFlagsBits.ManageChannels)
   ) {
-    await replyPrivate(interaction, "Channel Permission Missing", "Both you and Gods Bot need Manage Channels in the selected channel.");
+    await replyPrivate(
+      interaction,
+      "Channel Permission Missing",
+      action === "slowmode"
+        ? "Both you and Gods Bot need Manage Channels in the selected channel."
+        : "Gods Bot needs Manage Channels in the selected channel.",
+    );
     return;
   }
   const seconds =
@@ -1546,8 +1770,19 @@ async function channelCommand(
 async function executeRole(
   interaction: ChatInputCommandInteraction,
   action: "role-add" | "role-remove",
+  authorization: "discord-permission" | "manager-role" = "discord-permission",
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ManageRoles);
+  const context =
+    authorization === "manager-role"
+      ? await requireConfiguredModerationContext(
+          interaction,
+          PermissionFlagsBits.ManageRoles,
+          { roleFields: ["managerRoleId"] },
+        )
+      : await requireModerationContext(
+          interaction,
+          PermissionFlagsBits.ManageRoles,
+        );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -1640,8 +1875,21 @@ async function executeRole(
 
 async function executeNickname(
   interaction: ChatInputCommandInteraction,
+  roleGated = false,
 ): Promise<void> {
-  const context = await requireModerationContext(interaction, PermissionFlagsBits.ManageNicknames);
+  const context = roleGated
+    ? await requireConfiguredModerationContext(
+        interaction,
+        PermissionFlagsBits.ManageNicknames,
+        {
+          roleFields: ["adminRoleId", "managerRoleId"],
+          ownerBypass: true,
+        },
+      )
+    : await requireModerationContext(
+        interaction,
+        PermissionFlagsBits.ManageNicknames,
+      );
   if (!context) return;
   const target = await memberTarget(interaction, context);
   if (!target) return;
@@ -1836,10 +2084,22 @@ export async function execute(
         await executeRole(
           interaction,
           interaction.commandName as "role-add" | "role-remove",
+          "manager-role",
         );
         break;
+      case "role": {
+        const action =
+          interaction.options.getSubcommand() === "add"
+            ? "role-add"
+            : "role-remove";
+        await executeRole(interaction, action, "manager-role");
+        break;
+      }
       case "nickname":
-        await executeNickname(interaction);
+        await executeNickname(interaction, true);
+        break;
+      case "nick":
+        await executeNickname(interaction, true);
         break;
       case "server-mute":
       case "server-unmute":
@@ -1877,7 +2137,29 @@ export async function execute(
   }
 }
 
-export const moderationCommands: Command[] = commandData.map((data) => ({
-  data,
-  execute,
-}));
+export const moderationCommands: Command[] = [
+  ...commandData.map((data) => ({ data, execute })),
+  ...moderationRoleConfigCommands,
+];
+
+const part1CommandNames = new Set([
+  "admin-role",
+  "manager",
+  "role",
+  "warn-role",
+  "warn",
+  "timeout-role",
+  "timeout",
+  "req-staff",
+  "lock",
+  "unlock",
+  "kick",
+  "ban",
+  "unban",
+  "purge",
+  "nick",
+]);
+
+export const part1ModerationCommands = moderationCommands.filter((command) =>
+  part1CommandNames.has(command.data.name),
+);

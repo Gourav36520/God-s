@@ -447,11 +447,61 @@ async function registerMissingBotCommands(client: Client): Promise<void> {
   }
 }
 
+async function registerPart1CommandsInGuilds(client: Client): Promise<void> {
+  const moderation = await import("./commands/moderation.js");
+  const requested = moderation.part1ModerationCommands;
+  if (client.guilds.cache.size === 0) {
+    logger.warn(
+      "[SLASH COMMANDS] Part 1 commands were not registered because the bot is not connected to any guilds.",
+    );
+    return;
+  }
+
+  logger.info(
+    `[SLASH COMMANDS] Syncing ${requested.length} Part 1 commands across ${client.guilds.cache.size} guild(s).`,
+  );
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      logger.info(
+        `[SLASH COMMANDS] Fetching existing commands for guild=${guild.id}.`,
+      );
+      const existing = await guild.commands.fetch();
+      for (const command of requested) {
+        const existingCommand = existing.find(
+          (registered) => registered.name === command.data.name,
+        );
+        if (existingCommand) {
+          await guild.commands.edit(
+            existingCommand.id,
+            command.data.toJSON(),
+          );
+        } else {
+          await guild.commands.create(command.data.toJSON());
+        }
+      }
+      logger.info(
+        `[SLASH COMMANDS] Registered ${requested.length} Part 1 commands in guild=${guild.id}.`,
+      );
+    } catch (error) {
+      logger.error(
+        `[SLASH COMMANDS] Part 1 registration failed for guild=${guild.id}:`,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+  }
+}
+
 function scheduleMissingBotCommandRegistration(client: Client): void {
   const register = (readyClient: Client) => {
     void registerMissingBotCommands(readyClient).catch((error) =>
       logger.error(
         "[SLASH COMMANDS] Could not register new bot commands:",
+        error instanceof Error ? error.stack ?? error.message : String(error),
+      ),
+    );
+    void registerPart1CommandsInGuilds(readyClient).catch((error) =>
+      logger.error(
+        "[SLASH COMMANDS] Could not register Part 1 commands in guilds:",
         error instanceof Error ? error.stack ?? error.message : String(error),
       ),
     );
