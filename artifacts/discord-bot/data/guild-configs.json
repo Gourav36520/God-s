@@ -28,7 +28,9 @@
     "antiLink": {
       "enabled": true,
       "allowedDomains": [],
-      "bypassRoles": [],
+      "bypassRoles": [
+        "1551866036792467526"
+      ],
       "action": "delete"
     },
     "antiInvite": {
@@ -144,7 +146,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-11-17T13:57:51.579Z",
+    "updatedAt": "2026-11-17T14:24:58.871Z",
     "heatEngine": {
       "enabled": true
     },
