@@ -9,6 +9,8 @@ import { getModerationRoleConfig } from "@workspace/db";
 import type { ModerationRoleField } from "@workspace/db";
 import { createGodsEmbed } from "../commands/ui.js";
 
+export type ModerationRoleConfigLookup = typeof getModerationRoleConfig;
+
 export interface ModerationContext {
   guild: Guild;
   moderator: GuildMember;
@@ -96,8 +98,9 @@ export async function getConfiguredModerationRoleAccess(
   guild: Guild,
   moderator: GuildMember,
   fields: ModerationRoleField[],
+  loadRoleConfig: ModerationRoleConfigLookup = getModerationRoleConfig,
 ): Promise<{ configured: boolean; hasRole: boolean }> {
-  const config = await getModerationRoleConfig(guild.id);
+  const config = await loadRoleConfig(guild.id);
   const roleIds = fields
     .map((field) => config?.[field] ?? null)
     .filter((roleId): roleId is string => Boolean(roleId));
@@ -118,6 +121,7 @@ export async function requireConfiguredModerationContext(
   interaction: ChatInputCommandInteraction,
   permission: PermissionResolvable | null,
   access: ModerationRoleAccess,
+  loadRoleConfig: ModerationRoleConfigLookup = getModerationRoleConfig,
 ): Promise<ModerationContext | null> {
   const guild = interaction.guild;
   if (!guild) {
@@ -165,6 +169,7 @@ export async function requireConfiguredModerationContext(
         guild,
         moderator,
         access.roleFields,
+        loadRoleConfig,
       );
     } catch {
       await replyPrivate(

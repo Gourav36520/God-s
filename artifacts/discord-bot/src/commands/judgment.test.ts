@@ -5,7 +5,7 @@ import type { ChatInputCommandInteraction, GuildMember } from "discord.js";
 import { securityManager } from "../lib/registry.js";
 import { execute, executeRelease, data } from "./judgment.js";
 import { data as judgementAliasData } from "./judgement.js";
-import { moderationCommands } from "./moderation.js";
+import { execute as executeModeration } from "./moderation.js";
 
 function makeJudgmentInteraction(
   actorId: string,
@@ -186,7 +186,10 @@ test("role-remove cannot remove the Judgment role from an active member", async 
   const moderator = {
     id: "admin-id",
     permissions: { has: () => true },
-    roles: { highest: { comparePositionTo: () => 1 } },
+    roles: {
+      cache: new Map([["manager-role", { id: "manager-role" }]]),
+      highest: { comparePositionTo: () => 1 },
+    },
   };
   const botMember = {
     permissions: { has: () => true },
@@ -206,6 +209,7 @@ test("role-remove cannot remove the Judgment role from an active member", async 
         [targetRole.id, targetRole],
         [judgmentRole.id, judgmentRole],
       ]),
+      fetch: async (roleId: string) => ({ id: roleId }),
     },
   };
   let reply: unknown;
@@ -228,13 +232,14 @@ test("role-remove cannot remove the Judgment role from an active member", async 
       reply = payload;
     },
   } as unknown as ChatInputCommandInteraction;
-  const roleRemoveCommand = moderationCommands.find(
-    (command) => command.data.name === "role-remove",
-  );
-
   try {
-    assert.ok(roleRemoveCommand);
-    await roleRemoveCommand.execute(interaction);
+    await executeModeration(interaction, {
+      loadRoleConfig: async () =>
+        ({
+          guildId: "guild",
+          managerRoleId: "manager-role",
+        }) as never,
+    });
   } finally {
     securityManager.getConfig = originalGetConfig;
   }

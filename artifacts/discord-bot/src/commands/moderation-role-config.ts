@@ -8,6 +8,11 @@ import type { Command } from "../lib/registry.js";
 import { logger } from "../lib/logger.js";
 import { replyPrivate } from "../moderation/permissions.js";
 
+export interface ModerationRoleConfigCommandDependencies {
+  getModerationRoleConfig: typeof getModerationRoleConfig;
+  setModerationRoleConfig: typeof setModerationRoleConfig;
+}
+
 const ROLE_CONFIGURATIONS: {
   name: string;
   description: string;
@@ -46,8 +51,13 @@ const ROLE_CONFIGURATIONS: {
   },
 ];
 
-export const moderationRoleConfigCommands: Command[] =
-  ROLE_CONFIGURATIONS.map((configuration) => {
+export function createModerationRoleConfigCommands(
+  dependencies: ModerationRoleConfigCommandDependencies = {
+    getModerationRoleConfig,
+    setModerationRoleConfig,
+  },
+): Command[] {
+  return ROLE_CONFIGURATIONS.map((configuration) => {
     const data = new SlashCommandBuilder()
       .setName(configuration.name)
       .setDescription(configuration.description)
@@ -93,7 +103,7 @@ export const moderationRoleConfigCommands: Command[] =
         const action = interaction.options.getSubcommand();
         let current;
         try {
-          current = await getModerationRoleConfig(guild.id);
+          current = await dependencies.getModerationRoleConfig(guild.id);
         } catch {
           await replyPrivate(
             interaction,
@@ -114,7 +124,7 @@ export const moderationRoleConfigCommands: Command[] =
             return;
           }
           try {
-            await setModerationRoleConfig(
+            await dependencies.setModerationRoleConfig(
               guild.id,
               configuration.field,
               null,
@@ -165,7 +175,7 @@ export const moderationRoleConfigCommands: Command[] =
         }
 
         try {
-          await setModerationRoleConfig(
+          await dependencies.setModerationRoleConfig(
             guild.id,
             configuration.field,
             role.id,
@@ -190,3 +200,7 @@ export const moderationRoleConfigCommands: Command[] =
       },
     };
   });
+}
+
+export const moderationRoleConfigCommands =
+  createModerationRoleConfigCommands();

@@ -19,6 +19,7 @@ import {
   countActiveModerationWarnings,
   createModerationBanExpiration,
   createModerationCase,
+  getModerationRoleConfig,
   listModerationCases,
   listModerationWarnings,
   resolveAllModerationWarnings,
@@ -38,6 +39,7 @@ import {
   requireModerationContext,
   roleHierarchyError,
   targetHierarchyError,
+  type ModerationRoleConfigLookup,
   type ModerationContext,
 } from "../moderation/permissions.js";
 import { moderationRoleConfigCommands } from "./moderation-role-config.js";
@@ -367,6 +369,12 @@ type ConfirmationRequest =
   | Omit<Extract<Confirmation, { kind: "purge" }>, "expiresAt">
   | Omit<Extract<Confirmation, { kind: "clear-warnings" }>, "expiresAt">;
 
+export interface ModerationExecutionDependencies {
+  loadRoleConfig?: ModerationRoleConfigLookup;
+  countActiveWarnings?: typeof countActiveModerationWarnings;
+  saveModerationCase?: typeof saveCase;
+}
+
 function replyEmbed(
   interaction: ChatInputCommandInteraction,
   embed: ReturnType<typeof createGodsEmbed>,
@@ -629,6 +637,7 @@ async function requireButtonContext(
     roleFields: ("adminRoleId" | "managerRoleId")[];
     ownerBypass?: boolean;
   },
+  loadRoleConfig: ModerationRoleConfigLookup = getModerationRoleConfig,
 ): Promise<ModerationContext | null> {
   const guild = interaction.guild;
   if (!guild) {
@@ -673,6 +682,7 @@ async function requireButtonContext(
           guild,
           moderator,
           roleAccess.roleFields,
+          loadRoleConfig,
         );
       } catch {
         await interaction.update({
@@ -745,6 +755,7 @@ export function isModerationConfirmation(customId: string): boolean {
 
 export async function handleModerationConfirmation(
   interaction: ButtonInteraction,
+  dependencies: ModerationExecutionDependencies = {},
 ): Promise<void> {
   const isConfirm = interaction.customId.startsWith(CONFIRM_PREFIX);
   const id = interaction.customId.slice(
@@ -806,6 +817,7 @@ export async function handleModerationConfirmation(
           ownerBypass: true,
         }
       : undefined,
+    dependencies.loadRoleConfig,
   );
   if (!context) return;
   await interaction.deferUpdate();
@@ -1389,11 +1401,13 @@ async function executeSoftban(
 
 async function executeWarn(
   interaction: ChatInputCommandInteraction,
+  dependencies: ModerationExecutionDependencies,
 ): Promise<void> {
   const context = await requireConfiguredModerationContext(
     interaction,
     null,
     { roleFields: ["warnRoleId"] },
+    dependencies.loadRoleConfig,
   );
   if (!context) return;
   const target = await memberTarget(interaction, context);
@@ -1401,7 +1415,8 @@ async function executeWarn(
   const reason = reasonFor(interaction);
   let activeWarningsBefore: number;
   try {
-    activeWarningsBefore = await countActiveModerationWarnings(
+    activeWarningsBefore = await (dependencies.countActiveWarnings ??
+      countActiveModerationWarnings)(
       context.guild.id,
       target.id,
     );
@@ -1431,7 +1446,8 @@ async function executeWarn(
     return;
   }
 
-  const caseId = await saveCase({
+  const saveModerationCase = dependencies.saveModerationCase ?? saveCase;
+  const caseId = await saveModerationCase({
     guildId: context.guild.id,
     targetId: target.id,
     moderatorId: context.moderator.id,
@@ -1450,7 +1466,7 @@ async function executeWarn(
     try {
       await target.timeout(10 * 60 * 1_000, timeoutReason);
       automaticTimeoutApplied = true;
-      automaticTimeoutCaseId = await saveCase({
+      automaticTimeoutCaseId = await saveModerationCase({
         guildId: context.guild.id,
         targetId: target.id,
         moderatorId: context.moderator.id,
@@ -1613,6 +1629,7 @@ async function executeClearWarnings(
 
 async function executePurge(
   interaction: ChatInputCommandInteraction,
+  dependencies: ModerationExecutionDependencies,
 ): Promise<void> {
   const context = await requireConfiguredModerationContext(
     interaction,
@@ -1621,6 +1638,7 @@ async function executePurge(
       roleFields: ["adminRoleId", "managerRoleId"],
       ownerBypass: true,
     },
+    dependencies.loadRoleConfig,
   );
   if (!context) return;
   const channel = interaction.channel;
@@ -1771,6 +1789,7 @@ async function executeRole(
   interaction: ChatInputCommandInteraction,
   action: "role-add" | "role-remove",
   authorization: "discord-permission" | "manager-role" = "discord-permission",
+  dependencies: ModerationExecutionDependencies = {},
 ): Promise<void> {
   const context =
     authorization === "manager-role"
@@ -1778,6 +1797,7 @@ async function executeRole(
           interaction,
           PermissionFlagsBits.ManageRoles,
           { roleFields: ["managerRoleId"] },
+          dependencies.loadRoleConfig,
         )
       : await requireModerationContext(
           interaction,
@@ -2033,6 +2053,7 @@ async function executeCases(
 
 export async function execute(
   interaction: ChatInputCommandInteraction,
+  dependencies: ModerationExecutionDependencies = {},
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
 
@@ -2057,7 +2078,7 @@ export async function execute(
         await executeSoftban(interaction);
         break;
       case "warn":
-        await executeWarn(interaction);
+        await executeWarn(interaction, dependencies);
         break;
       case "warnings":
         await executeWarnings(interaction);
@@ -2069,7 +2090,7 @@ export async function execute(
         await executeClearWarnings(interaction);
         break;
       case "purge":
-        await executePurge(interaction);
+        await executePurge(interaction, dependencies);
         break;
       case "lock":
       case "unlock":
@@ -2085,6 +2106,7 @@ export async function execute(
           interaction,
           interaction.commandName as "role-add" | "role-remove",
           "manager-role",
+          dependencies,
         );
         break;
       case "role": {
@@ -2092,7 +2114,7 @@ export async function execute(
           interaction.options.getSubcommand() === "add"
             ? "role-add"
             : "role-remove";
-        await executeRole(interaction, action, "manager-role");
+        await executeRole(interaction, action, "manager-role", dependencies);
         break;
       }
       case "nickname":
