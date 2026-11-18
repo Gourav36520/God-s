@@ -45,7 +45,7 @@ const ROLE_CONFIGURATIONS: {
   },
   {
     name: "req-staff",
-    description: "Configure the future staff request role",
+    description: "Configure the role allowed to use /staff",
     label: "Staff Request",
     field: "staffRequestRoleId",
   },

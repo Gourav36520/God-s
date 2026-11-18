@@ -10,10 +10,13 @@ import {
   type ChatInputCommandInteraction,
   type GuildBan,
   type GuildMember,
+  type Message,
+  type Role,
   type SlashCommandStringOption,
   type SlashCommandUserOption,
   type SharedSlashCommand,
   type TextChannel,
+  type User,
 } from "discord.js";
 import {
   countActiveModerationWarnings,
@@ -43,6 +46,7 @@ import {
   type ModerationContext,
 } from "../moderation/permissions.js";
 import { moderationRoleConfigCommands } from "./moderation-role-config.js";
+import { staffCommands } from "./staff.js";
 
 const memberOption = (name = "member", description = "The server member") =>
   (option: SlashCommandUserOption) =>
@@ -1483,6 +1487,28 @@ async function executeWarn(
     }
   }
 
+  let warningCount = activeWarningsBefore + 1;
+  try {
+    warningCount = await countActiveModerationWarnings(
+      context.guild.id,
+      target.id,
+    );
+  } catch {
+    // The warning was already saved; retain the count verified before insertion.
+  }
+  let warningDmFailed = false;
+  try {
+    await target.send(
+      [
+        `You received a warning in ${context.guild.name}.`,
+        `Reason: ${reason}`,
+        `Warning count: ${warningCount} active warning(s).`,
+      ].join("\n"),
+    );
+  } catch {
+    warningDmFailed = true;
+  }
+
   await logModeration({
     guildId: context.guild.id,
     targetId: target.id,
@@ -1501,11 +1527,16 @@ async function executeWarn(
       moderatorId: context.moderator.id,
       reason,
       caseId,
-      note: !appliesThirdWarningTimeout
+    note: [
+      !appliesThirdWarningTimeout
         ? "The warning was recorded."
         : automaticTimeoutApplied
           ? `This was the third active warning; a fixed 10-minute timeout was applied${automaticTimeoutCaseId ? ` and recorded as case #${automaticTimeoutCaseId}` : ", but its case could not be saved"}.`
           : "This was the third active warning. The warning was recorded, but Discord could not apply the required 10-minute timeout; please review it manually.",
+      warningDmFailed
+        ? "The warning was recorded, but the member's DM could not be delivered."
+        : "A warning DM was sent to the member.",
+    ].join(" "),
     }),
   );
 }
@@ -2159,9 +2190,260 @@ export async function execute(
   }
 }
 
+type PrefixModerationOptions = {
+  user: User | null;
+  role: Role | null;
+  subcommand: string | null;
+  strings: Record<string, string | null>;
+  integers: Record<string, number | null>;
+};
+
+function mentionedId(
+  token: string | undefined,
+  kind: "user" | "role",
+): string | null {
+  if (!token) return null;
+  const pattern =
+    kind === "user" ? /^<@!?(\d{16,20})>$/u : /^<@&(\d{16,20})>$/u;
+  const match = pattern.exec(token);
+  if (match?.[1]) return match[1];
+  return /^\d{16,20}$/u.test(token) ? token : null;
+}
+
+function prefixUsage(commandName: string, prefix: string): string {
+  const usage: Record<string, string> = {
+    kick: `${prefix}kick @member [reason]`,
+    ban: `${prefix}ban @member [duration] [reason]`,
+    unban: `${prefix}unban user-id [reason]`,
+    warn: `${prefix}warn @member [reason]`,
+    timeout: `${prefix}timeout @member duration [reason]`,
+    lock: `${prefix}lock [reason]`,
+    unlock: `${prefix}unlock [reason]`,
+    purge: `${prefix}purge amount [reason]`,
+    nick: `${prefix}nick @member [nickname] [--reason reason]`,
+    role: `${prefix}role add|remove @member @role [reason]`,
+  };
+  return `Usage: ${usage[commandName] ?? `${prefix}${commandName}`}`;
+}
+
+async function createPrefixModerationInteraction(
+  message: Message,
+  commandName: string,
+  inputArgs: string[],
+): Promise<ChatInputCommandInteraction | null> {
+  const guild = message.guild;
+  if (!guild) {
+    await message.reply("This command can only be used in a server.");
+    return null;
+  }
+
+  const prefix = securityManager.getConfig(guild.id).prefix;
+  const args = [...inputArgs];
+  const options: PrefixModerationOptions = {
+    user: null,
+    role: null,
+    subcommand: null,
+    strings: {},
+    integers: {},
+  };
+  const hasTarget =
+    !["lock", "unlock", "purge", "unban"].includes(commandName);
+
+  if (commandName === "role") {
+    options.subcommand = args.shift()?.toLowerCase() ?? null;
+    if (!["add", "remove"].includes(options.subcommand ?? "")) {
+      await message.reply(prefixUsage(commandName, prefix));
+      return null;
+    }
+  }
+
+  if (hasTarget) {
+    const targetId = mentionedId(args.shift(), "user");
+    if (!targetId) {
+      await message.reply(prefixUsage(commandName, prefix));
+      return null;
+    }
+    options.user = await message.client.users.fetch(targetId).catch(() => null);
+    if (!options.user) {
+      await message.reply(
+        "I could not find that Discord user. Mention a member or provide their ID.",
+      );
+      return null;
+    }
+  }
+
+  if (commandName === "role") {
+    const roleId = mentionedId(args.shift(), "role");
+    options.role = roleId
+      ? await guild.roles.fetch(roleId).catch(() => null)
+      : null;
+    if (!options.role) {
+      await message.reply(prefixUsage(commandName, prefix));
+      return null;
+    }
+  }
+
+  switch (commandName) {
+    case "ban": {
+      const maybeDuration = args[0];
+      if (maybeDuration && parseDuration(maybeDuration) !== null) {
+        options.strings.duration = args.shift() ?? null;
+      }
+      options.strings.reason = args.join(" ") || null;
+      break;
+    }
+    case "timeout":
+      options.strings.duration = args.shift() ?? null;
+      options.strings.reason = args.join(" ") || null;
+      if (!options.strings.duration) {
+        await message.reply(prefixUsage(commandName, prefix));
+        return null;
+      }
+      break;
+    case "unban":
+      options.strings.user_id = args.shift() ?? null;
+      options.strings.reason = args.join(" ") || null;
+      if (!options.strings.user_id) {
+        await message.reply(prefixUsage(commandName, prefix));
+        return null;
+      }
+      break;
+    case "purge": {
+      const amount = args.shift();
+      const parsedAmount =
+        amount && /^\d+$/u.test(amount) ? Number(amount) : NaN;
+      if (
+        !Number.isInteger(parsedAmount) ||
+        parsedAmount < 1 ||
+        parsedAmount > 100
+      ) {
+        await message.reply(prefixUsage(commandName, prefix));
+        return null;
+      }
+      options.integers.amount = parsedAmount;
+      options.strings.reason = args.join(" ") || null;
+      break;
+    }
+    case "nick": {
+      const reasonIndex = args.indexOf("--reason");
+      const nicknameArgs =
+        reasonIndex >= 0 ? args.slice(0, reasonIndex) : args;
+      const reasonArgs = reasonIndex >= 0 ? args.slice(reasonIndex + 1) : [];
+      const nickname =
+        nicknameArgs[0]?.toLowerCase() === "--reset"
+          ? null
+          : nicknameArgs.join(" ").trim() || null;
+      if (nickname && nickname.length > 32) {
+        await message.reply("Nicknames must be 32 characters or fewer.");
+        return null;
+      }
+      options.strings.nickname = nickname;
+      options.strings.reason = reasonArgs.join(" ") || null;
+      break;
+    }
+    default:
+      options.strings.reason = args.join(" ") || null;
+  }
+
+  let responseMessage: Message | null = null;
+  let replied = false;
+  let deferred = false;
+  const send = async (payload: unknown): Promise<Message> => {
+    const messagePayload = {
+      ...((payload ?? {}) as Record<string, unknown>),
+    };
+    delete messagePayload.ephemeral;
+    delete messagePayload.fetchReply;
+    responseMessage = await message.reply(
+      messagePayload as Parameters<Message["reply"]>[0],
+    );
+    replied = true;
+    deferred = false;
+    return responseMessage;
+  };
+  const interaction = {
+    commandName,
+    user: message.author,
+    guild,
+    guildId: guild.id,
+    channel: message.channel,
+    client: message.client,
+    get deferred() {
+      return deferred;
+    },
+    set deferred(value: boolean) {
+      deferred = value;
+    },
+    get replied() {
+      return replied;
+    },
+    options: {
+      getSubcommand: () => options.subcommand,
+      getUser: () => options.user,
+      getRole: () => options.role,
+      getString: (name: string) => options.strings[name] ?? null,
+      getInteger: (name: string) => options.integers[name] ?? null,
+      getChannel: () => null,
+    },
+    deferReply: async () => {
+      deferred = true;
+    },
+    reply: send,
+    editReply: async (payload: unknown) => {
+      if (!responseMessage) return send(payload);
+      const messagePayload = {
+        ...((payload ?? {}) as Record<string, unknown>),
+      };
+      delete messagePayload.ephemeral;
+      return responseMessage.edit(
+        messagePayload as Parameters<Message["edit"]>[0],
+      );
+    },
+    followUp: send,
+  };
+
+  return interaction as unknown as ChatInputCommandInteraction;
+}
+
+const PREFIX_MODERATION_COMMAND_NAMES = new Set([
+  "kick",
+  "ban",
+  "unban",
+  "warn",
+  "timeout",
+  "lock",
+  "unlock",
+  "purge",
+  "nick",
+  "role",
+]);
+
+async function executeModerationPrefix(
+  commandName: string,
+  message: Message,
+  args: string[],
+): Promise<void> {
+  const interaction = await createPrefixModerationInteraction(
+    message,
+    commandName,
+    args,
+  );
+  if (interaction) await execute(interaction);
+}
+
 export const moderationCommands: Command[] = [
-  ...commandData.map((data) => ({ data, execute })),
+  ...commandData.map((data) => ({
+    data,
+    execute,
+    ...(PREFIX_MODERATION_COMMAND_NAMES.has(data.name)
+      ? {
+          executePrefix: (message: Message, args: string[]) =>
+            executeModerationPrefix(data.name, message, args),
+        }
+      : {}),
+  })),
   ...moderationRoleConfigCommands,
+  ...staffCommands,
 ];
 
 const part1CommandNames = new Set([
@@ -2184,4 +2466,15 @@ const part1CommandNames = new Set([
 
 export const part1ModerationCommands = moderationCommands.filter((command) =>
   part1CommandNames.has(command.data.name),
+);
+
+const part2CommandNames = new Set([
+  "req-staff",
+  "staff",
+  "staff-role",
+  "manage",
+]);
+
+export const part2ModerationCommands = moderationCommands.filter(
+  (command) => part2CommandNames.has(command.data.name),
 );

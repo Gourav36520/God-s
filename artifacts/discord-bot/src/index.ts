@@ -1,5 +1,6 @@
 import "dotenv/config";
 import {
+  ApplicationCommandType,
   Client,
   Events,
   GatewayIntentBits,
@@ -447,18 +448,48 @@ async function registerMissingBotCommands(client: Client): Promise<void> {
   }
 }
 
-async function registerPart1CommandsInGuilds(client: Client): Promise<void> {
+async function removeObsoleteGlobalModerationCommands(
+  client: Client,
+): Promise<void> {
+  const application = client.application;
+  if (!application) {
+    throw new Error("Discord application is not available after gateway login.");
+  }
+  const obsoleteNames = new Set(["ban", "role", "role-add", "role-remove"]);
+  const globalCommands = await application.commands.fetch();
+  const obsolete = globalCommands.filter(
+    (command) =>
+      (command.type ?? ApplicationCommandType.ChatInput) ===
+        ApplicationCommandType.ChatInput &&
+      obsoleteNames.has(command.name),
+  );
+
+  for (const command of obsolete.values()) {
+    await application.commands.delete(command.id);
+    logger.info(
+      `[SLASH COMMANDS] Removed obsolete global /${command.name}; current guild-scoped command remains.`,
+    );
+  }
+  logger.info(
+    `[SLASH COMMANDS] Global duplicate cleanup finished; removed ${obsolete.size} obsolete moderation command(s).`,
+  );
+}
+
+async function registerScopedModerationCommandsInGuilds(
+  client: Client,
+): Promise<void> {
   const moderation = await import("./commands/moderation.js");
-  const requested = moderation.part1ModerationCommands;
+  const requested = moderation.part2ModerationCommands;
+  const canonicalPart1Names = new Set(["ban", "role"]);
   if (client.guilds.cache.size === 0) {
     logger.warn(
-      "[SLASH COMMANDS] Part 1 commands were not registered because the bot is not connected to any guilds.",
+      "[SLASH COMMANDS] Guild-scoped moderation commands were not registered because the bot is not connected to any guilds.",
     );
     return;
   }
 
   logger.info(
-    `[SLASH COMMANDS] Syncing ${requested.length} Part 1 commands across ${client.guilds.cache.size} guild(s).`,
+    `[SLASH COMMANDS] Syncing ${requested.length} Part 2 commands and checking the existing Part 1 registrations across ${client.guilds.cache.size} guild(s).`,
   );
   for (const guild of client.guilds.cache.values()) {
     try {
@@ -466,10 +497,53 @@ async function registerPart1CommandsInGuilds(client: Client): Promise<void> {
         `[SLASH COMMANDS] Fetching existing commands for guild=${guild.id}.`,
       );
       const existing = await guild.commands.fetch();
-      for (const command of requested) {
-        const existingCommand = existing.find(
-          (registered) => registered.name === command.data.name,
+      const obsoleteRoleAliases = existing.filter(
+        (registered) =>
+          ["role-add", "role-remove"].includes(registered.name) &&
+          (registered.type ?? ApplicationCommandType.ChatInput) ===
+            ApplicationCommandType.ChatInput,
+      );
+      for (const obsolete of obsoleteRoleAliases.values()) {
+        await guild.commands.delete(obsolete.id);
+        logger.info(
+          `[SLASH COMMANDS] Removed obsolete guild /${obsolete.name} alias in guild=${guild.id}; /role add|remove is the supported form.`,
         );
+      }
+
+      for (const name of canonicalPart1Names) {
+        const matching = existing.filter(
+          (registered) =>
+            registered.name === name &&
+            (registered.type ?? ApplicationCommandType.ChatInput) ===
+              ApplicationCommandType.ChatInput,
+        );
+        if (matching.size <= 1) continue;
+        const currentDefinition = moderation.part1ModerationCommands.find(
+          (command) => command.data.name === name,
+        );
+        if (currentDefinition) {
+          const [keep, ...duplicates] = matching.values();
+          await guild.commands.edit(
+            keep.id,
+            currentDefinition.data.toJSON(),
+          );
+          for (const duplicate of duplicates) {
+            await guild.commands.delete(duplicate.id);
+          }
+          logger.info(
+            `[SLASH COMMANDS] Kept one current /${name} registration and removed ${duplicates.length} duplicate(s) in guild=${guild.id}.`,
+          );
+        }
+      }
+
+      for (const command of requested) {
+        const matching = existing.filter(
+          (registered) =>
+            registered.name === command.data.name &&
+            (registered.type ?? ApplicationCommandType.ChatInput) ===
+              ApplicationCommandType.ChatInput,
+        );
+        const [existingCommand, ...duplicates] = matching.values();
         if (existingCommand) {
           await guild.commands.edit(
             existingCommand.id,
@@ -478,9 +552,15 @@ async function registerPart1CommandsInGuilds(client: Client): Promise<void> {
         } else {
           await guild.commands.create(command.data.toJSON());
         }
+        for (const duplicate of duplicates) {
+          await guild.commands.delete(duplicate.id);
+          logger.info(
+            `[SLASH COMMANDS] Removed duplicate guild /${command.data.name} in guild=${guild.id}.`,
+          );
+        }
       }
       logger.info(
-        `[SLASH COMMANDS] Registered ${requested.length} Part 1 commands in guild=${guild.id}.`,
+        `[SLASH COMMANDS] Synced ${requested.length} guild-scoped moderation commands in guild=${guild.id}.`,
       );
     } catch (error) {
       logger.error(
@@ -492,19 +572,28 @@ async function registerPart1CommandsInGuilds(client: Client): Promise<void> {
 }
 
 function scheduleMissingBotCommandRegistration(client: Client): void {
-  const register = (readyClient: Client) => {
-    void registerMissingBotCommands(readyClient).catch((error) =>
-      logger.error(
-        "[SLASH COMMANDS] Could not register new bot commands:",
-        error instanceof Error ? error.stack ?? error.message : String(error),
-      ),
-    );
-    void registerPart1CommandsInGuilds(readyClient).catch((error) =>
-      logger.error(
-        "[SLASH COMMANDS] Could not register Part 1 commands in guilds:",
-        error instanceof Error ? error.stack ?? error.message : String(error),
-      ),
-    );
+  const register = (readyClient: Client): void => {
+    void (async () => {
+      await removeObsoleteGlobalModerationCommands(readyClient).catch((error) =>
+        logger.error(
+          "[SLASH COMMANDS] Could not remove obsolete global moderation commands:",
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+      await registerMissingBotCommands(readyClient).catch((error) =>
+        logger.error(
+          "[SLASH COMMANDS] Could not register new bot commands:",
+          error instanceof Error ? error.stack ?? error.message : String(error),
+        ),
+      );
+      await registerScopedModerationCommandsInGuilds(readyClient).catch(
+        (error) =>
+          logger.error(
+            "[SLASH COMMANDS] Could not sync guild-scoped moderation commands:",
+            error instanceof Error ? error.stack ?? error.message : String(error),
+          ),
+      );
+    })();
   };
   if (client.isReady()) {
     register(client);

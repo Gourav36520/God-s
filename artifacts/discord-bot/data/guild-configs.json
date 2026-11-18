@@ -5,7 +5,7 @@
     "logChannelId": "1560711884997664968",
     "inviteChannelId": null,
     "muteRoleId": null,
-    "autoRoleRoleId": null,
+    "autoRoleRoleId": "1556216498719170650",
     "reactionRolePanels": [],
     "reactionRoleAssignments": {},
     "exemptRoles": [
@@ -148,7 +148,7 @@
         "security": true
       }
     },
-    "updatedAt": "2026-11-17T14:25:46.938Z",
+    "updatedAt": "2026-11-17T14:29:46.211Z",
     "heatEngine": {
       "enabled": true
     },
